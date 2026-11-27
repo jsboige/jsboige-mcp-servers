@@ -12,7 +12,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import os from 'os';
 import { createLogger, Logger } from '../../utils/logger.js';
-import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
+import { MessageManagerError, MessageManagerErrorCode } from '@vibesync/core/types/errors';
 
 // Logger instance for send_message tool
 const logger: Logger = createLogger('SendMessageTool');

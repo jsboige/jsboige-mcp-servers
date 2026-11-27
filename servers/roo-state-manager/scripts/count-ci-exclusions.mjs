@@ -31,7 +31,21 @@ import { execFileSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
+const WORKSPACE_ROOT = path.resolve(ROOT, '..', '..');
 const CONFIG = path.join(ROOT, 'vitest.config.ci.ts');
+
+/**
+ * Resolve a dependency path next to the package first, then at the workspace
+ * root (#4886): npm workspaces hoist dependencies, so the server no longer
+ * owns a node_modules/ of its own under an install from `mcps/internal`.
+ */
+function resolveDependency(...segments) {
+  const candidates = [
+    path.join(ROOT, 'node_modules', ...segments),
+    path.join(WORKSPACE_ROOT, 'node_modules', ...segments),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0];
+}
 
 const TEST_FILE_RE = /\.(test|spec)\.[cm]?[jt]sx?$/;
 const HEADER_RE = /(\d+)\s+test-file entr(?:y|ies)\s*\+\s*(\d+)\s+tests-directory globs/;
@@ -149,7 +163,7 @@ export function parseHeaderCounts(src = fs.readFileSync(CONFIG, 'utf8')) {
 
 /** Effective measure: files/tests collected by unit config but not by CI. */
 function collectEffective() {
-  const vitestBin = path.join(ROOT, 'node_modules', 'vitest', 'vitest.mjs');
+  const vitestBin = resolveDependency('vitest', 'vitest.mjs');
   const list = (config) =>
     execFileSync(
       process.execPath,

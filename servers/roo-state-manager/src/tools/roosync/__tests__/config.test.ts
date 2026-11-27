@@ -7,7 +7,7 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ConfigArgsSchema, roosyncConfig, ConfigArgs, sweepCollectTempPackages } from '../config.js';
-import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../../types/errors.js';
+import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '@vibesync/core/types/errors';
 import { promises as fs, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';

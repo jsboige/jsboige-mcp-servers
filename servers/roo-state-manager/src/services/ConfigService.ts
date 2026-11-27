@@ -21,7 +21,7 @@ import { readJSONFileWithoutBOM } from '../utils/encoding-helpers.js';
 import {
   ConfigServiceError,
   ConfigServiceErrorCode
-} from '../types/errors.js';
+} from '@vibesync/core/types/errors';
 
 // Utiliser une approche compatible avec les tests
 // En environnement de test, nous utilisons process.cwd() comme fallback

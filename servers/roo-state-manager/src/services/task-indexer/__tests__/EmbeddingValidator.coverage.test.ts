@@ -29,7 +29,7 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { validateVectorGlobal, sanitizePayload } from '../EmbeddingValidator.js';
-import { StateManagerError } from '../../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 
 // Mock the openai module (same as base test)
 vi.mock('../../../services/openai.js', () => ({

@@ -58,7 +58,7 @@ vi.mock('fs/promises', () => ({
 import { XmlExporterService } from '../XmlExporterService.js';
 import type { MessageSkeleton, ActionMetadata } from '../../types/conversation.js';
 import type { StoredConversation } from '../unified-store/types.js';
-import { StateManagerError } from '../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 
 // ─────────────────── helpers ───────────────────
 

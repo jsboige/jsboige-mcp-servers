@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { createKnownValueMasker, redactKnownSecretValues } from '../known-value-masker.js';
+import { createKnownValueMasker, redactKnownSecretValues } from '../src/utils/known-value-masker.js';
 
 const PG_URI = 'postgresql://svc:fictiti0us@db.internal:5433/unified_store';
 const HUB = 'http://192.168.0.50:3000';

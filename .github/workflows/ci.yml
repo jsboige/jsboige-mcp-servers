@@ -61,20 +61,20 @@ jobs:
         # #4808: @qdrant/js-client-rest@1.20.0 engines.node >= 22 (undici@7 >= 20.18.1)
         node-version: '22.x'
 
-    - name: Install dependencies
-      run: |
-        cd servers/roo-state-manager
-        npm ci
+    - name: Install workspace
+      run: npm ci
 
-    - name: Build
-      run: |
-        cd servers/roo-state-manager
-        npm run build
+    - name: Build @vibesync/core
+      run: npm run build --workspace @vibesync/core
+
+    - name: Test @vibesync/core
+      run: npm run test --workspace @vibesync/core
+
+    - name: Build roo-state-manager
+      run: npm run build --workspace roo-state-manager
 
     - name: Run tests (CI config - excludes platform-dependent tests)
-      run: |
-        cd servers/roo-state-manager
-        npx vitest run --config vitest.config.ci.ts
+      run: npm run test:run --workspace roo-state-manager -- --config vitest.config.ci.ts
 
   lint:
     runs-on: ubuntu-22.04

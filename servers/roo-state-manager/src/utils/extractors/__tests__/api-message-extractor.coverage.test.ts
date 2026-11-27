@@ -18,7 +18,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ApiContentExtractor, ApiTextExtractor } from '../api-message-extractor.js';
-import { GenericError, GenericErrorCode } from '../../../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 
 describe('ApiContentExtractor — coverage (uncovered branches after #492)', () => {
     let extractor: ApiContentExtractor;

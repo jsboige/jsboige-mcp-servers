@@ -80,7 +80,7 @@ vi.unmock('../../services/ConfigService.js');
 import { ConfigService } from '../../services/ConfigService.js';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 import { promises as fs } from 'fs';
-import { ConfigServiceErrorCode } from '../../types/errors.js';
+import { ConfigServiceErrorCode } from '@vibesync/core/types/errors';
 
 const readMock = vi.mocked(readJSONFileWithoutBOM);
 const writeMock = vi.mocked(fs.writeFile);

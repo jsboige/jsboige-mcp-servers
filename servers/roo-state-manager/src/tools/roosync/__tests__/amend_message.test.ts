@@ -73,7 +73,7 @@ vi.mock('../../../utils/message-helpers.js', () => ({
 	getLocalFullId: mockGetLocalFullId
 }));
 
-vi.mock('../../../types/errors.js', () => ({
+vi.mock('@vibesync/core/types/errors', () => ({
 	StateManagerError: class extends Error {
 		code: string;
 		source: string;

@@ -24,7 +24,7 @@ import {
 } from '../../models/synthesis/SynthesisModels.js';
 import { NarrativeContextBuilderService } from './NarrativeContextBuilderService.js';
 import { LLMService } from './LLMService.js';
-import { SynthesisServiceError, SynthesisServiceErrorCode } from '../../types/errors.js';
+import { SynthesisServiceError, SynthesisServiceErrorCode } from '@vibesync/core/types/errors';
 import * as fs from 'fs/promises';
 import type { StoredConversation } from '../unified-store/types.js';
 import * as path from 'path';

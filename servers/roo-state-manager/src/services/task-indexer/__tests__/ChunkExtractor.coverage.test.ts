@@ -30,7 +30,7 @@ import {
   extractChunksFromClaudeSession,
   MAX_MESSAGES_PER_TASK,
 } from '../ChunkExtractor.js';
-import { StateManagerError } from '../../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 
 vi.mock('fs', () => {
   const { Readable } = require('stream');

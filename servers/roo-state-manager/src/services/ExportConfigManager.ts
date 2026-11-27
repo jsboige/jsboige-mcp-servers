@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
-import { ExportConfigManagerError, ExportConfigManagerErrorCode } from '../types/errors.js';
+import { ExportConfigManagerError, ExportConfigManagerErrorCode } from '@vibesync/core/types/errors';
 
 /**
  * Configuration par défaut pour les exports XML

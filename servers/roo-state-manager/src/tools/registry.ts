@@ -14,14 +14,14 @@ import { CallToolRequestSchema, ListToolsRequestSchema, CallToolResult } from '@
 import type { ServerState } from '../services/state-manager.service.js';
 import { allToolDefinitions } from './tool-definitions.js';
 import { InventoryArgsSchema } from './roosync/inventory.js';
-import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 import * as path from 'path';
 import { existsSync } from 'fs';
 import { CACHE_CONFIG } from '../config/server-config.js';
 import { createLogger } from '../utils/logger.js';
-import { getToolTimeoutMs } from '../config/tool-timeouts.js';
+import { getToolTimeoutMs } from '@vibesync/core/config/tool-timeouts';
 import { formatErrorForLog } from '../utils/error-format.js';
-import { getServerCapabilities, type Capability } from '../utils/server-capabilities.js';
+import { getServerCapabilities, type Capability } from '@vibesync/core/utils/server-capabilities';
 import { resolveFullConversationSkeleton, hydrateTier3SkeletonFromCache } from '../utils/server-helpers.js';
 import { ensureBackfillMarkersFresh } from '../services/unified-store/pg-backfill-marker.js';
 
@@ -57,7 +57,7 @@ const registryLogger = createLogger('ToolRegistry');
 // other, so nothing could compare them and the outer one silently preempted this
 // budget for roosync_dashboard (300s vs 720s). Re-exported here so every existing
 // importer — registry.test.ts among them — keeps resolving it from this module.
-export { getToolTimeoutMs } from '../config/tool-timeouts.js';
+export { getToolTimeoutMs } from '@vibesync/core/config/tool-timeouts';
 
 // #1665: Export registry logger globally for tests
 (global as any).registryLogger = registryLogger;

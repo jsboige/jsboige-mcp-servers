@@ -50,7 +50,7 @@ vi.mock('../../../utils/logger.js', () => ({
 	Logger: class {}
 }));
 
-vi.mock('../../../types/errors.js', () => ({
+vi.mock('@vibesync/core/types/errors', () => ({
 	MessageManagerError: class extends Error {
 		code: string;
 		details: any;

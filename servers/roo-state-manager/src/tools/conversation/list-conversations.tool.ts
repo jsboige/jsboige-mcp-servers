@@ -17,7 +17,7 @@ import { matchesWorkspace } from '../../utils/workspace-match.js';
 import { deriveWorkspaceFromClaudeProjectSlug } from '../../utils/claude-project-workspace.js';
 import { applyUnifiedHeaderFiltersAndSort } from './unified-header-pipeline.js';
 import { resolveDateRangeBounds } from '../../utils/date-filters.js';
-import { sanitizeInt } from '../../utils/int-validator.js';
+import { sanitizeInt } from '@vibesync/core/utils/int-validator';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';

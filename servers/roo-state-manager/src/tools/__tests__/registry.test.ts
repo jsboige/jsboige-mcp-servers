@@ -10,12 +10,12 @@ import {
     TOOL_CAPABILITIES,
     getToolTimeoutMs
 } from '../registry.js';
-import { GenericError, GenericErrorCode } from '../../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { ServerState } from '../../services/state-manager.service.js';
 import type { StoredConversation } from '../../services/unified-store/types.js';
-import { getServerCapabilities } from '../../utils/server-capabilities.js';
+import { getServerCapabilities } from '@vibesync/core/utils/server-capabilities';
 
 // Mock du Server SDK MCP
 vi.mock('@modelcontextprotocol/sdk/server/index.js', async () => {

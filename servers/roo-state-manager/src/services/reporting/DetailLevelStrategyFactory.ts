@@ -17,7 +17,7 @@ import { NoToolParamsReportingStrategy } from './strategies/NoToolParamsReportin
 import { CompactReportingStrategy } from './strategies/CompactReportingStrategy.js';
 import { NoResultsReportingStrategy } from './strategies/NoResultsReportingStrategy.js';
 import { UserOnlyReportingStrategy } from './strategies/UserOnlyReportingStrategy.js';
-import { StateManagerError } from '../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 
 /**
  * Factory pour créer les stratégies de reporting

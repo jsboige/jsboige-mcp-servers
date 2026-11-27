@@ -19,7 +19,10 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const libPath = new URL('../../../scripts/lib/vintage-store.mjs', import.meta.url);
-const { hashTree, vintageNameFor, listVintages, pruneVintages, vintageHasLiveRef } = await import(libPath.href);
+const {
+    hashTree, vintageNameFor, vintageNameOnDisk, stagingPathFor, cleanStaleStaging,
+    listVintages, pruneVintages, vintageHasLiveRef,
+} = await import(libPath.href);
 
 let tmpRoot: string;
 
@@ -126,5 +129,65 @@ describe('listVintages', () => {
         makeVintage('build-out', { 'index.js': 'scratch' });
         const names = listVintages(tmpRoot).map((v) => v.name);
         expect(names).toEqual(['build-1111111111111111', 'build-0000000000000000']);
+    });
+});
+
+// The id is the completion witness (ms#1910 review of #4918): what gets marked
+// must hash, on disk, to its own name. These pin the read-back itself; the
+// publish-level refusals are in vintage-autonomy.test.ts next to it.
+describe('vintageNameOnDisk — the id read back from the copy', () => {
+    it('equals vintageNameFor over the same content', () => {
+        const dir = makeVintage('build-aaaaaaaaaaaaaaaa', { 'index.js': 'x', 'deep/a.js': 'a', 'node_modules/@v/c/dist/i.js': 'y' });
+        expect(vintageNameOnDisk(dir)).toBe(vintageNameFor(dir));
+    });
+
+    it('ignores the files a vintage gains after publication, at its root only', () => {
+        // What write-build-info.mjs and mcp-wrapper.cjs write into a live vintage.
+        const served = makeVintage('served', {
+            'index.js': 'x',
+            'build-info.json': '{"sha":"deadbeef"}',
+            '.tools-cache.json': '{"toolsList":{}}',
+            '.ref-4242': 'now',
+        });
+        const bare = makeVintage('bare', { 'index.js': 'x' });
+        expect(vintageNameOnDisk(served)).toBe(vintageNameOnDisk(bare));
+
+        // Nested, the very same names are content: a bundled dist keeps every file it has.
+        const nested = makeVintage('nested', { 'index.js': 'x', 'node_modules/@v/c/dist/.ref-4242': 'now' });
+        expect(vintageNameOnDisk(nested)).not.toBe(vintageNameOnDisk(bare));
+    });
+
+    it('differs from the complete tree when a file of the copy is missing', () => {
+        const complete = makeVintage('complete', {
+            'index.js': 'x',
+            'node_modules/@v/c/package.json': '{}',
+            'node_modules/@v/c/dist/index.js': 'core-v1',
+        });
+        // The shape of a copy interrupted right after package.json.
+        const partial = makeVintage('partial', { 'index.js': 'x', 'node_modules/@v/c/package.json': '{}' });
+        expect(vintageNameOnDisk(partial)).not.toBe(vintageNameOnDisk(complete));
+    });
+});
+
+describe('staging trees', () => {
+    it('are named after their vintage and their publish process, and are no vintage', () => {
+        expect(stagingPathFor('/srv/build-0123456789abcdef', 77)).toBe('/srv/build-0123456789abcdef.staging-77');
+        // Never listed, so never pruned and never taken for a publish.
+        makeVintage('build-0123456789abcdef.staging-77', { 'index.js': 'half' });
+        expect(listVintages(tmpRoot)).toEqual([]);
+    });
+
+    it('are removed once their publish process is gone, and only then', () => {
+        const dead = makeVintage('build-aaaaaaaaaaaaaaaa.staging-4242', { 'index.js': 'half' });
+        const live = makeVintage('build-bbbbbbbbbbbbbbbb.staging-4343', { 'index.js': 'half' });
+        makeVintage('build-cccccccccccccccc', { 'index.js': 'published' });
+        makeVintage('build-dddddddddddddddd.staging', { 'index.js': 'no pid: not ours to judge' });
+        const only_4343_alive = (pid: number) => pid === 4343;
+
+        expect(cleanStaleStaging(tmpRoot, { alive: only_4343_alive })).toEqual(['build-aaaaaaaaaaaaaaaa.staging-4242']);
+        expect(fs.existsSync(dead)).toBe(false);
+        expect(fs.existsSync(live)).toBe(true);
+        expect(fs.existsSync(path.join(tmpRoot, 'build-cccccccccccccccc', 'index.js'))).toBe(true);
+        expect(fs.existsSync(path.join(tmpRoot, 'build-dddddddddddddddd.staging', 'index.js'))).toBe(true);
     });
 });

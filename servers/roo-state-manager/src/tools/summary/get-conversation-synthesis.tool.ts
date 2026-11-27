@@ -11,7 +11,7 @@
  */
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { StateManagerError } from '../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 import { ConversationAnalysis } from '../../models/synthesis/SynthesisModels.js';
 import type { StoredConversation } from '../../services/unified-store/types.js';
 import { SynthesisOrchestratorService } from '../../services/synthesis/SynthesisOrchestratorService.js';

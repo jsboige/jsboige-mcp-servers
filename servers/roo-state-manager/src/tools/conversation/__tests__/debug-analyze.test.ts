@@ -11,7 +11,7 @@
 
 import { describe, test, expect } from 'vitest';
 import { debugAnalyzeTool } from '../debug-analyze.tool.js';
-import { GenericErrorCode } from '../../../types/errors.js';
+import { GenericErrorCode } from '@vibesync/core/types/errors';
 
 describe('debugAnalyzeTool', () => {
   const mockSkeleton = {

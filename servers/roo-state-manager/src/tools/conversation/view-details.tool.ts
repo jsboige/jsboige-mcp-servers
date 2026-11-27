@@ -7,7 +7,7 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { StoredConversation } from '../../services/unified-store/types.js';
 import { toUnifiedTask } from '../../types/unified-task.js';
-import { GenericError, GenericErrorCode } from '../../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 import { ContentTruncator } from '../smart-truncation/content-truncator.js';
 import * as path from 'path';
 

@@ -22,7 +22,7 @@ import { createHash } from 'crypto';
 // layer (registry.ts owns that wiring).
 import { classifyIndexingError, reconcileErrorClass, readLeaderLockInfo, readIndexerQueueStatus, noteIndexEnqueue } from '../../services/background-services.js';
 import { isStuckRetry } from '../../types/indexing.js';
-import { sanitizeInt } from '../../utils/int-validator.js';
+import { sanitizeInt } from '@vibesync/core/utils/int-validator';
 import { resolveWsWriterIdentity } from '../../services/code-index/ws-writer-identity.js';
 // #4691: what ListTools actually serves — the reference for "this call could
 // not resolve". Static schemas only (tool-definitions.ts imports no handlers),

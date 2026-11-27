@@ -10,7 +10,7 @@
  */
 
 import { Tool, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { StateManagerError } from '../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 import { ExportConfigManager } from '../../services/ExportConfigManager.js';
 
 /**

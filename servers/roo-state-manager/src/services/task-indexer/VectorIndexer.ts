@@ -7,7 +7,7 @@ import getOpenAIClient, { getEmbeddingModel, getEmbeddingDimensions } from '../o
 import { validateVectorGlobal, sanitizePayload } from './EmbeddingValidator.js';
 import { extractChunksFromTask, extractChunksFromClaudeSession, splitChunk, Chunk, MAX_CHUNKS_PER_TASK, workspaceBasename } from './ChunkExtractor.js';
 import { networkMetrics } from './QdrantHealthMonitor.js';
-import { GenericError, GenericErrorCode } from '../../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 import { getDefaultLogger } from '../../utils/logger.js';
 import { loadIndexedHashLedger, appendIndexedHashes, appendAbsentHashes, clearIndexedHashLedgers } from './IndexedHashLedger.js';
 

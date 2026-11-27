@@ -42,7 +42,7 @@ vi.mock('fs', () => ({
 }));
 
 import { BaselineManager } from '../BaselineManager.js';
-import { RooSyncServiceError } from '../../../types/errors.js';
+import { RooSyncServiceError } from '@vibesync/core/types/errors';
 
 /**
  * Build a BaselineManager over the fs mock and wait for the fire-and-forget

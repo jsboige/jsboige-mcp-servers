@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 import OpenAI from 'openai';
-import { StateManagerError } from '../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 import { createLogger, Logger } from '../utils/logger.js';
 import { refreshChatKeyEnvIfChanged } from './chat-key-refresh.js';
 import { resolveChatApiKey } from './chat-key.js';

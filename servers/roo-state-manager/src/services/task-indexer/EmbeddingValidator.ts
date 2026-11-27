@@ -3,12 +3,12 @@
  * Extrait de TaskIndexer.ts pour respecter le principe de responsabilité unique.
  */
 
-import { StateManagerError } from '../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 import { getEmbeddingDimensions } from '../openai.js';
-import { redactSecrets } from '../../utils/secret-redaction.js';
-import { createKnownValueMasker } from '../../utils/known-value-masker.js';
+import { redactSecrets } from '@vibesync/core/utils/secret-redaction';
+import { createKnownValueMasker } from '@vibesync/core/utils/known-value-masker';
 
-export { SECRET_PATTERNS, redactSecrets } from '../../utils/secret-redaction.js';
+export { SECRET_PATTERNS, redactSecrets } from '@vibesync/core/utils/secret-redaction';
 
 /**
  * Valide qu'un vecteur a la bonne dimension et ne contient pas de NaN/Infinity

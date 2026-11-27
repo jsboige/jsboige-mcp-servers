@@ -9,10 +9,10 @@ import {
 } from './smart-truncation/index.js';
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { loadPgConversationBody } from '../services/unified-store/conversation-list-store.js';
-import { sanitizeInt } from '../utils/int-validator.js';
+import { sanitizeInt } from '@vibesync/core/utils/int-validator';
 
 /**
  * Tronque un message en gardant le début et la fin

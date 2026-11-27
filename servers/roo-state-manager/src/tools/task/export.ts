@@ -8,7 +8,7 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { StateManagerError } from '../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 import type { StoredConversation } from '../../services/unified-store/types.js';
 import { handleExportTaskTreeMarkdown, ExportTaskTreeMarkdownArgs } from './export-tree-md.tool.js';
 import { handleDebugTaskParsing, DebugTaskParsingArgs } from './debug-parsing.tool.js';
