@@ -56,6 +56,14 @@
  *      to be left untouched. The explicit-retirement case (#3782) stays a fresh
  *      file and now states its mark. Both are RED on 2cb4e0bb; the PR comment
  *      lists the mutations.
+ *
+ * Follow-up (re-review ms#1919, web1 27/11 00:17Z — the status residue): the
+ * tier-2 guard PRESERVED the file's newer status, it did not CARRY it. The
+ * first append stamped after the file's own `lastModified` renders the mirror
+ * from PG again — the status then exists on neither half, and PG never had it.
+ * Blocker 1 now carries: a second checked sync of the same intercom payload
+ * plus the file's status, then the lock re-taken and the question asked again
+ * before the mirror. The four witnesses below are RED before the carry.
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -156,6 +164,9 @@ const FRESH_FILE = dashboardFile(STAMP, 1, [OUR_BLOCK]);
 // ── Tier-2 review ms#1919 (ai-01, 26/11) — the two formal blockers ──────────
 
 const OLD_STATUS = '*Statut d’avant l’essai PG.*';
+const CHANGED_STATUS = '*Statut changé pendant l’essai PG.*';
+// `pg-ahead` (dashboard-stub.mjs) — PG moved ahead of its last export.
+const PG_AHEAD_STATUS = '*Statut écrit dans PG après le dernier export.*';
 
 /**
  * The target carries a status: what a mirror would render over. Used both by
@@ -170,12 +181,18 @@ const STATUS_SEED = dashboardFile(WITNESS_STAMP, 1, [WITNESS_BLOCK], OLD_STATUS)
  * intercom (blocker 1 — "sans ajout de message"), a different status, a newer
  * `lastModified`. The store stub lands exactly these bytes.
  */
-const STATUS_CHANGED_FILE = dashboardFile(
-  CONCURRENT_STAMP,
-  1,
-  [WITNESS_BLOCK],
-  '*Statut changé pendant l’essai PG.*'
-);
+const STATUS_CHANGED_FILE = dashboardFile(CONCURRENT_STAMP, 1, [WITNESS_BLOCK], CHANGED_STATUS);
+
+/**
+ * Follow-up (re-review ms#1919, web1 27/11) — the mirror after the CARRY: our
+ * message and the file's newer status, stamped, because PG holds both. Before
+ * the carry this file was left untouched: the status was preserved for the
+ * appends that still saw it as "newer", then dropped from both halves.
+ */
+const CARRIED_MIRROR = withStamp(dashboardFile(STAMP, 2, [WITNESS_BLOCK, OUR_BLOCK], CHANGED_STATUS), 2);
+
+/** The control's mirror: PG's status, rendered by the catch-up export. */
+const PG_AHEAD_MIRROR = withStamp(dashboardFile(STAMP, 2, [WITNESS_BLOCK, OUR_BLOCK], PG_AHEAD_STATUS), 2);
 
 const EXPECTED_OUTPUT = {
   ok: true,
@@ -189,11 +206,11 @@ const EXPECTED_OUTPUT = {
 
 type Scenario = {
   gate: 'open' | 'closed';
-  pg: 'ok' | 'fail' | 'fail-once' | 'throw';
+  pg: 'ok' | 'fail' | 'fail-once' | 'throw' | 'fail-again';
   writeFail?: boolean; // target is a DIRECTORY: unreadable file half AND a failing write
   // Re-review #4915 knobs (see the fixture docstrings).
-  concurrent?: 'during-pg' | 'same-id' | 'status';
-  relock?: 'deny';
+  concurrent?: 'during-pg' | 'same-id' | 'status' | 'status-then-append';
+  relock?: 'deny' | 'deny-second';
   key?: string;       // dashboard key, when argv selects another surface
   argv?: string[];    // full CLI args, replacing the escalation defaults
   // Review ms#1919 knobs.
@@ -204,6 +221,8 @@ type Scenario = {
   absentFirst?: boolean; // pre-review 26/11 (1): the FIRST read answers null, the file exists
   // Re-review ms#1919 (web1, 27/11): each PG attempt journals the message ids it carries.
   syncIds?: boolean;
+  // …and the STATUS it carries (follow-up: the carry reports the FILE's status).
+  syncStatus?: boolean;
   seed?: string | null; // file state before the run (default SEED_FILE; null = no file)
 };
 
@@ -279,6 +298,7 @@ function runScenario(scenario: Scenario): Run {
       RSM_APPEND_TEST_RETIRED_MARK: scenario.retirementMark ? '1' : '',
       RSM_APPEND_TEST_ABSENT: scenario.absentFirst ? 'first' : '',
       RSM_APPEND_TEST_SYNC_IDS: scenario.syncIds ? '1' : '',
+      RSM_APPEND_TEST_SYNC_STATUS: scenario.syncStatus ? '1' : '',
     });
 
     const res = spawnSync(
@@ -321,6 +341,8 @@ const sync = (fileHasNew: boolean, attempt: number, messages = 2) =>
   `pg:sync:fileHasNew=${fileHasNew}:messages=${messages}:attempt=${attempt}`;
 const withoutGate = (journal: string[]) => journal.filter((l) => !l.startsWith('gate:'));
 const pgSyncLines = (journal: string[]) => journal.filter((l) => l.startsWith('pg:sync:'));
+const syncStatus = (status: string | null) => `pg:sync-status:${JSON.stringify(status)}`;
+const syncStatusLines = (journal: string[]) => journal.filter((l) => l.startsWith('pg:sync-status:'));
 
 describe('#4915 gate closed — the pre-existing behaviour, byte for byte', () => {
   it('writes the file first (the PG sync sees the id on disk), no stamp, output unchanged', () => {
@@ -830,22 +852,26 @@ describe('ms#1919 pre-review — the two constats on the previous head', () => {
 
 // ── Tier-2 review ms#1919 (ai-01, 26/11 15:59Z — the two formal blockers) ────
 describe('ms#1919 tier-2 review — a status change during the attempt, an undetermined absence', () => {
-  it('blocker 1 — a STATUS change that landed during the PG attempt, intercom identical: no mirror, no stamp', () => {
+  it('blocker 1 — a STATUS change that landed during the PG attempt, intercom identical: never rendered over', () => {
     // No message comparison can see this write: the intercom is the same. On
     // 2cb4e0bb the mirror renders the pre-attempt status over the newer one
     // and stamps the result `mirrorExportAt` — "export à jour" while it is not.
-    const run = runScenario({ gate: 'open', pg: 'ok', concurrent: 'status', seed: STATUS_SEED });
+    // Since the follow-up below the file's status is CARRIED into PG first, so
+    // the mirror that follows renders the newer status, not the older one.
+    const run = runScenario({ gate: 'open', pg: 'ok', concurrent: 'status', seed: STATUS_SEED, syncStatus: true });
 
     expect(run.status).toBe(0);
-    // The file is exactly what the status writer left: untouched, unstamped.
-    expect(run.file).toBe(STATUS_CHANGED_FILE); // RED on 2cb4e0bb: status replaced, then stamped
-    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true });
+    // The mirror carries the status the file received during the attempt —
+    // RED on 2cb4e0bb: the pre-attempt status, rendered over the newer one.
+    expect(run.file).toBe(CARRIED_MIRROR);
+    expect(syncStatusLines(run.journal)).toEqual([
+      syncStatus(OLD_STATUS), // the primary attempt: the base's status
+      syncStatus(CHANGED_STATUS), // the carry: the FILE's
+    ]);
     expect(run.stderr).toContain('WARN');
-    expect(run.stderr).toContain('miroir');
     expect(run.stderr).toContain('statut');
     expect(run.stderr).not.toContain('ERREUR');
-    expect(pgSyncLines(run.journal)).toEqual([sync(false, 1)]);
-    expect(run.journal).toEqual([
+    expect(run.journal.filter((l) => !l.startsWith('pg:sync-status:'))).toEqual([
       LOCK,
       'read:file',
       'gate:open',
@@ -854,7 +880,12 @@ describe('ms#1919 tier-2 review — a status change during the attempt, an undet
       UNLOCK,
       LOCK,
       'path',
-      UNLOCK, // no markdown line: the mirror was skipped, and nothing was stamped
+      sync(false, 2), // the carry: the same intercom, the file's status
+      UNLOCK, // that attempt can be late too: lock re-taken…
+      LOCK, // …before anything is read from or written to the file
+      'path',
+      STAMP_LINE,
+      UNLOCK,
     ]);
   }, 15000);
 
@@ -866,8 +897,9 @@ describe('ms#1919 tier-2 review — a status change during the attempt, an undet
 
     expect(run.status).toBe(0);
     expect(run.stderr).toBe('');
-    expect(run.file).toBe(STAMPED); // the catch-up mirror IS written, and stamped
-    expect(run.parsed).toEqual(EXPECTED_OUTPUT);
+    // The catch-up mirror IS written, stamped, and renders PG's status.
+    expect(run.file).toBe(PG_AHEAD_MIRROR);
+    expect(run.parsed).toEqual(EXPECTED_OUTPUT); // no carry: one attempt, no extra field
     expect(run.journal).toEqual([
       LOCK,
       'read:pg',
@@ -948,6 +980,109 @@ describe('ms#1919 tier-2 review — a status change during the attempt, an undet
       'markdown:none',
       sync(true, 2, 1),
       UNLOCK,
+    ]);
+  }, 15000);
+});
+
+// ── Follow-up ms#1919 (re-review web1, 27/11) — preserve is not carry ────────
+describe('ms#1919 follow-up — the file’s newer status is REPORTED into PG, not merely preserved', () => {
+  it('a failed carry falls back to the skip: the file keeps its status, PG never got it, the output says so', () => {
+    // The repair is additive, never destructive: when the second sync fails the
+    // CLI is exactly where the tier-2 guard left it — mirror skipped, file
+    // untouched — and `fileStatusCarried: false` tells the divergence stayed.
+    const run = runScenario({
+      gate: 'open',
+      pg: 'fail-again',
+      concurrent: 'status',
+      seed: STATUS_SEED,
+      syncStatus: true,
+    });
+
+    expect(run.status).toBe(0);
+    expect(run.file).toBe(STATUS_CHANGED_FILE); // untouched, unstamped
+    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true, fileStatusCarried: false });
+    expect(syncStatusLines(run.journal)).toEqual([syncStatus(OLD_STATUS), syncStatus(CHANGED_STATUS)]);
+    expect(run.stderr).toContain('report');
+    expect(run.stderr).toContain('échec');
+    expect(run.stderr).not.toContain('ERREUR');
+    expect(run.journal.filter((l) => !l.startsWith('pg:sync-status:'))).toEqual([
+      LOCK,
+      'read:file',
+      'gate:open',
+      sync(false, 1),
+      'concurrent:status',
+      UNLOCK,
+      LOCK,
+      'path',
+      sync(false, 2), // the carry, and it fails
+      UNLOCK, // the lock taken for the carry is dropped as it lands in the finally
+    ]);
+  }, 15000);
+
+  it('a file-only append landing DURING the carry is not erased: mirror skipped, the carried status stays in PG', () => {
+    // The carry is a PG attempt like the first one, so it can be late too. A
+    // file-first writer lands during it: the message PG does not hold wins the
+    // file, and the mirror is not written from a state that lacks it — but the
+    // status has already reached PG, which is the point of the carry.
+    const run = runScenario({
+      gate: 'open',
+      pg: 'ok',
+      concurrent: 'status-then-append',
+      seed: STATUS_SEED,
+      syncStatus: true,
+    });
+
+    expect(run.status).toBe(0);
+    expect(run.file).toBe(FILE_ONLY_SEED); // exactly what the other writer left
+    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true, fileStatusCarried: true });
+    expect(syncStatusLines(run.journal)).toEqual([syncStatus(OLD_STATUS), syncStatus(CHANGED_STATUS)]);
+    expect(run.stderr).toContain('ajout absent');
+    expect(run.stderr).toContain('statut plus récent du fichier');
+    expect(run.journal.filter((l) => !l.startsWith('pg:sync-status:'))).toEqual([
+      LOCK,
+      'read:file',
+      'gate:open',
+      sync(false, 1),
+      'concurrent:status',
+      UNLOCK,
+      LOCK,
+      'path',
+      sync(false, 2), // the carry: PG now holds the file's status…
+      'concurrent:file-only', // …and the other writer lands while it was in flight
+      UNLOCK,
+      LOCK,
+      'path',
+      UNLOCK, // the mirror is refused: its base lacks the file-only append
+    ]);
+  }, 15000);
+
+  it('a lock that cannot be re-taken after the carry stops the mirror: PG holds the status, the file is not touched', () => {
+    // The same invariant as after the first attempt — nothing reads or writes
+    // the file before the lock is re-taken — applied to the carry.
+    const run = runScenario({
+      gate: 'open',
+      pg: 'ok',
+      concurrent: 'status',
+      seed: STATUS_SEED,
+      relock: 'deny-second',
+    });
+
+    expect(run.status).toBe(0);
+    expect(run.file).toBe(STATUS_CHANGED_FILE);
+    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true, fileStatusCarried: true });
+    expect(run.stderr).toContain('verrou');
+    expect(run.journal).toEqual([
+      LOCK,
+      'read:file',
+      'gate:open',
+      sync(false, 1),
+      'concurrent:status',
+      UNLOCK,
+      LOCK,
+      'path',
+      sync(false, 2), // the carry landed…
+      UNLOCK, // …and the re-take that must precede any file access is refused
+      REFUSED,
     ]);
   }, 15000);
 });

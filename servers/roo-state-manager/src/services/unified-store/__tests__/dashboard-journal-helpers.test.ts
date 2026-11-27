@@ -29,6 +29,7 @@ import {
   shouldDeduplicate,
   fileOnlyMessages,
   withFileOnlyMessages,
+  withFileStatus,
 } from '../../../../scripts/lib/dashboard-journal.mjs';
 import { readFileSync } from 'fs';
 import path from 'path';
@@ -268,6 +269,42 @@ describe('ms#1919 — file-only messages across the two halves', () => {
     const base = state(msg('w-1', 'witness'));
     expect(withFileOnlyMessages(base, state(msg('w-1', 'witness')))).toBe(base);
     expect(withFileOnlyMessages(base, null)).toBe(base);
+  });
+});
+
+describe('ms#1919 follow-up — withFileStatus (the status carry)', () => {
+  const state = (status: unknown, lastModified: string | null = '2026-11-24T12:00:00.000Z') => ({
+    key: 'machine-myia-po-2023',
+    status,
+    lastModified,
+    intercom: { messages: [], totalMessages: 0 },
+  });
+
+  it('replaces the status with the file’s and keeps the payload’s own date', () => {
+    const base = state({ markdown: 'old', updatedAt: '2026-11-20T00:00:00.000Z' });
+    const carried = withFileStatus(base, { status: { markdown: 'new' } });
+
+    expect(carried.status).toEqual({ markdown: 'new', updatedAt: '2026-11-20T00:00:00.000Z' });
+    // Deliberate: the date stays the one the PG write of THIS append carries —
+    // the carry is not a new event, it is the file's status inside our payload.
+    expect(carried.lastModified).toBe(base.lastModified);
+    // The input is never mutated.
+    expect(base.status).toEqual({ markdown: 'old', updatedAt: '2026-11-20T00:00:00.000Z' });
+    expect(carried.intercom).toBe(base.intercom);
+  });
+
+  it('a file half without a usable status leaves the state UNCHANGED (same object)', () => {
+    const base = state({ markdown: 'old' });
+    expect(withFileStatus(base, null)).toBe(base);
+    expect(withFileStatus(base, {})).toBe(base);
+    expect(withFileStatus(base, { status: {} })).toBe(base);
+    expect(withFileStatus(base, { status: { markdown: 42 } })).toBe(base);
+  });
+
+  it('a state without a status object still gets the file’s', () => {
+    const base = state(undefined);
+    expect(withFileStatus(base, { status: { markdown: 'new' } }).status).toEqual({ markdown: 'new' });
+    expect(withFileStatus(null, { status: { markdown: 'new' } }).status).toEqual({ markdown: 'new' });
   });
 });
 

@@ -56,19 +56,43 @@ const CONCURRENT = {
 };
 
 /** Byte-identical to the harness' `concurrentFile()` expectation. */
-function concurrentFileText(m) {
+function dashFileText(lastModified, totalMessages, blocks) {
   return [
     '---',
     'type: machine',
-    'lastModified: 2026-11-24T11:59:59.000Z',
-    'totalMessages: 2',
+    `lastModified: ${lastModified}`,
+    `totalMessages: ${totalMessages}`,
     '---',
     '',
     '## Intercom',
     '',
-    WITNESS_BLOCK,
-    `### [${m.timestamp}] ${m.author.machineId}|${m.author.workspace}\n[msg: ${m.id}]\n${m.content}\n`,
+    ...blocks,
   ].join('\n');
+}
+
+function blockText(m) {
+  return `### [${m.timestamp}] ${m.author.machineId}|${m.author.workspace}\n[msg: ${m.id}]\n${m.content}\n`;
+}
+
+function concurrentFileText(m) {
+  return dashFileText('2026-11-24T11:59:59.000Z', 2, [WITNESS_BLOCK, blockText(m)]);
+}
+
+/**
+ * Follow-up (re-review ms#1919, web1 27/11) `status-then-append`: attempt 2 —
+ * the status CARRY — is a PG attempt like any other, so it can be late too. A
+ * file-first writer whose own PG attempt failed lands its append during it.
+ * Byte-identical to the harness' `FILE_ONLY_SEED`.
+ */
+const FILE_ONLY_DURING_CARRY = {
+  id: 'myia-po-2025:listener:ic-20261124T100000-0000',
+  timestamp: '2026-11-24T10:00:00.000Z',
+  author: { machineId: 'myia-po-2025', workspace: 'listener' },
+  content: '[WARN][LISTENER][#3761] ajout uniquement fichier.',
+};
+
+function fileOnlyFileText() {
+  return dashFileText('2026-11-24T10:00:00.000Z', 2, [WITNESS_BLOCK, blockText(FILE_ONLY_DURING_CARRY)]);
 }
 
 /** Byte-identical to the harness' `STATUS_CHANGED_FILE` expectation. */
@@ -102,6 +126,16 @@ function landStatusChange(target) {
     journal('concurrent:status');
   } catch {
     // Directory target: the write must fail, nothing lands.
+  }
+}
+
+function landFileOnlyAppend(target) {
+  try {
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, fileOnlyFileText(), 'utf8');
+    journal('concurrent:file-only');
+  } catch {
+    // A directory target is the harness' "write must fail" setup: nothing lands.
   }
 }
 
@@ -140,17 +174,32 @@ export async function dualWriteDashboardSyncChecked(dashboard) {
   if (process.env.RSM_APPEND_TEST_SYNC_IDS === '1') {
     journal(`pg:sync-ids:${dashboard.intercom.messages.map((m) => m.id).join(',')}`);
   }
+  // Follow-up (re-review ms#1919, web1 27/11): the STATUS each attempt carries —
+  // the witness that a carry reports the FILE's status into PG (attempt 2),
+  // while every other attempt carries the base's.
+  if (process.env.RSM_APPEND_TEST_SYNC_STATUS === '1') {
+    const status = dashboard.status && typeof dashboard.status.markdown === 'string'
+      ? dashboard.status.markdown
+      : null;
+    journal(`pg:sync-status:${JSON.stringify(status)}`);
+  }
   if (attempts === 1) {
     // Tier-2 review (ai-01, 26/11 blocker 1): `status` lands a STATUS update
     // instead — same intercom, newer `lastModified`. No message comparison can
-    // see it.
-    if (process.env.RSM_APPEND_TEST_CONCURRENT === 'status') landStatusChange(target);
+    // see it. `status-then-append` lands one here too, then a file-only append
+    // during the carry (attempt 2).
+    const concurrent = process.env.RSM_APPEND_TEST_CONCURRENT;
+    if (concurrent === 'status' || concurrent === 'status-then-append') landStatusChange(target);
     else landConcurrentAppend(target);
+  } else if (attempts === 2) {
+    // `status-then-append` only: the carry is a PG attempt too, so it can be late.
+    if (process.env.RSM_APPEND_TEST_CONCURRENT === 'status-then-append') landFileOnlyAppend(target);
   }
   const mode = process.env.RSM_APPEND_TEST_PG;
   if (mode === 'throw') throw new Error('connection terminated');
   if (mode === 'fail') return { ok: false, reason: 'exhausted' };
   if (mode === 'fail-once' && attempts === 1) return { ok: false, reason: 'exhausted' };
+  if (mode === 'fail-again' && attempts > 1) return { ok: false, reason: 'exhausted' };
   return { ok: true };
 }
 
