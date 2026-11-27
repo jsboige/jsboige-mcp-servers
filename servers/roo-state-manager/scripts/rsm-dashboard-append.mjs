@@ -141,7 +141,9 @@
  * disagree on who publishes. A vintage without that module (pre-#4596) keeps
  * the previous behaviour: the mirror is written. NOT guarded, on purpose: the
  * gate-closed path and the PG-failure fallback (the file is then the only
- * surface). `gdriveSkippedReason` rides every `gdriveSkipped` answer.
+ * surface). `gdriveSkippedReason` names why a MIRROR was skipped; the refused
+ * rewrite (PG failed and the file half cannot be checked) names its own reason
+ * in `fileRewriteSkipped`.
  *
  * Exit codes: 0 posted — at least one surface holds the message (a PG-sync
  * miss on the file-first path is a WARN, not an error: the GDrive write

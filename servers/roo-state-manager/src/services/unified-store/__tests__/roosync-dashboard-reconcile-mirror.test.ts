@@ -58,6 +58,20 @@ vi.mock('fs/promises', async (importOriginal) => {
   };
 });
 
+// #4596 — les trois describes de ce fichier épinglent le comportement d'AVANT
+// la désignation (réparation et matérialisation actives). `*` les place sur
+// l'écrivain désigné sans changer ce qu'elles mesurent ; la retenue sur un
+// siège non désigné a son propre fichier
+// (`roosync-dashboard-reconcile-mirror-writer.test.ts`).
+const savedMirrorWriterEnv = process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+beforeEach(() => {
+  process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = '*';
+});
+afterEach(() => {
+  if (savedMirrorWriterEnv === undefined) delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+  else process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = savedMirrorWriterEnv;
+});
+
 /** A dashboard file whose intercom holds exactly `ids`, at `stamp` seconds. */
 function fixture(key: string, ids: string[], stamp = '2026-09-17T10:00:00Z'): string {
   const blocks = ids.map((id, i) => {

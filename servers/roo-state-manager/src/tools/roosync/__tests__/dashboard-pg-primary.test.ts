@@ -119,6 +119,19 @@ const waitForDetachedMirror = async (key: string): Promise<void> => {
   }, { timeout: 5000, interval: 10 });
 };
 
+// #4596 — cette suite épingle le comportement d'AVANT la désignation (le
+// miroir par append explicitement demandé est écrit). Un `*` la place sur
+// l'écrivain désigné sans changer ce qu'elle mesure ; le siège NON désigné
+// est couvert par les tests dédiés du garde, plus bas dans ce fichier.
+const savedMirrorWriterEnv = process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+beforeEach(() => {
+  process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = '*';
+});
+afterEach(() => {
+  if (savedMirrorWriterEnv === undefined) delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+  else process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = savedMirrorWriterEnv;
+});
+
 describe('PG-premier, GDrive miroir borné (#4131 G-B lot 2)', () => {
   let tmpDir: string;
 
@@ -628,6 +641,41 @@ describe('PG d\'abord, miroir fichier hors du chemin critique (#4286)', () => {
       expect(content).toContain('append sous kill-switch miroir');
     }, { timeout: 3000, interval: 25 });
     await waitForDetachedMirror(result.key);
+  });
+
+  /**
+   * #4596 — le miroir a UN écrivain désigné. Un opérateur qui a rallumé le
+   * miroir par append sur un siège non désigné a demandé un miroir, pas un
+   * SECOND écrivain du même fichier Drive : la demande est honorée exactement
+   * comme le défaut — le fichier reste à l'éditeur désigné, et l'appelant voit
+   * `gdriveSkipped` (succès, mais pas « fichier à jour »).
+   */
+  it('#4596 APPEND_MIRROR=1 sur un siège NON désigné : aucun miroir, gdriveSkipped', async () => {
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
+    process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR = '1';
+    // Un nom qu'aucun COMPUTERNAME ne peut porter (`#` est interdit dans un nom
+    // NetBIOS) : le siège est forcément non désigné, où que tourne le test.
+    process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = '#nobody';
+    setPgView(pgView());
+
+    const result = await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: 'append miroir demandé mais siège non désigné',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.writeVerification?.gdriveSkipped).toBe(true);
+    expect(result.writeVerification?.gdriveDeferred).toBeFalsy();
+    expect(result.writeVerification?.gdriveDegraded).toBeFalsy();
+    // Aucune moitié fichier : ni étape mesurée, ni écriture vers G:.
+    expect(result.durationBreakdown?.writeBreakdown?.gdriveReadMs).toBeUndefined();
+    expect(mockWriteFile.mock.calls.map(c => String(c[0])).filter(p => p.includes('dashboards'))).toEqual([]);
+    expect(existsSync(path.join(tmpDir, 'dashboards', `${result.key}.md`))).toBe(false);
+    // PG a porté l'écriture autoritaire une seule fois.
+    expect(mockDualWriteSyncChecked).toHaveBeenCalledTimes(1);
   });
 
   /**
