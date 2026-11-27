@@ -79,6 +79,12 @@ import {
 } from '../../services/unified-store/roosync-dashboard-store.js';
 import type { ArchivePgGap } from '../../services/unified-store/types.js';
 import { isPgFlagOn, pgFlagState } from '../../services/unified-store/pg-flags.js';
+import {
+  dashboardMirrorWriter,
+  isDesignatedMirrorWriter,
+  MIRROR_WRITER_ALL,
+  MIRROR_WRITER_ENV,
+} from '../../services/unified-store/dashboard-mirror-writer.js';
 import { isDashboardReadPgEnabled } from '../../services/unified-store/pg-read-gates.js';
 // #4608 — état de condensation durable par clé (roosync_store_meta) : passe
 // morte, issue de passe, horloge de station au-dessus du seuil et contrôle
@@ -3872,7 +3878,15 @@ async function appendDashboardIncremental(
   // (écriture en arrière-plan) reste atteignable par le kill-switch ; il ne
   // peut être choisi que là où le miroir était déjà différé, jamais ailleurs.
   const appendMirrorEnabled = isDashboardAppendMirrorEnabled();
-  const deferFileMirror = fileMirrorDeferrable && appendMirrorEnabled;
+  // #4596 — ONE publisher for the mirror. An operator who turned the per-append
+  // mirror back on asked for a mirror, not for a second writer on the same
+  // Drive item: on a seat that is not the designated one the request is
+  // honoured the same way the default is — the file is left to the publisher.
+  // Never acts alone: it folds into `skipFileMirror`, which already requires
+  // that PG took THIS append and that no reader depends on the file; a PG
+  // failure still falls back to the file-first path below, unguarded.
+  const mirrorWriterDesignated = isDesignatedMirrorWriter();
+  const deferFileMirror = fileMirrorDeferrable && appendMirrorEnabled && mirrorWriterDesignated;
   // #4131 G-B lot 2 — PG-PREMIER SOUS VERROU append : le verrou existe pour
   // sérialiser la course read→write last-writer-wins ; la surface primaire
   // doit donc être sérialisée comme l'était le fichier (le journal PG est
@@ -3926,8 +3940,17 @@ async function appendDashboardIncremental(
   // autoritaire de CET append. Si PG n'a pas pris (store en échec, siège sans
   // store), le fichier redevient la surface et il est écrit comme avant —
   // jamais de message perdu au nom d'un défaut.
-  const skipFileMirror = fileMirrorDeferrable && !appendMirrorEnabled && pgPrimaryOk;
-  if (skipFileMirror) {
+  const skipFileMirror =
+    fileMirrorDeferrable && (!appendMirrorEnabled || !mirrorWriterDesignated) && pgPrimaryOk;
+  if (skipFileMirror && appendMirrorEnabled) {
+    // #4596 — only the explicit request reaches this line: the default path
+    // keeps its own #4131 log below, unchanged on every seat.
+    logger.info('[GDRIVE-EXPORT #4596] miroir fichier non écrit à cet append — ce siège n’est pas l’écrivain désigné du miroir', {
+      key,
+      writer: dashboardMirrorWriter(),
+      restoreWith: `${MIRROR_WRITER_ENV}=${MIRROR_WRITER_ALL}`
+    });
+  } else if (skipFileMirror) {
     logger.info('[GDRIVE-EXPORT #4131] miroir fichier non écrit à cet append — G: est un export périodique, réparé depuis PG (#3230)', {
       key,
       restoreWith: `${DASHBOARD_APPEND_MIRROR_ENV}=0`
