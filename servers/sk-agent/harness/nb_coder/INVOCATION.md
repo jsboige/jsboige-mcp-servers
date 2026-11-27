@@ -168,7 +168,8 @@ Le même chemin par MCP depuis n'importe quel agent du siège :
 - `NBCODER_LANE` ou le param `lane` : le refus sans identité est voulu (F1/vllm#438).
 
 Variables de wiring (`NBCODER_SK_DIR/SK_PY/SK_CONFIG`, `NBCODER_GATE`,
-`NBCODER_ENGINE_METRICS`, `NBCODER_KERNEL_MAP`, `SK_AGENT_NB_CODER_HOME`) :
+`NBCODER_ENGINE_METRICS`, `NBCODER_KERNEL_MAP`, `SK_AGENT_NB_CODER_HOME`,
+`NBCODER_KERNEL_START_ATTEMPTS` — tentatives de démarrage de noyau, défaut 3) :
 résolution sibling par défaut, surchargeables — détail dans `harness/README.md`.
 
 **Prévol (24/11)** : avant toute dépense, le pilote refuse trois familles de défaut —
@@ -211,3 +212,61 @@ de l'incident (262 144 jetons, 400 `context_length_exceeded`).
 
 Le verdict JSON (`replay_report`) est la pièce jointe de l'issue ; les
 assertions vivent dans `test_nb_coder_window_replay.py` (CI).
+
+## 7. Relance du tapis — feeder puis scheduler (#1913)
+
+Le feeder (`nb_coder_feeder.py`) est **le seul observateur des créneaux libres** du tapis :
+il ajoute à la file du scheduler au plus `NBCODER_FEEDER_CAP` lignes de son `pending.jsonl`,
+dans son ordre. Il vit dans ce dossier depuis le portage #1913 ; aucune copie locale
+(`feeder.py`, `unfold.py`, `live_reserve.py`, `check_leaf.py`) ne doit tourner hors de
+l'arbre.
+
+### 7.1 Ordre : feeder, puis scheduler
+
+1. **Arrêter l'ancienne paire.** `TaskStop` tue **l'arbre** du processus : vérifier que
+   l'ancien pid du feeder **et** ses drivers (`nb_coder_driver`, noyaux jupyter) ne tournent
+   plus — un driver orphelin continue d'écrire son `driver.log`, et le scheduler marquerait
+   ses grains `orphaned` au lieu de les relancer.
+2. **Revalider** chaque ligne de la file et de `pending.jsonl` sur données vivantes (§7.2).
+3. **Démarrer le feeder.** Il relit `state.json` à chaque poll et **attend** tant que ce
+   fichier manque ou est illisible (`state-unreadable waiting` dans `feeder.log`) : c'est ce
+   qui lui interdit de re-nourrir un grain que le scheduler connaît déjà (trap 1).
+4. **Démarrer le scheduler** : il adopte la file au premier merge. Un scheduler ne démarre
+   pas sur une file vide (`queue is empty`), d'où l'ordre — sur un tapis **sans état**
+   (premier démarrage), écrire à la main la première ligne de la file, démarrer le
+   scheduler, puis le feeder.
+
+```bash
+python nb_coder_feeder.py --pending <dir>/pending.jsonl --queue <dir>/queue.jsonl \
+  --state-dir <dir>/state --repo jsboige/CoursIA --checkout <clone> --lane <machine>:<lane>
+python nb_coder_scheduler.py --queue <dir>/queue.jsonl --state-dir <dir>/state \
+  --repo <clone> --lane <machine>:<lane> --watch --timeout-s 86400
+```
+
+### 7.2 Revalider chaque ligne sur données vivantes
+
+Toute ligne de `pending.jsonl` est un cache **périmé par définition** (trap 5). Le feeder la
+revalide juste avant de la nourrir et **jette** (jamais rejouée : trap 4) une feuille fermée,
+livrée, tenue par une autre lane, dont la cible est déjà sur `origin/main` ou le jumeau
+source absent ; une lecture GitHub indisponible **garde** la ligne pour le poll suivant. Une
+réserve écrite à la main se **reconstruit**, elle ne se consomme pas telle quelle (trap 6) :
+
+```bash
+python nb_coder_reserve.py --repo jsboige/CoursIA --checkout <clone> --lane <machine>:<lane> --json reserve.json
+python nb_coder_leaf_check.py --issue <N> --repo jsboige/CoursIA --checkout <clone> --lane <machine>:<lane>
+```
+
+`nb_coder_leaf_check.py` sort 0 (nourrissable), 1 (rejet mesuré, voir `reject_reason`), 2
+(données vivantes indisponibles). `reserve_stale(ts)` dit qu'une réserve datée de plus de
+12 h — ou dans le futur — n'est plus digne de confiance. `NBCODER_KERNEL_START_ATTEMPTS`
+(défaut 3) borne les tentatives de démarrage de noyau du driver.
+
+### 7.3 Invariants du feeder (chacun un test de non-régression)
+
+- jamais re-nourrir un grain connu du scheduler, `withdrawn` compris, sans `"retry": N+1` ;
+- un `retry` **rajoute** la ligne si elle a quitté la file et la retient dans
+  `fed_lines.json` ;
+- un grain `deferred` ne compte pas contre `CAP` ;
+- aucune ligne que le chargeur fermé du scheduler refuserait (champ inconnu, type faux)
+  n'entre dans la file : elle est jetée et journalisée, la file reste chargeable ;
+- aucune page déjà dans `specs.txt` du kit n'est republiée, aucune feuille livrée rouverte.
