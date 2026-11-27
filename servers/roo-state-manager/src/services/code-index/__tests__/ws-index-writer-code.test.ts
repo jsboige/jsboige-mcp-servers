@@ -109,6 +109,17 @@ class FakeWsQdrant implements QdrantLike {
 		for (const p of points) c.points.set(String(p.id), { vector: p.vector, payload: p.payload });
 	}
 
+	/** #4938 — the cache hit is verified against real content; SDK-shaped `{ count }`. */
+	async count(name: string, body: any) {
+		const c = this.col(name);
+		const must: any[] = body?.filter?.must ?? [];
+		const mustNot: any[] = body?.filter?.must_not ?? [];
+		const matches = (payload: any) =>
+			must.every((m: any) => String(payload?.[m.key]) === String(m.match?.value))
+			&& mustNot.every((m: any) => String(payload?.[m.key]) !== String(m.match?.value));
+		return { count: [...c.points.values()].filter((p) => matches(p.payload)).length };
+	}
+
 	async delete(name: string, body: any) {
 		const c = this.col(name);
 		const ids: string[] = body?.points ?? [];

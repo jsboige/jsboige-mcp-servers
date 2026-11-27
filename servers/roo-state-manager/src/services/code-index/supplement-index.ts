@@ -437,6 +437,13 @@ export interface QdrantLike {
 	upsert?: (collection: string, body: Record<string, unknown>) => Promise<any>;
 	scroll?: (collection: string, body: Record<string, unknown>) => Promise<any>;
 	retrieve?: (collection: string, body: Record<string, unknown>) => Promise<any>;
+	/**
+	 * #4938 — point count under a filter. The SDK answers a bare `{ count }`
+	 * (envelope unwrapped). `exact: false` is the only acceptable mode for a
+	 * shared collection: an exact count over 16.3 M points runs the engine's
+	 * filtered counter and timed the HTTP request out at 60 s (#4928).
+	 */
+	count?: (collection: string, body: Record<string, unknown>) => Promise<any>;
 	delete?: (collection: string, body: Record<string, unknown>) => Promise<any>;
 	getCollection?: (collection: string) => Promise<any>;
 	createCollection?: (collection: string, body: Record<string, unknown>) => Promise<any>;
