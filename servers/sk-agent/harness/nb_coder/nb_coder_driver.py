@@ -1714,9 +1714,13 @@ PORT_CONTENT_RULES = (
     "- ALÉA NUMPY : si le jumeau tire ses DONNÉES d'un générateur numpy (`default_rng`, "
     "PCG64, SeedSequence, `normal`), ne réimplémente pas ce générateur : il ne tirera pas "
     "les mêmes nombres. Reprends les données d'ENTRÉE tirées par le jumeau sous forme de "
-    "tableau littéral, dis-le en prose (« données tirées par le jumeau, reprises telles "
-    "quelles »), puis CALCULE tous les résultats à partir d'elles. Ne recopie jamais une "
-    "SORTIE du jumeau à la place d'un calcul.\n")
+    "tableau littéral COMPLET — jamais tronqué, jamais laissé vide (26/11, o41 : un carnet "
+    "a rejeté « les flux uniformes NumPy cités ne sont pas renseignés ») — dis-le en prose "
+    "(« données tirées par le jumeau, reprises telles quelles »), puis CALCULE tous les "
+    "résultats à partir d'elles ET COMPARE ces résultats recalculés à ceux que le jumeau "
+    "affiche, sous une tolérance déclarée. Ne recopie jamais une SORTIE du jumeau à la "
+    "place d'un calcul, et ne garde jamais la comparaison derrière un test que le tableau "
+    "vide rend faux.\n")
 
 
 def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "",
@@ -4228,8 +4232,26 @@ TWIN_VALUES_RULE = (
     "- VALEURS : chaque valeur affichée par le jumeau (nombre, tableau, verdict, booléen) "
     "doit sortir À L'IDENTIQUE de ton exécution — mêmes instances, mêmes paramètres, même "
     "précision d'affichage. Un écart de valeur avec la sortie de référence est un rejet "
-    "garanti ; si la bibliothèque cible ne peut pas reproduire une valeur, dis-le en prose "
-    "et affiche l'écart mesuré, n'affiche jamais une autre valeur comme si c'était la même.\n")
+    "garanti ; n'affiche jamais une autre valeur comme si c'était la même.\n"
+    # 26/11, CoursIA batch o41: the former tail (« si la bibliothèque cible ne peut pas
+    # reproduire une valeur, dis-le en prose et affiche l'écart mesuré ») is where the
+    # dormant branch was born — the producer "said it in prose" from an `else` that printed
+    # « non mesuré », with the comparison never run; 3 of 4 grains lost. A draw is not a
+    # cited datum, and the comparison is EXECUTED on either route.
+    "- TIRAGES : une valeur que la source obtient par un tirage (`random.seed`, "
+    "`random.Random(graine)`, `random.choice`, `np.random.default_rng`) n'est pas une donnée "
+    "à recopier, et son absence ne dispense d'AUCUNE comparaison. Deux voies, et la "
+    "comparaison est EXÉCUTÉE dans les deux : (a) RECONSTRUIS le générateur de la source "
+    "dans le langage cible (`random.Random(graine)` se rejoue : MT19937, `getrandbits`, "
+    "rejet jusqu'à un indice valide) puis compare à tolérance déclarée ; (b) générateur non "
+    "reconstructible à coût raisonnable (PCG64 de NumPy, module local) : compare les valeurs "
+    "que tu recalculeras à celles que la source AFFICHE, citées comme telles et NON VIDES, "
+    "sous tolérance déclarée, ou asserte un invariant (régime, ordre, signe). INTERDIT : "
+    "garder la comparaison derrière un test qui n'est jamais pris parce que la collection "
+    "de valeurs citées est VIDE, et afficher sinon « non mesuré » / « non attesté » — la "
+    "cellule tourne, la comparaison n'a jamais eu lieu, le vérificateur rejette à chaque "
+    "tour. Un fait réellement hors de portée du jumeau (HTTP réel, tokens Python, durée) se "
+    "dit dans une cellule MARKDOWN, jamais dans la sortie d'une cellule de code.\n")
 
 
 def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: str = "",
@@ -5265,6 +5287,15 @@ def _repo_guard_tool(repo: Path, name: str) -> Path:
     return repo / "scripts" / "notebook_tools" / name
 
 
+def _guard_env() -> dict[str, str]:
+    """UTF-8 mode for a repo-guard subprocess. The guards print a French report holding
+    glyphs outside cp1252 (U+2192 in the exemption rationales): on a Windows seat without
+    UTF-8 mode ``print`` raises UnicodeEncodeError, the process exits 1 with its stdout cut
+    mid-report, and rc 1 reads as « counter found » (measured 26/11, batch o40: #28644 and
+    #28645 were rejected on the tail of an audit their notebooks never entered)."""
+    return {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
+
 def _unmeasured(gate: str, **why) -> dict:
     """A repo guard that could not run is DECLARED (measured: false), never a silent pass
     and never a build failure: the PR's CI stays the judge of what the harness missed."""
@@ -5292,7 +5323,8 @@ def uncommented_code_gate(repo: Path, built_nb: Path) -> dict:
     try:
         pr = subprocess.run([sys.executable, str(tool), "--file", str(built_nb), "--json"],
                             cwd=str(repo), capture_output=True, text=True, encoding="utf-8",
-                            errors="replace", timeout=REPO_GUARD_TIMEOUT_S)
+                            errors="replace", timeout=REPO_GUARD_TIMEOUT_S,
+                            env=_guard_env())
         data = json.loads(pr.stdout or "{}") if pr.returncode in (0, 1) else None
     except (subprocess.TimeoutExpired, ValueError, OSError) as e:
         return _unmeasured("uncommented-code", error=f"{type(e).__name__}: {e}"[:300])
@@ -5328,7 +5360,7 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
             pr = subprocess.run([sys.executable, str(tool), "--all", "--root", root,
                                  "--strict"], cwd=str(repo), capture_output=True, text=True,
                                 encoding="utf-8", errors="replace",
-                                timeout=REPO_GUARD_TIMEOUT_S)
+                                timeout=REPO_GUARD_TIMEOUT_S, env=_guard_env())
     except (subprocess.TimeoutExpired, OSError) as e:
         return _unmeasured("prose-counts", error=f"{type(e).__name__}: {e}"[:300])
     if pr.returncode == 0:
@@ -5337,12 +5369,21 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
         return _unmeasured("prose-counts", rc=pr.returncode,
                            error=(pr.stderr or pr.stdout or "")[-300:])
     snippets: list[str] = []
+    refus_header = False
     for ln in (pr.stdout or "").splitlines():
         if ln.startswith("[ALLOWLIST"):
             break                      # the exemption audit reuses the row format
+        refus_header = refus_header or ln.startswith("[REFUS")
         m = PROSE_COUNT_ROW_RE.match(ln)
         if m:
             snippets += [x.strip() for x in m.group(3).split(", ") if x.strip()]
+    if not snippets:
+        # rc 1 names a counter ONLY through its rows. None before [ALLOWLIST] is the
+        # instrument failing (a report that crashed, a row format that moved), not a
+        # count: the reviser has nothing to act on, and the rounds it burns damage the
+        # notebook (26/11, o40 #28645: two revisions, the bibliography gone).
+        return _unmeasured("prose-counts", rc=pr.returncode, refus_header=refus_header,
+                           error=(pr.stderr or pr.stdout or "")[-300:])
     md = [(i, _text(c.get("source"))) for i, c in enumerate(_cells(built_nb))
           if c.get("cell_type") == "markdown"]
     findings = []
@@ -5351,8 +5392,6 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
         findings.append({"cell": where[0] if where else None,
                          "text": f"compteur « {sn} »"
                                  + (f" (cellule {', '.join(map(str, where))})" if where else "")})
-    if not findings:
-        findings = [{"cell": None, "text": (pr.stdout or "")[-600:]}]
     return {"gate": "prose-counts", "ok": False,
             "detail": {"measured": True,
                        "cells": [f["cell"] for f in findings if f["cell"] is not None][:10],
@@ -5368,7 +5407,8 @@ def _anchor_findings(tool: Path, repo: Path, nb: Path) -> list[dict] | None:
     organ did not answer with its JSON (rc 2, timeout, unparsable)."""
     pr = subprocess.run([sys.executable, str(tool), "--json", str(nb)], cwd=str(repo),
                         capture_output=True, text=True, encoding="utf-8",
-                        errors="replace", timeout=REPO_GUARD_TIMEOUT_S)
+                        errors="replace", timeout=REPO_GUARD_TIMEOUT_S,
+                        env=_guard_env())
     if pr.returncode not in (0, 1):
         return None
     try:
@@ -5461,6 +5501,43 @@ def unit_result_hits(built_cells: list, src_cells: list) -> list[int]:
     return [i for i, c in enumerate(built_cells)
             if _shows_unit_result(c)
             and not (i < len(src_cells) and _shows_unit_result(src_cells[i]))]
+
+
+# A twin that SAYS a comparison was not made. Measured 26/11 (CoursIA batch o41): 3 of 4
+# creation grains ended verify-reject on this one major, restated at every round — the
+# producer left its cited-data collection EMPTY and guarded the parity comparison behind
+# it, so the cell ran clean and printed « Parité … non attestée », « NON MESURÉ — aucune
+# comparaison exécutée », « Références citées, non recalculées ». Deterministic on the
+# OUTPUTS: catch it right after execution, before a verifier turn is paid.
+# Deliberately NARROW — a bare « non mesuré » is not charged: the approved twin of the same
+# batch prints « Citations seules, non mesurées ici : … HTTP réelles, tokens … » beside its
+# attestation (facts no twin can measure), and it must pass. Only a phrasing that states a
+# comparison did not happen is; the past participle carries the accent on purpose (`mesuré`
+# ≠ the noun `mesure`, and « pas de mesure » must not match).
+_UNMEASURED_RE = re.compile(
+    r"non\s+attest|aucune\s+comparaison|non\s+recalcul|non\s+ex[éÉ]cut"
+    r"|\bpas\s+(?:été\s+|encore\s+|jamais\s+)?(?:mesur|recalcul|rejou|ex[éÉ]cut|compar)[éÉ]e?s?\b"
+    r"|not\s+measured|unmeasured|not\s+replayed", re.I)
+
+
+def _unmeasured_line(cell: dict) -> str:
+    """First output line of a CODE cell that declares a comparison was not made ('' = none)."""
+    if cell.get("cell_type") != "code":
+        return ""
+    for line in _outputs_text(cell).splitlines():
+        if _UNMEASURED_RE.search(line):
+            return line.strip()[:240]
+    return ""
+
+
+def unmeasured_output_hits(built_cells: list, src_cells: list) -> list[tuple[int, str]]:
+    """(cell index, offending output line) for every built cell that declares a comparison
+    was not made while the twin at the same index does not — the twin's own declaration
+    (a genuinely out-of-scope measure it prints too) is the repo's business, not this
+    build's."""
+    return [(i, line) for i, c in enumerate(built_cells)
+            if (line := _unmeasured_line(c))
+            and not (i < len(src_cells) and _unmeasured_line(src_cells[i]))]
 
 
 def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
@@ -5560,6 +5637,15 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
                                            "text": f"cellule {i} : affiche « () », que le "
                                                    f"jumeau n'affiche pas"}
                                           for i in unit_hits][:REPO_GUARD_FINDINGS_MAX]}})
+    um_hits = unmeasured_output_hits(built_cells, src_cells)
+    # `measured: True` is explicit here: split_gates() reads an absent key as measured, but a
+    # reader that asks the detail directly would see None (review ai-01, 26/11).
+    gates.append({"gate": "unmeasured-output", "ok": not um_hits,
+                  "detail": {"measured": True, "cells": [i for i, _ in um_hits][:10],
+                             "findings": [{"cell": i,
+                                           "text": f"cellule {i} : la sortie déclare une "
+                                                   f"mesure non faite — « {line} »"}
+                                          for i, line in um_hits][:REPO_GUARD_FINDINGS_MAX]}})
     if create_mode and repo is not None and rel and scratch is not None \
             and (repo / "scripts").is_dir():
         gates += repo_guard_gates(repo, rel, built_nb, scratch)
@@ -5692,7 +5778,8 @@ def strip_dotnet_banner(tool: Path, nb_path: Path) -> dict:
     try:
         p = subprocess.run([sys.executable, str(tool), "--apply", str(nb_path),
                             "--variant", "both"],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=120, env=_guard_env())
         return {"ok": p.returncode == 0, "rc": p.returncode,
                 "out": (p.stdout or p.stderr or "")[-500:]}
     except subprocess.TimeoutExpired:
@@ -6967,6 +7054,26 @@ _GATE_FIX_TEXT = {
                    "bloc (`for`, `while`, `if` ou `{ … }`) sans point-virgule : termine ce "
                    "dernier bloc par `};` — sous evcxr cela supprime la sortie `()` sans "
                    "avertissement ; ne touche pas au reste de la cellule",
+    # 26/11, CoursIA batch o41: three twins printed « non attestée », « NON MESURÉ — aucune
+    # comparaison exécutée », « non recalculées »; the verifier restated the same major
+    # through seven revision rounds told only what was wrong. The remedy is the shape the
+    # approved twin of the batch used (reconstructed CPython draws, declared tolerance,
+    # « N comparaisons ; écart maximal … »).
+    "unmeasured-output": "la cellule déclare qu'une comparaison n'a pas eu lieu (« non "
+                         "attesté », « NON MESURÉ », « non recalculées ») : la collection de "
+                         "valeurs citées est vide et le test qui la garde n'est jamais pris. "
+                         "Refais la comparaison pour de vrai — (a) RECONSTRUIS le "
+                         "générateur de la source dans le langage cible "
+                         "(`random.Random(graine)` : MT19937, `getrandbits`, rejet jusqu'à un "
+                         "indice valide) et compare à tolérance déclarée ; (b) générateur "
+                         "non reconstructible à coût raisonnable (PCG64 de NumPy, module "
+                         "local) : compare les valeurs que tu recalculeras à celles que la "
+                         "source AFFICHE, citées comme telles et NON VIDES, sous tolérance "
+                         "déclarée, ou asserte un invariant (régime, ordre, signe). Supprime "
+                         "le message « non mesuré » et son garde ; n'affiche jamais une autre "
+                         "valeur comme si c'était la même. Un fait réellement hors de portée "
+                         "du jumeau (HTTP réel, tokens, durée) se dit dans une cellule "
+                         "MARKDOWN, jamais dans la sortie d'une cellule de code",
     "prose-anchor": "la prose (markdown) cite un chiffre que les sorties de CE carnet "
                     "n'affichent pas — souvent recopié du jumeau, dont les mesures "
                     "diffèrent : remplace-le par la valeur imprimée par la cellule de code "
