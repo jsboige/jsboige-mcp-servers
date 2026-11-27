@@ -45,10 +45,14 @@ TITLE = "Spec portage Rust"                       # the leaf issue title fragmen
 
 class UnfoldResult(NamedTuple):
     """``action`` in {"fed", "deferred", "failed", "dropped"}; ``out`` is the queue item when
-    fed. The feeder removes a dropped item from pending and keeps every other one."""
+    fed. The feeder removes a dropped item from pending and keeps every other one.
+    ``published`` says a publish landed but its queue line was not obtained: the feeder marks
+    the pending line so the next poll resumes (reads the line) instead of reading the page as
+    'already published' and dropping a grain that was published but never queued."""
     action: str
     out: dict | None = None
     reason: str | None = None
+    published: bool = False
 
 
 def _stamp(now: float) -> str:
@@ -146,8 +150,14 @@ def subprocess_publish(kit: str | Path, fam: str, key: str, *, py=sys.executable
 
 
 def subprocess_feeder_lines(kit: str | Path, fam: str, *, py=sys.executable) -> list[dict]:
+    """The kit's queue lines for ``fam``. Raises on a non-zero rc and on an unreadable line:
+    a kit that prints a banner or a traceback must not be read as 'no line', and must not
+    take the feeder's loop down either — ``do()`` turns both into a kept failure."""
     p = subprocess.run([py, "-X", "utf8", "-I", str(Path(kit) / "feeder_lines.py"), fam],
                        capture_output=True, text=True, encoding="utf-8")
+    if p.returncode:
+        raise RuntimeError(f"feeder_lines.py {fam}: rc={p.returncode} "
+                           f"{(p.stderr or '').strip()[-200:]}")
     return [json.loads(l) for l in (p.stdout or "").splitlines() if l.strip()]
 
 
@@ -157,29 +167,42 @@ def do(item: dict, *, log, gh, cache: dict, now: float, lane: str, tmpdir: str |
     """Unfold one page; return the queue item (action="fed") or a keep/drop verdict."""
     u = item["unfold"]
     kind = u.get("kind")
-    try:
-        und = undelivered(u["lot"], gh=gh, cache=cache, now=now, fresh=True, repo=repo)
-    except Exception as exc:                       # unreadable live data: keep, never guess
-        log(f"unfold-unmeasured lot #{u.get('lot')} {str(exc)[:120]}")
-        return UnfoldResult("deferred", None, "unmeasured")
-    if len(und) >= MAX_OPEN:
-        log(f"unfold-deferred lot #{u['lot']} undelivered={und}")
-        return UnfoldResult("deferred", None, "lot-full")
+    known = specs_published(u["kit"], u["key"]) if kind == "publish" else False
+    landed = bool(item.get("published")) and known      # this feeder published it already
+    if not landed:
+        try:
+            und = undelivered(u["lot"], gh=gh, cache=cache, now=now, fresh=True, repo=repo)
+        except Exception as exc:                   # unreadable live data: keep, never guess
+            log(f"unfold-unmeasured lot #{u.get('lot')} {str(exc)[:120]}")
+            return UnfoldResult("deferred", None, "unmeasured")
+        if len(und) >= MAX_OPEN:
+            log(f"unfold-deferred lot #{u['lot']} undelivered={und}")
+            return UnfoldResult("deferred", None, "lot-full")
 
     if kind == "publish":
-        if specs_published(u["kit"], u["key"]):
+        if landed:
+            # Published on an earlier poll, queue line never obtained: the leaf is already
+            # among the lot's open ones, so no room is measured — republishing is what trap 4
+            # forbids, reading the line is the remaining work.
+            log(f"unfold-resume-published {u['key']} queue line still missing")
+        elif known:
             log(f"unfold-rejected page-already-published {u['key']}")
             return UnfoldResult("dropped", None, "page-already-published")
-        p = publish(u["kit"], u["fam"], u["key"])
-        log(f"unfold-publish {u['key']} rc={p.rc} {p.stdout.strip()[-200:]} "
-            f"{p.stderr.strip()[-200:]}")
-        if p.rc:
-            return UnfoldResult("failed", None, f"publish-rc={p.rc}")
-        rows = [r for r in feeder_lines(u["kit"], u["fam"])
-                if u["key"] in str(r.get("notebook", ""))]
+        else:
+            p = publish(u["kit"], u["fam"], u["key"])
+            log(f"unfold-publish {u['key']} rc={p.rc} {p.stdout.strip()[-200:]} "
+                f"{p.stderr.strip()[-200:]}")
+            if p.rc:
+                return UnfoldResult("failed", None, f"publish-rc={p.rc}")
+        try:
+            rows = [r for r in feeder_lines(u["kit"], u["fam"])
+                    if u["key"] in str(r.get("notebook", ""))]
+        except Exception as exc:                   # kit rc != 0, or a banner on its stdout
+            log(f"unfold-no-queue-line {u['key']} kit-error {str(exc)[:120]}")
+            return UnfoldResult("failed", None, "feeder-lines-error", published=True)
         if len(rows) != 1:
             log(f"unfold-no-queue-line {u['key']} ({len(rows)})")
-            return UnfoldResult("failed", None, "no-queue-line")
+            return UnfoldResult("failed", None, "no-queue-line", published=True)
         out = rows[0]
     elif kind == "reopen":
         try:

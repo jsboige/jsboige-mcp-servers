@@ -102,3 +102,38 @@ def test_an_unreadable_gh_raises_live_data_unavailable():
 
     with pytest.raises(L.LiveDataUnavailable):
         L.leaf_verdict(1, gh=gh, tree={PY}, lane="me:lane")
+
+
+# ---------------------------------------------------------------- every page (review 27/11)
+def gh_paged(issue, comments=()):
+    """GitHub's own paging: ``per_page`` and ``page`` are read from the path."""
+    def gh(path, *a):
+        if "/comments" in path:
+            q = dict(p.split("=", 1) for p in path.split("?", 1)[1].split("&"))
+            size, page = int(q["per_page"]), int(q["page"])
+            return [{"body": b} for b in comments[(page - 1) * size: page * size]]
+        return issue
+    return gh
+
+
+def test_a_delivered_marker_past_the_first_page_is_seen():
+    # The single-page read answered "not delivered" from the 101st comment on.
+    comments = [f"grain {i} done" for i in range(150)]
+    comments[120] = "[DELIVERED] lane other"
+    bodies = L.comment_bodies(1, gh=gh_paged(issue(), comments))
+    assert len(bodies) == 150 and bodies[120].startswith("[DELIVERED]")
+    assert L.delivered_of(L.parse_marks(bodies)) is True
+    v = L.leaf_verdict(1, gh=gh_paged(issue(), comments), tree={PY}, lane="me:lane")
+    assert v["delivered_marker"] is True and L.reject_reason(v) == "delivered"
+
+
+def test_a_full_last_page_stops_at_the_cap_and_a_short_thread_costs_one_call():
+    calls, full = [], [{"body": f"c{i}"} for i in range(100)]
+
+    def gh(path, *a):                                    # every page is full: only the cap ends it
+        calls.append(path)
+        return full
+    assert len(L.comment_bodies(1, gh=gh, max_pages=3)) == 300
+    assert len(calls) == 3 and all(f"&page={i}" in c for i, c in enumerate(calls, 1))
+    short = [{"body": f"s{i}"} for i in range(7)]
+    assert L.comment_bodies(1, gh=lambda *a: short) == [f"s{i}" for i in range(7)]

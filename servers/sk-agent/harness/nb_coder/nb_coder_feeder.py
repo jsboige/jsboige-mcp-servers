@@ -72,7 +72,7 @@ FOREIGN_VERDICTS = ("late-claim-refused", "refused-claim-held-by-another-lane")
 TRANSIENT_VERDICTS = ("verify-error", "crashed:", "source-drifted", "stage1-unparsed",
                       "stage2-unparsed", "kernel-start-failed")
 QUALIFICATION_VERDICT = "refused-claim-not-qualified:"
-FEEDER_ONLY_FIELDS = ("not_before", "unfold")      # never handed to the scheduler
+FEEDER_ONLY_FIELDS = ("not_before", "unfold", "published")   # never handed to the scheduler
 FED_LOG_RE = re.compile(r"^(\S+)Z (fed|retried) (\d+)")
 AUTO_LOG_RE = re.compile(r"^\S+Z retried (\d+) auto")
 DRIFT_KINDS = ("structure", "code", "deleted")
@@ -325,7 +325,10 @@ class Feeder:
             d = json.loads(l)
             if str(d.get("not_before", "")) > now_iso:
                 continue
-            if "unfold" in d and not self.has_room(d["unfold"]):
+            # A line marked "published" is this feeder's own publish whose queue line is
+            # still missing: do() measures the room itself unless the page did land.
+            if ("unfold" in d and not d.get("published")
+                    and not self.has_room(d["unfold"])):
                 continue
             return i
         return None
@@ -476,24 +479,39 @@ class Feeder:
         return "retried"
 
     # ---------------------------------------------------------------- feeding
-    def offer_unfold(self, item: dict, pend: list[str], idx: int) -> None:
+    def offer_unfold(self, item: dict, pend: list[str], idx: int, st: dict) -> None:
         rest = pend[:idx] + pend[idx + 1:]
-        res = self.unfold.do(item, log=self.log, gh=self.gh, cache=self.room_cache,
-                             now=self.clock(), lane=self.lane, tmpdir=self.args.tmpdir,
-                             tree=self.tree(), repo=self.repo)
+        try:
+            res = self.unfold.do(item, log=self.log, gh=self.gh, cache=self.room_cache,
+                                 now=self.clock(), lane=self.lane, tmpdir=self.args.tmpdir,
+                                 tree=self.tree(), repo=self.repo)
+        except Exception as exc:            # unreadable live data: keep the line, never guess
+            self.log(f"unfold-unmeasured {item.get('issue')} {str(exc)[:120]}")
+            return                          # the pending line stays, re-measured next poll
         if res.action == "dropped":
             self._consume(rest)                    # logged by unfold: never replayed
             return
         if res.action != "fed" or res.out is None:
-            return                                      # deferred or failed: logged, item kept
+            # deferred or failed: logged, item kept. A publish that landed without yielding
+            # its queue line is remembered ON the pending line — otherwise the next poll
+            # reads the page as 'already published' and drops a grain never queued.
+            if res.published and not item.get("published"):
+                pend = list(pend)
+                pend[idx] = json.dumps({**item, "published": True}, ensure_ascii=False)
+                self.write_pending(pend)
+            return
         out = res.out
         try:
             line = scheduler_line(out)
-        except ValueError as exc:
+            k = key(out)
+        except (ValueError, KeyError) as exc:
             self.log(f"rejected {out.get('issue')} bad-line {exc}")
             self._consume(rest)
             return
-        k = key(out)
+        if k in st or k in self.queue_keys():  # trap 1, unfold side: never a second line
+            self.log(f"skip already-known {k[0]} unfolded")
+            self._consume(rest)
+            return
         self.feed_write(k, line)
         self.fed.add(k)
         self.started[k] = self.stamp()
@@ -501,16 +519,16 @@ class Feeder:
         self.write_pending(rest)
 
     def offer_grain(self, item: dict, pend: list[str], idx: int, st: dict) -> None:
-        """Offer one due grain line: skip, retry, or feed. The pending line always leaves the
-        list unless the live data could not be read."""
+        """Offer one due grain line: feed, retry, or drop it. The pending line always leaves
+        the list unless the live data could not be read."""
         k = key(item)
         rest = pend[:idx] + pend[idx + 1:]
         v, reason = self.live_verdict(k[0], item)       # trap 5: live data just before feeding
         if v is None:
             return                                      # unmeasured: keep, retry next poll
         if reason == "held-by-another-lane":
-            self.log(f"skip foreign-claim {k[0]} held by {v.get('held_by')}")
-            self._consume(rest)
+            self.log(f"rejected {k[0]} held-by-another-lane {v.get('held_by')}")
+            self._consume(rest)                         # dropped, never replayed
             return
         if reason:
             self.log(f"rejected {k[0]} {reason}")       # trap 4: dropped, never replayed
@@ -579,7 +597,7 @@ class Feeder:
                 return None
             item = json.loads(pend[idx])
             if "unfold" in item:
-                self.offer_unfold(item, pend, idx)
+                self.offer_unfold(item, pend, idx, st)
             else:
                 self.offer_grain(item, pend, idx, st)
         return None                                   # re-measure before feeding another

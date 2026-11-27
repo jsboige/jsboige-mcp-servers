@@ -12,6 +12,8 @@ unfold can be shown to post nothing (no duplicate lot comment, no reopen of deli
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("nb_coder_unfold", HERE / "nb_coder_unfold.py")
 U = importlib.util.module_from_spec(_spec)
@@ -55,6 +57,17 @@ class Spy:
     def __call__(self, *a, **k):
         self.calls.append((a, k))
         return self.ret
+
+
+class Raiser:
+    """A kit runner that fails: records its call, raises ``exc``."""
+
+    def __init__(self, exc):
+        self.exc, self.calls = exc, []
+
+    def __call__(self, *a, **k):
+        self.calls.append((a, k))
+        raise self.exc
 
 
 def test_specs_published_reads_the_kit_index(tmp_path):
@@ -174,3 +187,69 @@ def test_has_room_fails_closed_and_caches():
     # within the TTL a cached, room-known lot is not re-measured
     cache = {5: (1.0, [1])}
     assert U.has_room({"lot": 5}, gh=lambda *a: {}, cache=cache, now=1.5) is True
+
+
+# ---------------------------------------------------------------- kit failures (review 27/11)
+def test_a_kit_that_fails_or_prints_a_banner_is_a_kept_failure(tmp_path):
+    kit = tmp_path / "kit"
+    kit.mkdir()
+    (kit / "specs.txt").write_text("", encoding="utf-8")
+    logs = []
+    res = U.do(item_publish(kit), log=logs.append, gh=gh_make(), cache={}, now=1.0,
+               lane="me:lane", tmpdir=tmp_path, publish=Spy(U.RunnerResult(0, "", "")),
+               feeder_lines=Raiser(RuntimeError("rc=1 banner")))
+    assert res.action == "failed" and res.reason == "feeder-lines-error"
+    assert res.published is True                    # the page IS published: keep resuming
+    assert any("unfold-no-queue-line KEY kit-error" in l for l in logs)
+
+
+def test_a_banner_on_stdout_is_a_kept_failure_not_a_crash(tmp_path):
+    # The reviewer's scenario, end to end: publish rc 0, then a kit whose stdout is not one
+    # JSON object per line. The json.loads used to escape do() and kill the daemon.
+    kit = tmp_path / "kit"
+    kit.mkdir()
+    (kit / "specs.txt").write_text("", encoding="utf-8")
+    (kit / "feeder_lines.py").write_text("print('banner: not a JSON line')\n", encoding="utf-8")
+    logs = []
+    res = U.do(item_publish(kit), log=logs.append, gh=gh_make(), cache={}, now=1.0,
+               lane="me:lane", tmpdir=tmp_path, publish=Spy(U.RunnerResult(0, "", "")))
+    assert res.action == "failed" and res.reason == "feeder-lines-error" and res.published
+    assert any("kit-error" in l for l in logs)
+
+
+def test_subprocess_feeder_lines_raises_on_a_nonzero_rc(tmp_path):
+    kit = tmp_path / "kit"
+    kit.mkdir()
+    (kit / "feeder_lines.py").write_text("import sys\nprint('[]')\nsys.exit(3)\n",
+                                         encoding="utf-8")
+    with pytest.raises(RuntimeError, match="rc=3"):
+        U.subprocess_feeder_lines(kit, "Fam")
+
+
+def test_a_published_page_without_its_queue_line_resumes_instead_of_dropping(tmp_path):
+    kit = tmp_path / "kit"
+    kit.mkdir()
+    (kit / "specs.txt").write_text("KEY 9\n", encoding="utf-8")
+    logs = []
+    pub = Spy(U.RunnerResult(0, "", ""))
+    fl = Spy([{"issue": 9, "notebook": "X/KEY-Rust.ipynb"}])
+    gh = gh_make(issues={5: {"body": "- [ ] Alpha page\n"}})
+    res = U.do({**item_publish(kit), "published": True}, log=logs.append, gh=gh, cache={},
+               now=1.0, lane="me:lane", tmpdir=tmp_path, publish=pub, feeder_lines=fl)
+    assert res.action == "fed" and res.out["issue"] == 9
+    assert pub.calls == []                          # never republished (trap 4)
+    assert fl.calls                                  # only the queue line was re-read
+    assert any("unfold-resume-published KEY" in l for l in logs)
+
+
+def test_a_publish_whose_kit_lost_the_key_publishes_again(tmp_path):
+    # Flag set but specs.txt does not list the key: rc 0 lied, the index is the authority.
+    kit = tmp_path / "kit"
+    kit.mkdir()
+    (kit / "specs.txt").write_text("", encoding="utf-8")
+    pub = Spy(U.RunnerResult(0, "", ""))
+    fl = Spy([{"issue": 9, "notebook": "X/KEY-Rust.ipynb"}])
+    res = U.do({**item_publish(kit), "published": True}, log=lambda m: None, gh=gh_make(),
+               cache={}, now=1.0, lane="me:lane", tmpdir=tmp_path, publish=pub,
+               feeder_lines=fl)
+    assert res.action == "fed" and len(pub.calls) == 1

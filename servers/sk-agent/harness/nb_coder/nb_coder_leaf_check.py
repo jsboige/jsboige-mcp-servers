@@ -54,11 +54,24 @@ def default_gh(*args: str) -> object:
     return json.loads(p.stdout) if p.stdout.strip() else {}
 
 
-def comment_bodies(issue: int, *, gh, repo: str = "jsboige/CoursIA") -> list[str]:
-    raw = gh(f"repos/{repo}/issues/{issue}/comments?per_page=100")
-    if not isinstance(raw, list):
-        return []
-    return [str(c.get("body") or "") for c in raw if isinstance(c, dict)]
+def comment_bodies(issue: int, *, gh, repo: str = "jsboige/CoursIA", page_size: int = 100,
+                   max_pages: int = 200) -> list[str]:
+    """Every comment body of the issue, oldest first, every page read.
+
+    A single-page read hid the recent markers of a long thread (measured: marathon leaf
+    #27133 at 47 comments on 27/11 and gaining one per grain): past the 100th comment
+    ``delivered_of`` answered False on a delivered leaf and trap 4 replayed it — no
+    exception, a plausible verdict. Pages are walked until a short one; ``max_pages``
+    bounds a runaway (200 pages = 20 000 comments)."""
+    out: list[str] = []
+    for page in range(1, max_pages + 1):
+        raw = gh(f"repos/{repo}/issues/{issue}/comments?per_page={page_size}&page={page}")
+        if not isinstance(raw, list):
+            break
+        out.extend(str(c.get("body") or "") for c in raw if isinstance(c, dict))
+        if len(raw) < page_size:
+            break
+    return out
 
 
 def parse_marks(bodies: list[str]) -> list[tuple[str, str]]:

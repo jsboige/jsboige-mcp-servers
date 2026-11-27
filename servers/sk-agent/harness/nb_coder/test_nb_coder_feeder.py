@@ -53,7 +53,7 @@ def feedable(issue, **kw):
 
 def make(tmp_path, *, grains=None, queue=None, pending=None, cap=3, breaker=5,
          verdicts=None, verdict_fn=None, gh=None, unfold=None, drift=None,
-         bound_s=86400.0, drift_every_s=1e12):
+         bound_s=86400.0, drift_every_s=1e12, tree=None):
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     (state_dir / "state.json").write_text(
@@ -78,7 +78,7 @@ def make(tmp_path, *, grains=None, queue=None, pending=None, cap=3, breaker=5,
         return v
 
     feeder = F.Feeder(
-        args, gh=gh or (lambda *a: []), tree=set(),
+        args, gh=gh or (lambda *a: []), tree=set() if tree is None else tree,
         leaf_verdict=verdict_fn or default_verdict, unfold=unfold,
         drift=drift or (lambda: SimpleNamespace(returncode=0, stdout="[]", stderr="")),
         clock=lambda: NOW, sleep=lambda s=0: None)
@@ -217,12 +217,14 @@ def test_trap4_a_target_already_on_main_is_dropped(tmp_path):
     assert lines(q) == [] and "rejected 8 target-on-main" in log_text(tmp_path)
 
 
-def test_trap4_a_held_by_another_lane_line_is_skipped(tmp_path):
+def test_trap4_a_held_by_another_lane_line_is_dropped_not_replayed(tmp_path):
+    # The line is CONSUMED (measured: lines(p) == []): the log must not say "skip", which an
+    # operator reads as "we will come back to it".
     feeder, q, p, _ = make(tmp_path, pending=[{"issue": 9, "notebook": "Dir/N9.ipynb"}],
                            verdicts={9: {"held_by": "myia-po-2028:CoursIA"}})
     feeder.poll()
     assert lines(q) == [] and lines(p) == []
-    assert "skip foreign-claim 9 held by myia-po-2028:CoursIA" in log_text(tmp_path)
+    assert "rejected 9 held-by-another-lane myia-po-2028:CoursIA" in log_text(tmp_path)
 
 
 def test_trap5_an_unmeasured_verdict_keeps_the_line(tmp_path):
@@ -377,3 +379,67 @@ def test_trap6_a_stale_reserve_line_that_is_now_delivered_is_dropped(tmp_path):
                            verdicts={11: {"delivered_marker": True}})
     feeder.poll()
     assert lines(q) == [] and lines(p) == []      # stale reserve line dropped, never replayed
+
+
+# ---------------------------------------------------------------- unfold (review 27/11)
+def test_trap5_an_unreadable_tree_keeps_an_unfold_line_and_the_daemon_survives(tmp_path):
+    class NoCall:
+        def do(self, *a, **k):
+            raise AssertionError("unfold.do must not be reached without the tree")
+
+        def has_room(self, *a, **k):
+            return True
+
+    def boom():
+        raise RuntimeError("git ls-tree origin/main down")
+
+    feeder, q, p, _ = make(tmp_path, pending=[{"issue": 12, "unfold": {
+        "kind": "reopen", "lot": 5, "pli": "Alpha page"}}], unfold=NoCall(), tree=boom)
+    assert feeder.poll() is None                    # an exception here used to kill the daemon
+    assert lines(q) == [] and len(lines(p)) == 1    # kept, re-measured next poll
+    assert "unfold-unmeasured" in log_text(tmp_path)
+
+
+def test_a_published_page_whose_line_never_came_is_resumed_not_dropped(tmp_path):
+    # Reviews 27/11: publish rc 0, then no queue line -> the next poll used to read the page
+    # as "already published" and drop a grain that was published but never queued.
+    U = _load("nb_coder_unfold")
+    kit = tmp_path / "kit"
+    kit.mkdir()
+    (kit / "specs.txt").write_text("", encoding="utf-8")
+    rows = []
+
+    def pub(k, fam, key):                           # the kit records the publish
+        with open(Path(k) / "specs.txt", "a", encoding="utf-8") as fh:
+            fh.write(f"{key} 9\n")
+        return U.RunnerResult(0, "published", "")
+
+    class Kit:
+        def has_room(self, u, **kw):
+            return U.has_room(u, **kw)
+
+        def do(self, item, **kw):
+            return U.do(item, publish=pub, feeder_lines=lambda k, f: list(rows), **kw)
+
+    feeder, q, p, _ = make(tmp_path, gh=lambda *a: {"items": []}, unfold=Kit(), pending=[
+        {"unfold": {"kind": "publish", "kit": str(kit), "fam": "Fam", "key": "KEY",
+                    "lot": 5, "pli": "Alpha page"}}])
+    feeder.poll()
+    assert lines(q) == []
+    assert len(lines(p)) == 1 and lines(p)[0].get("published") is True
+    assert "unfold-no-queue-line KEY" in log_text(tmp_path)
+    rows.append({"issue": 9, "notebook": "X/KEY-Rust.ipynb"})     # the kit caught up
+    feeder.poll()
+    assert [x["issue"] for x in lines(q)] == [9] and lines(p) == []
+    assert "unfold-resume-published KEY" in log_text(tmp_path)
+    assert "fed 9 unfolded" in log_text(tmp_path)
+
+
+def test_no_lane_refuses_before_any_side_effect(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("NBCODER_LANE", raising=False)
+    code = F.main(["--pending", str(tmp_path / "pending.jsonl"),
+                   "--queue", str(tmp_path / "queue.jsonl"),
+                   "--state-dir", str(tmp_path / "state"),
+                   "--checkout", str(tmp_path / "repo")])
+    assert code == 2 and "refused: no lane" in capsys.readouterr().err
+    assert not (tmp_path / "feeder.log").exists()   # nothing was measured, nothing written

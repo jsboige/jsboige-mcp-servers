@@ -259,7 +259,8 @@ python nb_coder_leaf_check.py --issue <N> --repo jsboige/CoursIA --checkout <clo
 `nb_coder_leaf_check.py` sort 0 (nourrissable), 1 (rejet mesuré, voir `reject_reason`), 2
 (données vivantes indisponibles). `reserve_stale(ts)` dit qu'une réserve datée de plus de
 12 h — ou dans le futur — n'est plus digne de confiance. `NBCODER_KERNEL_START_ATTEMPTS`
-(défaut 3) borne les tentatives de démarrage de noyau du driver.
+(défaut 3) borne les tentatives de démarrage de noyau du driver ; il est lu **à l'import**
+du driver, donc une valeur non entière ou < 1 refuse **tout** point d'entrée qui l'importe.
 
 ### 7.3 Invariants du feeder (chacun un test de non-régression)
 
@@ -270,3 +271,21 @@ python nb_coder_leaf_check.py --issue <N> --repo jsboige/CoursIA --checkout <clo
 - aucune ligne que le chargeur fermé du scheduler refuserait (champ inconnu, type faux)
   n'entre dans la file : elle est jetée et journalisée, la file reste chargeable ;
 - aucune page déjà dans `specs.txt` du kit n'est republiée, aucune feuille livrée rouverte.
+
+### 7.4 Une ligne d'unfold ne tue jamais le démon (revue du 27/11)
+
+Une lecture d'`origin/main` indisponible, un kit en échec (rc ≠ 0) ou qui écrit une bannière
+sur sa sortie : la ligne d'attente est **gardée** (`unfold-unmeasured`, ou
+`unfold-no-queue-line <clé> kit-error`), jamais jetée sur une supposition. Deux cas à
+connaître pour lire `feeder.log` :
+
+- **`rejected <issue> held-by-another-lane <lane>`** : la ligne est **jetée** (le journal
+  disait `skip`, qui se lit « on y reviendra »). La tenue n'a pas d'âge : un `[CLAIMED]`
+  d'une autre lane jette la ligne, quelle que soit sa date.
+- **Publication sans ligne de file** : `publish.py` sort 0 puis le kit ne rend pas exactement
+  une ligne (`unfold-no-queue-line`). La ligne d'attente est gardée **marquée
+  `"published": true`** ; au poll suivant le feeder relit la ligne du kit
+  (`unfold-resume-published`) **sans republier**. Tant que le kit ne la rend pas, la ligne
+  reste et le même message revient à chaque poll : c'est au kit de corriger son index, pas au
+  feeder de deviner. Une page publiée *avant* la ligne d'attente (sans la marque) reste
+  jetée : `unfold-rejected page-already-published`.

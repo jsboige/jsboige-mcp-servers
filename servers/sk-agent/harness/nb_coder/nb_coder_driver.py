@@ -5275,7 +5275,9 @@ def _kernel_start_attempts_from_env(default: int = 3) -> int:
     """The kernel-start retry count (#1913): ``NBCODER_KERNEL_START_ATTEMPTS`` overrides it, so
     a seat whose evcxr kernel start is slower than ai-01's can raise it without editing the
     shared harness. Unset keeps the historical 3. A non-integer or a value < 1 is refused
-    loud — the driver must not start with a retry bound it cannot honour. It is an env var,
+    loud — the driver must not start with a retry bound it cannot honour. The refusal fires
+    when the driver module is imported, so it blocks every entry point that imports it
+    (kernel start included), not only the kernel start. It is an env var,
     not a driver CLI flag, because a new driver option would first have to be threaded
     through nb_coder_invoke.py's closed parameter set (INVOCATION.md §5)."""
     raw = os.environ.get("NBCODER_KERNEL_START_ATTEMPTS", "").strip()
