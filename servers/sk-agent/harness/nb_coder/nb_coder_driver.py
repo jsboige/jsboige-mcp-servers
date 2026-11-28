@@ -2485,7 +2485,18 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             repair = {"filled": [int(c["idx"]) for c in extra],
                       "chars": len(env.get("response") or "")}
         if missing:
-            rec["verdict"] = f"stage2-short-segment:{si}"
+            # 28/11 (o66b, CoursIA#28976): the repair CALL died — the provider refused
+            # the request, HTTP 400 2013, nothing answered — and the grain was minted
+            # stage2-short-segment, a content failure, then released. A repair that never
+            # answered judged nothing: its verdict is the call's, read from its envelope
+            # like every build call's (scheduler defer contract first, unprefixed).
+            if repair is not None and (env.get("error") or "").strip():
+                rec["verdict"] = (
+                    defer_refusal(env)
+                    or (f"stage2-timeout:{si}+repair" if call_timed_out(env) else "")
+                    or f"stage2-{call_failure(env)}:{si}+repair")
+            else:
+                rec["verdict"] = f"stage2-short-segment:{si}"
             rec["stage2_raw_tail"] = (env.get("response") or "")[-3000:]
             rec["stage2_missing_idx"] = [c.get("idx") for c in missing]
             return {}

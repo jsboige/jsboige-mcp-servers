@@ -300,6 +300,39 @@ def test_create_segments_short_segment_fails_fast(monkeypatch):
     assert rec["stage2_missing_idx"] == [7] and rec["stage2_raw_tail"]
 
 
+def test_create_segments_failed_repair_call_is_not_a_short_segment(monkeypatch):
+    """28/11 (o66b, CoursIA#28976): the repair CALL died — the provider refused the
+    request, HTTP 400 2013 — and the grain was minted stage2-short-segment, a CONTENT
+    failure the scheduler releases. A repair that never answered judged nothing: the
+    verdict names the call failure, a run-class verdict the scheduler retries."""
+    plan_cells = [{"idx": i, "cell_type": "markdown", "titre": f"c{i}"} for i in range(8)]
+    first = {"cells": [{"idx": c["idx"], "cell_type": "markdown", "source": f"s{c['idx']}"}
+                       for c in plan_cells if c["idx"] not in (6, 7)]}
+    calls = []
+
+    async def fake(session, args, rec, stage, prompt, conv, max_tokens=None):
+        calls.append(stage)
+        if stage.endswith("+repair"):
+            return {"error": ("Error code: 400 - {'error': {'message': \"invalid params, "
+                              "tool result's tool id(call_01a2) not found (2013)\"}}"),
+                    "conversation_id": "cx"}
+        return {"response": "```json\n" + json.dumps(first) + "\n```", "conversation_id": "cx"}
+
+    monkeypatch.setattr(D, "sk_call_retry", fake)
+    rec: dict = {}
+    out = asyncio.run(D.create_segments(None, None, rec, None, plan_cells, 8, ""))
+    assert calls == ["2-build+0", "2-build+0+repair"]
+    assert out == {}
+    assert rec["verdict"].startswith("stage2-call-failed:"), rec["verdict"]
+    assert rec["verdict"].endswith(":0+repair") and "2013" in rec["verdict"]
+    assert rec["stage2_missing_idx"] == [6, 7]
+    spec = importlib.util.spec_from_file_location(
+        "nb_coder_scheduler", HERE / "nb_coder_scheduler.py")
+    S = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(S)
+    assert S.failure_class(rec["verdict"]) == "run"
+
+
 def test_create_segments_truncated_bisects_once(monkeypatch):
     """18/11 wave-1c (7/7 failed, 2 on this path): the segment JSON was CUT mid-cell
     — thinking counts toward max_tokens, so the visible output truncates (measured
