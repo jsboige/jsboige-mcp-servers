@@ -270,7 +270,12 @@ async def main():
     # `previous_sha256` / `new_sha256` sont les empreintes de la source
     # COMPLÈTE avant et après l'écriture : la preuve, là où le texte de
     # `previous_source` est borné à 4000 caractères (au-delà,
-    # `previous_source_truncated` vaut True).
+    # `previous_source_truncated` vaut True). L'empreinte est le sha256 de la
+    # source encodée en UTF-8.
+    #
+    # L'empreinte IDENTIFIE un contenu, elle ne le restitue pas : si la
+    # source écrasée est plus longue que la borne, seul son condensat reste.
+    # Un appelant qui doit pouvoir la restituer garde le texte en amont.
     updated = await client.call_tool(
         "update_cell",
         path="example.ipynb",

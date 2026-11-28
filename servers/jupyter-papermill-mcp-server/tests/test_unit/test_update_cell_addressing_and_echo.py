@@ -225,6 +225,44 @@ async def test_long_previous_source_is_bounded_but_its_hash_is_not(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "length, expect_truncated",
+    [(3999, False), (4000, False), (4001, True)],
+)
+async def test_truncation_boundary_is_exact(tmp_path, length, expect_truncated):
+    """The bound is on CHARACTERS, and it is exact: a source of exactly the
+    limit is not truncated, one character more is."""
+    service = await _seed_repro(tmp_path)
+    await service.update_cell("repro.ipynb", 1, "y" * length)
+
+    result = await service.update_cell("repro.ipynb", 1, "short")
+
+    assert result["previous_source_truncated"] is expect_truncated
+    assert len(result["previous_source"]) == min(length, 4000)
+    assert result["previous_sha256"] == hashlib.sha256(("y" * length).encode()).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_the_hash_is_over_the_utf8_encoding_of_the_source(tmp_path):
+    """The fingerprint is the sha256 of the source encoded in UTF-8, so a
+    non-ASCII source is identified by its bytes, not by its code points."""
+    service = await _seed_repro(tmp_path)
+    source = 'print("é中文")'
+
+    result = await service.update_cell("repro.ipynb", 1, source)
+
+    # previous = what was there ("B"), new = what was written.
+    assert result["previous_sha256"] == hashlib.sha256(b"B").hexdigest()
+    assert result["new_sha256"] == hashlib.sha256(source.encode("utf-8")).hexdigest()
+    assert result["previous_source"] == "B"
+
+    # The fingerprint of the written cell, read back, is the one reported.
+    again = await service.update_cell("repro.ipynb", 1, "after")
+    assert again["previous_sha256"] == result["new_sha256"]
+    assert again["previous_source"] == source
+
+
+@pytest.mark.asyncio
 async def test_dry_run_echo_has_no_new_hash(tmp_path):
     service = await _seed_repro(tmp_path)
 
