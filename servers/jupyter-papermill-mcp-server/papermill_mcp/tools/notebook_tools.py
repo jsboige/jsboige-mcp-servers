@@ -131,8 +131,22 @@ class UpdateCellInput(BaseModel):
     """Input model for update_cell tool."""
 
     path: str = Field(description="Chemin du fichier notebook (.ipynb)")
-    index: int = Field(description="Index de la cellule a modifier")
-    source: str = Field(description="Nouveau contenu de la cellule")
+    index: Optional[int] = Field(
+        default=None,
+        description="Index de la cellule a modifier (requis si cell_id absent)",
+    )
+    source: Optional[str] = Field(
+        default=None,
+        description="Nouveau contenu de la cellule (requis sauf si dry_run)",
+    )
+    cell_id: Optional[str] = Field(
+        default=None,
+        description="Id de la cellule a modifier (alternative ou complement de index)",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="Valider l'adressage et renvoyer la cellule visee sans ecrire",
+    )
 
 
 def register_notebook_tools(app: FastMCP) -> None:
@@ -272,29 +286,57 @@ def register_notebook_tools(app: FastMCP) -> None:
             return {"error": str(e), "path": path, "index": index, "success": False}
 
     @app.tool()
-    async def update_cell(path: str, index: int, source: str) -> Dict[str, Any]:
+    async def update_cell(
+        path: str,
+        index: Optional[int] = None,
+        source: Optional[str] = None,
+        cell_id: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
         """
         Modifie une cellule d'un notebook
 
+        Adressage : `index` et/ou `cell_id`. `cell_id` est immunise contre un
+        decalage d'index (insertion ou suppression survenue entre deux appels).
+        Si les deux sont fournis, ils doivent designer la meme cellule.
+
+        Le resultat renvoie la cellule reellement visee : `index`, `id` et
+        `previous_source`. Un appelant qui garde une carte d'index peut ainsi
+        prouver ce qu'il a ecrase au lieu de le perdre silencieusement.
+
         Args:
             path: Chemin du fichier notebook (.ipynb)
-            index: Index de la cellule a modifier
-            source: Nouveau contenu de la cellule
+            index: Index de la cellule a modifier (requis si cell_id absent)
+            source: Nouveau contenu de la cellule (requis sauf si dry_run)
+            cell_id: Id de la cellule a modifier (alternative ou complement de index)
+            dry_run: Valider l'adressage sans ecrire
 
         Returns:
-            Resultat de la modification
+            Resultat de la modification, avec echo de la cellule visee
         """
         try:
-            logger.info(f"Updating cell {index} in notebook: {path}")
+            logger.info(
+                f"Updating cell (index={index}, cell_id={cell_id}, "
+                f"dry_run={dry_run}) in notebook: {path}"
+            )
             service = get_notebook_service()
             result = await _bounded_file_op(
-                lambda: service.update_cell(path, index, source), "update_cell"
+                lambda: service.update_cell(
+                    path, index, source, cell_id=cell_id, dry_run=dry_run
+                ),
+                "update_cell",
             )
             logger.info(f"Successfully updated cell in notebook: {path}")
             return result
         except Exception as e:
             logger.error(f"Error updating cell in notebook {path}: {e}")
-            return {"error": str(e), "path": path, "index": index, "success": False}
+            return {
+                "error": str(e),
+                "path": path,
+                "index": index,
+                "cell_id": cell_id,
+                "success": False,
+            }
 
     @app.tool()
     async def read_cells(

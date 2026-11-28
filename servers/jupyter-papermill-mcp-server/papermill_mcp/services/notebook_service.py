@@ -224,23 +224,29 @@ class NotebookService:
     async def update_cell(
         self,
         path: Union[str, Path],
-        index: int,
-        source: str,
+        index: Optional[int] = None,
+        source: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        cell_id: Optional[str] = None,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
         """
         Update a cell in a notebook.
 
         Args:
             path: Path to the notebook file
-            index: Index of cell to update
-            source: New cell content
+            index: Index of cell to update (required unless cell_id is given)
+            source: New cell content (required unless dry_run is True)
             metadata: Optional new metadata
+            cell_id: Cell ``id`` to update, alternative or complement to index
+            dry_run: Validate the addressing without writing
 
         Returns:
-            Dictionary with operation result
+            Dictionary with operation result and the echo of the target cell
         """
-        return await self.crud_service.update_cell(path, index, source, metadata)
+        return await self.crud_service.update_cell(
+            path, index, source, metadata, cell_id, dry_run
+        )
 
     async def execute_notebook(
         self,
