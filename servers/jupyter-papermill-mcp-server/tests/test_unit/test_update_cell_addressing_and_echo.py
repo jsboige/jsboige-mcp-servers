@@ -235,6 +235,21 @@ async def test_dry_run_echo_has_no_new_hash(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_the_hash_chain_is_stable_across_successive_writes(tmp_path):
+    """The point of hashing the full source: the fingerprint of what a write
+    left behind is the fingerprint the next write reports as overwritten, so a
+    caller can audit a whole chain of edits without re-reading the notebook."""
+    service = await _seed_repro(tmp_path)
+
+    first = await service.update_cell("repro.ipynb", 1, 'print("B2")\n')
+    second = await service.update_cell("repro.ipynb", 1, 'print("B3")')
+
+    assert second["previous_sha256"] == first["new_sha256"]
+    assert first["new_sha256"] == hashlib.sha256(b'print("B2")\n').hexdigest()
+    assert second["new_sha256"] == hashlib.sha256(b'print("B3")').hexdigest()
+
+
+@pytest.mark.asyncio
 async def test_registered_tool_exposes_the_new_contract_end_to_end(tmp_path, monkeypatch):
     import inspect
 
