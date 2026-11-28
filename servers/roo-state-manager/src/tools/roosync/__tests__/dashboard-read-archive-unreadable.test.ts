@@ -157,6 +157,9 @@ describe('read_archive — nom listé, contenu non servi (#4981)', () => {
     const res = await read(file);
     expect(res.success).toBe(true);
     expect((res as any).archiveData.messages).toHaveLength(1);
+    // Le fichier tient le même message : seule la provenance prouve le repli.
+    expect((res as any).message).toContain('lue depuis PG');
+    expect(mockFetchBatch).toHaveBeenCalled();
     expect((res as any).localFile).toBeUndefined();
   });
 
