@@ -472,6 +472,117 @@ function applyMachineOutputMalus(score: number, chunkType: unknown, content: str
     return kind ? { score: score * MACHINE_OUTPUT_MALUS_FACTOR, kind } : { score, kind: null };
 }
 
+// ---- #4939 — harness-injected user turns ---------------------------------------------
+//
+// The harness writes prose into the `user` role: the header Claude Code prepends when
+// a conversation is summarised, the resume instruction pasted after it, and the
+// prompts the schedulers pipe into `claude -p`. All three are indexed as
+// `message_exchange` chunks, so ranking AND the eval rubric read them as
+// human-authored passages — long, dense in coordination vocabulary, and therefore
+// competitive on exactly the queries a decision passage should win.
+//
+// Measured on the #2609 bench (2026-11-27 01:37Z, submodule d087e2a33): on q4 a
+// resume instruction held 0.830 and a scheduled prompt 0.822 in the top 3, and on q2
+// the best passage was a compaction summary. None of them states a human decision;
+// the form carries none.
+//
+// ANCHORED, never a free substring (RX133): each pattern must match the OPENING of
+// the chunk. These are envelopes, and a passage that DISCUSSES a compaction or
+// quotes a scheduler prompt does not start with one — see the negative witness in
+// the unit tests ("…la compaction a coupé la séance…" stays prose).
+//
+// De-ranked, not removed — same contract as machine output (#4352): the chunk is
+// still returned, it just stops winning a passage slot. And unlike machine output it
+// is NEVER dropped by `exclude_tool_results`: the issue asks for a ranking change,
+// not an index loss.
+//
+// Rollback / A-B: SEMANTIC_HARNESS_TURN_MALUS=0.
+const HARNESS_TURN_MALUS_FACTOR = 0.85;
+
+export type HarnessTurnKind = 'compaction_summary' | 'resume_prompt' | 'scheduled_prompt';
+
+/**
+ * The exact openings, taken from the WRITERS rather than from memory:
+ *  - compaction summary: the header of a summarised conversation.
+ *  - resume instruction: the user turn that follows it, in both observed wordings.
+ *  - scheduled prompt: the shapes actually produced under `scripts/scheduling/` —
+ *    `save-tool-usage-snapshot.ps1` ("Run this single MCP tool call and report the
+ *    result:"), `start-claude-worker.ps1`'s Build-ResumePrompt ("=== REPRISE DE
+ *    TÂCHE EN ATTENTE ==="), its maintenance prompt ("Exécute les tâches de
+ *    maintenance :") and its continuation prefix ("[CONTINUATION FROM PREVIOUS
+ *    SESSION …"). A bare `/executor` is deliberately absent: 9 chars, it never
+ *    clears the passage floor and cannot steal a slot.
+ *
+ * `\s*` is allowed only where a writer emits a variable separator; the rest is
+ * literal. Trailing `\b` is avoided on purpose — it cannot hold after the final
+ * "." of a sentence.
+ */
+const HARNESS_TURN_OPENINGS: ReadonlyArray<{ kind: HarnessTurnKind; pattern: RegExp }> = [
+    { kind: 'compaction_summary', pattern: /^This session is being continued from a previous conversation that ran out of context/ },
+    { kind: 'resume_prompt', pattern: /^Continue the conversation from where it left off without asking the user any further questions/ },
+    { kind: 'resume_prompt', pattern: /^Pick up the last task as if the break never happened/ },
+    { kind: 'scheduled_prompt', pattern: /^Run this single MCP tool call and report the result:/ },
+    { kind: 'scheduled_prompt', pattern: /^=== REPRISE DE T[ÂA]CHE EN ATTENTE ===/ },
+    { kind: 'scheduled_prompt', pattern: /^Ex[ée]cute les t[âa]ches de maintenance\s*:/ },
+    { kind: 'scheduled_prompt', pattern: /^\[CONTINUATION FROM PREVIOUS SESSION\b/ },
+];
+
+export function isHarnessTurnMalusEnabled(): boolean {
+    return process.env.SEMANTIC_HARNESS_TURN_MALUS !== '0';
+}
+
+/**
+ * #4939: the harness envelope a chunk OPENS with, or null for ordinary text.
+ *
+ * Exported for the ranking pre-pass, the passage-slot composition and the eval
+ * rubric, so the three read the same predicate (single-helper contract, same as
+ * `classifyMachineOutput`).
+ */
+export function classifyHarnessTurn(content: string): HarnessTurnKind | null {
+    const head = content.trimStart();
+    if (!head) return null;
+    for (const opening of HARNESS_TURN_OPENINGS) {
+        if (opening.pattern.test(head)) return opening.kind;
+    }
+    return null;
+}
+
+/**
+ * #4939: the POLICY-aware form — what the engine actually applies.
+ *
+ * The rollback switch covers the WHOLE handling, not only the malus: with
+ * `SEMANTIC_HARNESS_TURN_MALUS=0` a harness turn is an ordinary turn again —
+ * no malus, no ramp skip, no carried kind, no passage slot, no rubric
+ * exclusion. `classifyHarnessTurn` stays PURE (a classifier is testable
+ * without an environment); every consumer of the POLICY — the ranking, the
+ * adjacent-turn pre-pass, the slot composition, both rubrics — goes through
+ * this one function, so the rollback cannot be half-applied.
+ */
+export function effectiveHarnessTurnKind(content: string): HarnessTurnKind | null {
+    if (!isHarnessTurnMalusEnabled()) return null;
+    return classifyHarnessTurn(content);
+}
+
+/**
+ * #4939: the POLICY applied to a chunk that may CARRY the kind the engine
+ * recognised (`harness_turn_kind`).
+ *
+ * The carried kind is honoured only when the policy is on: the rollback switch
+ * covers the whole handling, so a chunk labelled by an earlier run is not
+ * excluded either when the switch is off. Without this, the rubric would honour
+ * a carried label while the engine had already stopped producing it — the
+ * rollback would be half-applied in the very place where it is read.
+ */
+export function effectiveHarnessTurnKindOf(carried: string | null | undefined, content: string): HarnessTurnKind | null {
+    if (!isHarnessTurnMalusEnabled()) return null;
+    return (carried as HarnessTurnKind | null | undefined) ?? classifyHarnessTurn(content);
+}
+
+function applyHarnessTurnMalus(score: number, content: string): { score: number; kind: HarnessTurnKind | null } {
+    const kind = effectiveHarnessTurnKind(content);
+    return kind ? { score: score * HARNESS_TURN_MALUS_FACTOR, kind } : { score, kind: null };
+}
+
 function getCachedQueryEmbedding(query: string): number[] | null {
     const cached = queryEmbeddingCache.get(query);
     if (cached && Date.now() < cached.expiresAt) {
@@ -774,6 +885,13 @@ interface RawSearchResult {
     machineOutputKind?: MachineOutputKind | null;
     machineMalusApplied?: boolean;
     /**
+     * #4939: the harness envelope this chunk opens with, or null/absent for ordinary
+     * text. Deliberately separate from `machineOutputKind`: the two classes are
+     * de-ranked independently, and only the machine one can be dropped by
+     * `exclude_tool_results`.
+     */
+    harnessTurnKind?: HarnessTurnKind | null;
+    /**
      * Set only on split continuations (part > 1); absent means the chunk is whole.
      * 'tool_result' = the parent chunk IS machine output (any recognised kind -
      * the exact kind travels in machineOutputKind); 'not_tool_result' = the parent
@@ -885,6 +1003,10 @@ interface GroupedTask {
         relevance: string;
         snippet: string;
         machine_output_kind?: MachineOutputKind | null;
+        // #4939: carried so the passage-slot composition can exclude a harness turn
+        // from the slots reserved for human-authored passages (the snippet may start
+        // anywhere, so re-classifying it there would miss the opening).
+        harness_turn_kind?: HarnessTurnKind | null;
         tool_continuation_status?: RawSearchResult['toolContinuationStatus'];
         chunk_type: string | undefined;
         role: string | undefined;
@@ -981,6 +1103,7 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
                 relevance: r.relevance,
                 snippet: r.snippet,
                 ...(r.machineOutputKind ? { machine_output_kind: r.machineOutputKind } : {}),
+                ...(r.harnessTurnKind ? { harness_turn_kind: r.harnessTurnKind } : {}),
                 ...(r.toolContinuationStatus ? { tool_continuation_status: r.toolContinuationStatus } : {}),
                 chunk_type: r.metadata.chunk_type,
                 role: r.metadata.role,
@@ -1010,6 +1133,7 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
                     relevance: r.relevance,
                     snippet: r.snippet,
                     ...(r.machineOutputKind ? { machine_output_kind: r.machineOutputKind } : {}),
+                    ...(r.harnessTurnKind ? { harness_turn_kind: r.harnessTurnKind } : {}),
                     ...(r.toolContinuationStatus ? { tool_continuation_status: r.toolContinuationStatus } : {}),
                     chunk_type: r.metadata.chunk_type,
                     role: r.metadata.role,
@@ -1229,6 +1353,10 @@ function isPassageChunk(chunk: GroupedTask['chunks'][number] | undefined): boole
     const text = chunk?.snippet ?? '';
     return text.length >= PASSAGE_SLOT_FLOOR_CHARS
         && (chunk?.machine_output_kind ?? classifyMachineOutput(chunk?.chunk_type, text)) === null
+        // #4939: a harness-injected turn is not a human-authored passage. Read from
+        // the carried kind, never from the snippet: the snippet is cut around the
+        // query, so the opening the classifier anchors on is not reliably in it.
+        && !chunk?.harness_turn_kind
         && chunk?.tool_continuation_status !== 'unknown';
 }
 
@@ -1457,7 +1585,7 @@ async function attachConversationContext(groups: GroupedTask[], qdrant: any, col
  * Gated by the same kill-switch as the lever (never called when
  * SEMANTIC_PASSAGE_SLOTS=0) and by SEARCH_CONTEXT_EXPANSION=0.
  */
-async function collectAdjacentPassageCandidates(
+export async function collectAdjacentPassageCandidates(
     targets: GroupedTask[],
     shortfall: number,
     qdrant: any,
@@ -1501,21 +1629,27 @@ async function collectAdjacentPassageCandidates(
             }
             // Prefer the longer qualifying neighbor; both directions are the
             // same distance from the anchor, so length is the only criterion.
-            let best: { message_index: number; payload: any; excerpt: string } | undefined;
+            let best: { message_index: number; payload: any; excerpt: string; harnessKind: HarnessTurnKind | null } | undefined;
             for (const mi of [anchor + 1, anchor - 1]) {
                 const turn = byMessage.get(mi);
                 if (!turn) continue;
                 const role = String(turn.payload?.role ?? 'unknown');
                 if (role !== 'user' && role !== 'assistant') continue;
                 const excerpt = excerptFromStart(String(turn.payload?.content ?? ''), CONTEXT_EXPANSION_EXCERPT_CHARS);
+                // #4939: the excerpt is cut FROM THE START (`excerptFromStart`), so
+                // the anchored classifier applies to it — a neighbouring compaction
+                // summary must not be promoted as the group's representative, and
+                // the stored chunk must carry the kind it was judged by.
+                const harnessKind = effectiveHarnessTurnKind(excerpt);
                 if (!isPassageChunk({
                     snippet: excerpt,
                     chunk_type: 'message_exchange',
                     role,
                     tool_continuation_status: 'not_tool_result',
+                    harness_turn_kind: harnessKind,
                 } as GroupedTask['chunks'][number])) continue;
                 if (!best || excerpt.length > best.excerpt.length) {
-                    best = { message_index: mi, payload: turn.payload, excerpt };
+                    best = { message_index: mi, payload: turn.payload, excerpt, harnessKind };
                 }
             }
             if (!best) continue;
@@ -1525,6 +1659,7 @@ async function collectAdjacentPassageCandidates(
                 relevance: rep?.relevance ?? group.relevance,
                 snippet: best.excerpt,
                 machine_output_kind: null,
+                harness_turn_kind: best.harnessKind,
                 tool_continuation_status: 'not_tool_result',
                 chunk_type: 'message_exchange',
                 role: String(best.payload?.role ?? 'unknown'),
@@ -2083,6 +2218,8 @@ export const searchTasksByContentTool = {
             let requestMalusApplied = 0;
             const machineOutputByKind: Partial<Record<MachineOutputKind, number>> = {};
             let machineOutputApplied = 0;
+            const harnessTurnByKind: Partial<Record<HarnessTurnKind, number>> = {};
+            let harnessTurnApplied = 0;
             const results: RawSearchResult[] = rawPointsAll.map((result: any): RawSearchResult | null => {
                 // #982 FIX: Prefer full content for snippet extraction (content_summary is only 200 chars)
                 const fullContent = String(result.payload?.content || result.payload?.content_summary || '');
@@ -2093,11 +2230,20 @@ export const searchTasksByContentTool = {
                 // would bury legitimate short tool answers. The doc block above
                 // promised exactly this; now a line implements it.
                 const machineKind = classifyMachineOutput(result.payload?.chunk_type, fullContent);
+                // #4939: classified once, from the same full content, before both
+                // scales — the coarse `chunk_type` cannot see these envelopes.
+                // The POLICY form: with the rollback switch off, a harness turn
+                // is an ordinary turn again on every scale (score, ramps, kind).
+                const harnessKind = effectiveHarnessTurnKind(fullContent);
+                // A harness turn is a different KIND of evidence, exactly like machine
+                // output: it pays its own ×0.85 and skips the thinness and request
+                // ramps, so one defect never stacks two scales.
+                const nonProse = machineKind !== null || harnessKind !== null;
                 // #2609 q4: fragment de-rank — one helper feeds ranking AND rendered
                 // score so the two cannot diverge (same contract as the #1180
                 // codebase malus family). Applies to the chunk's full content,
                 // never to the display snippet.
-                const malus = machineKind
+                const malus = nonProse
                     ? { score: result.score || 0, applied: false, factor: 1 }
                     : applyFragmentMalus(result.score || 0, fullContent);
                 if (malus.applied) {
@@ -2107,7 +2253,7 @@ export const searchTasksByContentTool = {
                 }
                 // #2609 q4: request-form de-rank. A machine chunk is never a request,
                 // so the two classes cannot stack on the same defect.
-                const request = machineKind ? { factor: 1, applied: false } : requestFormFactor(fullContent);
+                const request = nonProse ? { factor: 1, applied: false } : requestFormFactor(fullContent);
                 if (request.applied) requestMalusApplied++;
                 // #4352: machine-output de-rank, same single-helper contract.
                 const machine = applyMachineOutputMalus(malus.score * request.factor, result.payload?.chunk_type, fullContent);
@@ -2116,7 +2262,14 @@ export const searchTasksByContentTool = {
                     machineOutputApplied++;
                     machineOutputByKind[machine.kind] = (machineOutputByKind[machine.kind] || 0) + 1;
                 }
-                const score = machine.score;
+                // #4939: harness-turn de-rank — de-ranked, never dropped, so this one
+                // deliberately does NOT feed the `return null` above.
+                const harness = applyHarnessTurnMalus(machine.score, fullContent);
+                if (harness.kind) {
+                    harnessTurnApplied++;
+                    harnessTurnByKind[harness.kind] = (harnessTurnByKind[harness.kind] || 0) + 1;
+                }
+                const score = harness.score;
                 // #2609 V3: raw ints for the handle — message_position is a display
                 // string and cannot drive a conversation_browser re-expansion.
                 const messageIndex = typeof result.payload?.message_index === 'number'
@@ -2130,6 +2283,7 @@ export const searchTasksByContentTool = {
                     score,
                     machineOutputKind: machineKind,
                     machineMalusApplied: !!machine.kind,
+                    harnessTurnKind: harnessKind,
                     originalChunkId: typeof result.payload?.original_chunk_id === 'string'
                         ? result.payload.original_chunk_id : undefined,
                     chunkIndex: typeof result.payload?.chunk_index === 'number' ? result.payload.chunk_index : undefined,
@@ -2480,6 +2634,15 @@ export const searchTasksByContentTool = {
                             by_kind: machineOutputByKind,
                             factor: MACHINE_OUTPUT_MALUS_FACTOR,
                             enabled: process.env.SEMANTIC_MACHINE_OUTPUT_MALUS !== '0',
+                        }
+                    } : {}),
+                    // #4939: harness-turn de-rank observability, same quiet convention.
+                    ...(harnessTurnApplied > 0 || !isHarnessTurnMalusEnabled() ? {
+                        harness_turn_malus: {
+                            applied: harnessTurnApplied,
+                            by_kind: harnessTurnByKind,
+                            factor: HARNESS_TURN_MALUS_FACTOR,
+                            enabled: isHarnessTurnMalusEnabled(),
                         }
                     } : {}),
                     // #2609 review (MAJOR 2): the residual between the requested budget and what

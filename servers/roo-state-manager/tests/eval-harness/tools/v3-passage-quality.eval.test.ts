@@ -35,7 +35,8 @@ import { handleDiagnoseSemanticIndex } from '../../../src/tools/indexing/diagnos
 import { handleSearchTasksSemanticFallback } from '../../../src/tools/search/search-fallback.tool.js';
 import type { StoredConversation } from '../../../src/services/unified-store/types.js';
 import { gradeSnippetBoundary } from '../../../src/utils/snippet-boundary.js';
-import { classifyMachineOutput, isClassifiedInfrastructureError, INFRASTRUCTURE_ERROR_MODES } from '../../../src/tools/search/search-semantic.tool.js';
+import { isClassifiedInfrastructureError, INFRASTRUCTURE_ERROR_MODES } from '../../../src/tools/search/search-semantic.tool.js';
+import { classifyQ2HumanPassage } from '../q2-rule-a.js';
 
 // Epic #2609 baseline query, verbatim (2026-06-16 live measurement)
 const SCENARIO_2_ARGS = {
@@ -159,9 +160,11 @@ describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
 
     const best = hasResults ? parsed.results[0] : null;
     const bestChunk = best?.chunks?.[0];
-    const machineKind = bestChunk?.machine_output_kind ?? classifyMachineOutput(bestChunk?.chunk_type, bestChunk?.snippet ?? '');
-    const humanPassageOk = machineKind === null && bestChunk?.tool_continuation_status !== 'unknown';
-    checks.push({ name: 'rubric(a): best passage is human-authored prose, not machine output', ok: humanPassageOk, observed: machineKind ?? 'prose' });
+    // #4939: the rule lives in q2-rule-a.ts so a CI-included suite can pin it
+    // (this suite never runs in CI); it excludes the harness-injected turns
+    // (compaction summary, resume instruction, scheduler prompt) by FORM.
+    const humanPassage = classifyQ2HumanPassage(bestChunk);
+    checks.push({ name: 'rubric(a): best passage is human-authored prose, not machine output nor a harness-injected turn', ok: humanPassage.ok, observed: humanPassage.observed });
     const cadenceDecisionOk = /cadence|cron|coordinateur|coordinator|dispatch/i.test(bestChunk?.snippet ?? '')
       && /(?:\d+\s*(?:h|min|heure)|every\s+\d+|toutes?\s+les\s+\d+)/i.test(bestChunk?.snippet ?? '');
     checks.push({ name: 'known-answer: passage states the coordinator cadence decision', ok: cadenceDecisionOk, observed: cadenceDecisionOk ? 'cadence + interval' : 'decision vocabulary or interval missing' });
@@ -244,7 +247,7 @@ describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
     // a hard gate, including human-authored content on the cadence decision.
     expect(noFallback).toBe(true);
     expect(hasResults).toBe(true);
-    expect(humanPassageOk).toBe(true);
+    expect(humanPassage.ok).toBe(true);
     expect(cadenceDecisionOk).toBe(true);
     expect(rationaleOk).toBe(true);
     expect(passageOk).toBe(true);
