@@ -852,6 +852,57 @@ def test_an_unread_pr_state_keeps_the_park(tmp_path, monkeypatch):
     assert _events(sched, "occupation-holds")[0]["prs"] == {"#28852": "unknown"}
 
 
+def test_a_hung_state_read_keeps_the_park_and_the_scheduler(tmp_path, monkeypatch):
+    """Review of this PR (myia-po-2028:claudish, replayed on the PR head): the reader's
+    docstring said "raises nothing", but a `gh` hung past CLAIM_READ_TIMEOUT_S raises
+    TimeoutExpired, and the probe called it with no try. The exception left tick(), and
+    run() catches nothing, so the scheduler exited with its running grains orphaned.
+    A hung read is a FAILED READ: the park holds and the scheduler survives it."""
+    sched, clock, spawn, g = _parked(tmp_path)
+
+    def hung(argv, **kw):
+        raise S.subprocess.TimeoutExpired(argv, S.CLAIM_READ_TIMEOUT_S)
+    monkeypatch.setattr(S.subprocess, "run", hung)
+    assert S.pull_request_state(28852) is None
+    clock["t"] = g["not_before"] + 1
+    sched.tick()                                # the probe runs inside: must not raise
+    assert g["occupation_wait"] is True and g["occupation_prs"] == [28852, 28861]
+    assert not _events(sched, "occupation-cleared")
+    assert _events(sched, "occupation-holds")[0]["prs"]["#28852"] == "unknown"
+    assert len(spawn.calls) == 1, "no launch: the grain stays parked"
+
+
+def test_a_missing_gh_is_a_failed_read_not_a_crash(monkeypatch):
+    """`gh` absent from PATH raises FileNotFoundError before any timeout: an OSError is
+    read as "GitHub did not answer", never propagated."""
+    def missing(argv, **kw):
+        raise FileNotFoundError(argv[0])
+    monkeypatch.setattr(S.subprocess, "run", missing)
+    assert S.pull_request_state(28861) is None
+
+
+def test_a_park_outliving_max_future_lets_the_batch_drain(tmp_path, monkeypatch):
+    """Review finding 2: each probe pushes the park's `not_before` one interval ahead, so
+    a batch that waits on the scheduler PID would never drain on a PR open for days.
+    The park is bounded like any deferral: past --max-future-s it is finished FOR NOW --
+    the batch drains and names it with its PRs, and the next batch picks it up. The
+    park itself is not ended by a drain, and --watch never drains."""
+    sched, clock, spawn, g = _parked(tmp_path)
+    _pr_states(monkeypatch, {28852: "open", 28861: "open"})
+    assert g["occupation_since"] == 1010.0, "the park keeps its own start"
+    clock["t"] = 1010.0 + 50 * S.IMPLICIT_OCCUPATION_PROBE_S       # ~4 h of probes
+    assert sched.unfinished() is True, "a young park keeps the batch alive"
+    sched.args.watch = False
+    clock["t"] = 1010.0 + sched.args.max_future_s + 1
+    assert sched.unfinished() is False, "a park older than --max-future-s drains the batch"
+    assert sched.run() == 0
+    drained = _events(sched, "drained")
+    assert len(drained) == 1
+    assert drained[0]["parked"] == {"#1:Dir/N1.ipynb": ["#28852", "#28861"]}
+    assert g["occupation_wait"] is True, "a drain does not end the park itself"
+    assert not _events(sched, "occupation-cleared")
+
+
 def test_the_occupation_probe_reads_one_pr_state_per_call(tmp_path, monkeypatch):
     """The reader asks GitHub for the PR's state only -- never its files, never the
     issue: the probe decides WHEN to re-offer, the guard decides the claim."""

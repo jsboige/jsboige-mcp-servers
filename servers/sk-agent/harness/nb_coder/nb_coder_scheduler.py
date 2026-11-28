@@ -627,11 +627,20 @@ def issue_comment_timeline(issue: int) -> list[tuple[str, str]]:
 def pull_request_state(number: int) -> str | None:
     """GitHub's `state` of one PR -- `open` or `closed` (a merged PR is `closed`) -- or
     None when GitHub does not answer. Raises nothing: the caller never clears a park on a
-    read that failed."""
-    p = subprocess.run(["gh", "api", f"repos/{CLAIM_REPO_SLUG}/pulls/{number}",
-                        "--jq", ".state"],
-                       capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=CLAIM_READ_TIMEOUT_S)
+    read that failed.
+
+    A hung `gh` (TimeoutExpired) or a missing one (FileNotFoundError) is a FAILED READ,
+    not a crash: the probe runs inside tick(), and an exception there leaves tick() and
+    kills the scheduler with its running grains orphaned. So the two are caught and read
+    as "GitHub did not answer" -- which keeps the park, the contract of the probe.
+    """
+    try:
+        p = subprocess.run(["gh", "api", f"repos/{CLAIM_REPO_SLUG}/pulls/{number}",
+                            "--jq", ".state"],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=CLAIM_READ_TIMEOUT_S)
+    except (subprocess.SubprocessError, OSError):
+        return None
     if p.returncode != 0:
         return None
     return (p.stdout or "").strip() or None
@@ -866,6 +875,10 @@ class Scheduler:
         # changed: it builds afresh, never from the trace of the run it replaces.
         g.pop("resume_from", None)
         g.pop("verify_recoveries", None)
+        # nor from a park: the operator's retry clears the wait on another lane's PR.
+        g.pop("occupation_wait", None)
+        g.pop("occupation_prs", None)
+        g.pop("occupation_since", None)
 
     def _legacy_driver_log(self, key: str, pid) -> str | None:
         """driver.log of a grain launched before `driver_log` was recorded in the state.
@@ -1292,6 +1305,10 @@ class Scheduler:
                 g["status"] = "deferred"
                 g["occupation_wait"] = True
                 g["occupation_prs"] = prs
+                # when THIS park began: a batch that does not --watch drains once the
+                # park has outlived --max-future-s (see unfinished()), so the park is
+                # bounded for a recipe that waits on the scheduler PID.
+                g.setdefault("occupation_since", self.clock())
                 g["attempts"] = max(0, g.get("attempts", 0) - 1)
                 g["not_before"] = self.clock() + IMPLICIT_OCCUPATION_PROBE_S
                 ramp["deferred"] += 1
@@ -1601,6 +1618,7 @@ class Scheduler:
                 continue
             g.update({"occupation_wait": False, "occupation_prs": [],
                       "not_before": now, "attempts": 0})
+            g.pop("occupation_since", None)   # a later park starts its own clock
             self._event("occupation-cleared", key=key,
                         prs=[f"#{n}" for n in states], attempts=0)
 
@@ -1735,7 +1753,10 @@ class Scheduler:
         return bool(self.active) or any(
             g.get("status") in ("pending", "running", "deferred")
             and not (g.get("status") == "deferred"
-                     and (g.get("not_before") or 0) > now + self.args.max_future_s)
+                     and ((g.get("not_before") or 0) > now + self.args.max_future_s
+                          or (g.get("occupation_wait")
+                              and (g.get("occupation_since") or 0)
+                              <= now - self.args.max_future_s)))
             for g in self.state["grains"].values())
 
     def run(self) -> int:
@@ -1750,11 +1771,17 @@ class Scheduler:
                 self._event("timeout", active=len(self.active))
                 return 0
             if not self.args.watch and not self.unfinished():
+                # A grain still parked on another lane's open PR is finished FOR NOW:
+                # the batch drains, names it, and the next batch picks it up from the
+                # queue (its state travels in queue.jsonl + state.json).
+                parked = {k: [f"#{n}" for n in g.get("occupation_prs") or []]
+                          for k, g in self.state["grains"].items()
+                          if g.get("occupation_wait")}
                 self._event("drained", done=sum(g.get("status") == "done"
                                                 for g in self.state["grains"].values()),
                             failed=sum(g.get("status") == "failed"
                                        for g in self.state["grains"].values()),
-                            ramp=self.state["ramp"])
+                            parked=parked, ramp=self.state["ramp"])
                 return 0
             if self.args.watch:
                 # finding 3 (--watch never reloaded the queue): re-read the file each
