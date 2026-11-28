@@ -4567,8 +4567,12 @@ def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: s
         "imposé). Tu peux modifier toute cellule existante, code ou markdown, y compris une "
         "voisine de la cellule citée quand le constat l'exige.\n"
         "- Les sorties viennent de l'EXÉCUTION : le harnais réexécute TOUT le carnet dans un "
-        "noyau neuf après ta révision. N'écris jamais une sortie toi-même ; ne code jamais en "
-        "dur une valeur présentée comme calculée.\n"
+        "noyau neuf dès qu'une cellule de CODE change. Une révision qui ne touche QUE du "
+        "markdown conserve les sorties affichées ci-dessus telles quelles : une cellule "
+        "markdown peut alors citer une valeur en la LISANT dans une sortie affichée "
+        "(jamais en la recalculant d'après une autre exécution), et la citation reste vraie "
+        "du carnet livré. N'écris jamais une sortie toi-même ; dans une cellule de CODE, ne "
+        "code jamais en dur une valeur présentée comme calculée.\n"
         "- Une valeur attendue doit être AFFICHÉE par une sortie réelle, avec la précision "
         "que l'issue demande.\n"
         "- Si un constat te paraît faux, ne modifie rien pour lui donner raison : explique "
@@ -7374,6 +7378,46 @@ def execution_verdict(rec: dict, scratch: Path) -> None:
         rec["verdict"] = "built-executed-counts-broken"
 
 
+def revision_touches_code(built_path: Path, replaced) -> bool:
+    """True when the round rewrote at least one CODE cell — the only case whose outputs
+    a new execution must produce."""
+    cells = _cells(built_path)
+    return any(isinstance(i, int) and 0 <= i < len(cells)
+               and cells[i].get("cell_type") == "code" for i in replaced)
+
+
+def kept_outputs_sound(rec: dict, scratch: Path) -> bool:
+    """The outputs on disk may stand for the round only when they ARE a complete,
+    successful execution of the current code cells: one recorded run per code cell, each
+    ok, and no error output anywhere. The records are what makes it sound — a cell that
+    raised does not always leave an error output in the file (the papermill session does
+    not persist them by default). Anything else, including nothing recorded, is a
+    re-execution (fail-closed)."""
+    cells = _cells(scratch)
+    code_idx = [i for i, c in enumerate(cells) if c.get("cell_type") == "code"]
+    runs = rec.get("execution")
+    if not isinstance(runs, list) or len(runs) != len(code_idx):
+        return False
+    recorded = [e.get("cell") if isinstance(e, dict) else None for e in runs]
+    if (not all(isinstance(x, int) for x in recorded) or sorted(recorded) != code_idx
+            or not all(e.get("ok") for e in runs)):
+        return False
+    return not any(isinstance(o, dict) and o.get("output_type") == "error"
+                   for i in code_idx for o in (cells[i].get("outputs") or []))
+
+
+def kept_outputs_verdict(rec: dict, scratch: Path) -> None:
+    """C.2 proof over the KEPT counts: a markdown-only round executes nothing, so the
+    execution that produced these outputs is the previous run's (carried by
+    _REVISE_CARRY). The contiguity proof is the one execution_verdict applies to a
+    fresh run."""
+    counts = [c.get("execution_count") for c in _cells(scratch)
+              if c.get("cell_type") == "code" and _text(c.get("source")).strip()]
+    rec["c2"] = {"counts": counts, "sequential": counts_contiguous(counts)}
+    rec["verdict"] = ("built-executed-ok" if rec["c2"]["sequential"]
+                      else "built-executed-counts-broken")
+
+
 @contextlib.asynccontextmanager
 async def mcp_sessions(out_dir: Path):
     """sk-agent + papermill MCP sessions, handshake bounded (the 18/11 wave-1b hang:
@@ -7766,25 +7810,39 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
                     applied = True
                     normalize_sources(built_path)
                     rec["verdict"] = "revising"
-                    kid = await start_kernel(pm, kname, exec_dir)
-                    rec["kernel_id"] = kid
-                    if kid is None:
-                        rec["verdict"] = "kernel-start-failed"
+                    if (not revision_touches_code(built_path, rep["replaced"])
+                            and kept_outputs_sound(rec, built_path)):
+                        # A round that rewrote only markdown changed nothing the notebook
+                        # computes: the outputs on disk are still the ones the previous
+                        # execution produced, and they are what the verifier compares the
+                        # text with. Re-executing here only redrew the measured durations,
+                        # so every value the reviser had just quoted from the displayed
+                        # outputs was stale before the verifier read it (CoursIA#28944,
+                        # 28/11: the verifier cited 1 403 ms as the committed output, the
+                        # reviser computed the ratio it asked for from that value, and the
+                        # post-edit re-execution committed 1 366 ms — rejected as stale).
+                        entry["exec_skipped"] = "markdown-only"
+                        kept_outputs_verdict(rec, built_path)
                     else:
-                        code_idx = [i for i, c in enumerate(_cells(built_path))
-                                    if c.get("cell_type") == "code"]
-                        rec["execution"] = await execute_cells(pm, built_path, kid, code_idx)
-                        if code_idx and rec.get("execution") and args.repair_rounds > 0:
-                            await repair_kernel_errors(
-                                sk, pm, args, rec, built_path, kname, exec_dir, kid, code_idx,
-                                entry["conversation_id"], conventions,
-                                stage=f"6-revise+{rnd}-repair")
-                    if rec.get("kernel_id"):
-                        rec["kernel_stop"] = await pm_call(
-                            pm, "manage_kernel", {"action": "stop",
-                                                  "kernel_id": rec["kernel_id"]})
-                    execution_verdict(rec, built_path)
-                    note_execution_kernel(rec, kname)
+                        kid = await start_kernel(pm, kname, exec_dir)
+                        rec["kernel_id"] = kid
+                        if kid is None:
+                            rec["verdict"] = "kernel-start-failed"
+                        else:
+                            code_idx = [i for i, c in enumerate(_cells(built_path))
+                                        if c.get("cell_type") == "code"]
+                            rec["execution"] = await execute_cells(pm, built_path, kid, code_idx)
+                            if code_idx and rec.get("execution") and args.repair_rounds > 0:
+                                await repair_kernel_errors(
+                                    sk, pm, args, rec, built_path, kname, exec_dir, kid, code_idx,
+                                    entry["conversation_id"], conventions,
+                                    stage=f"6-revise+{rnd}-repair")
+                        if rec.get("kernel_id"):
+                            rec["kernel_stop"] = await pm_call(
+                                pm, "manage_kernel", {"action": "stop",
+                                                      "kernel_id": rec["kernel_id"]})
+                        execution_verdict(rec, built_path)
+                        note_execution_kernel(rec, kname)
         entry["elapsed_build_s"] = round(time.time() - t0, 1)
         contested_only = entry.get("result") == "contested-only"
         if not applied and not contested_only:

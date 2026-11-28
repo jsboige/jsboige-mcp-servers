@@ -1544,3 +1544,90 @@ def test_revise_loop_hands_the_twin_reference_to_the_reviser(monkeypatch, tmp_pa
     p = calls["sk"][0]["prompt"]
     assert "Jumeau source — code ET sorties de RÉFÉRENCE" in p and "print(3.97)" in p
     assert "VALEURS :" in p
+
+
+# ---------------------------------------------------------------- a markdown-only round
+REVISION_MD = ('```json\n{"cells":[{"idx":2,"cell_type":"markdown",'
+               '"source":"Synthèse : le calcul affiche 0.5."}],'
+               '"addressed":[{"cell":2,"how":"valeur citée depuis la sortie affichée"}],'
+               '"contested":[]}\n```')
+
+
+def _executed_rec(built: Path) -> dict:
+    """A rejected trace whose outputs ARE a recorded, successful execution of every code
+    cell — what --revise-from carries (the real #28944 trace: 19 code cells, 19 runs)."""
+    rec = _rejected_rec()
+    rec["execution"] = [{"cell": i, "status": "ok", "ok": True}
+                        for i, c in enumerate(_cells(built)) if c["cell_type"] == "code"]
+    return rec
+
+
+def test_a_markdown_only_round_keeps_the_measured_outputs(monkeypatch, tmp_path):
+    """CoursIA#28944 (28/11): the finding asked for ratios COMPUTED from the committed
+    outputs. The loop re-executed the whole notebook after the markdown edit, every
+    measured duration was redrawn, and the ratio the reviser had quoted from the
+    displayed outputs was stale before the verifier read it: the verifier had cited
+    1 403 ms, the reviser computed from it, the re-execution committed 1 366 ms.
+    No code cell changed, so no kernel is even started."""
+    built = _nb(tmp_path)
+    measured = json.dumps(_cells(built)[1]["outputs"], ensure_ascii=False)
+    calls = _fake_engine(monkeypatch, [REVISION_MD], [("approve", [])])
+    rec = _executed_rec(built)
+    _loop(_loop_args(), rec, built, tmp_path)
+    (r,) = rec["revisions"]
+    assert r["exec_skipped"] == "markdown-only" and r["exec_verdict"] == "built-executed-ok"
+    assert calls["kernels"] == 0
+    assert json.dumps(_cells(built)[1]["outputs"], ensure_ascii=False) == measured
+    assert _cells(built)[1]["execution_count"] == 1 and _cells(built)[3]["execution_count"] == 2
+    assert "".join(_cells(built)[2]["source"]) == "Synthèse : le calcul affiche 0.5."
+    assert rec["c2"]["sequential"] is True and len(calls["verify"]) == 1
+    assert rec["verdict"] == "verify-approved"                 # still gated and judged
+
+
+def test_a_round_that_touches_code_still_reexecutes_the_whole_notebook(monkeypatch, tmp_path):
+    built = _nb(tmp_path)
+    calls = _fake_engine(monkeypatch, [REVISION, REVISION_MD],
+                         [("reject", FINDINGS), ("approve", [])])
+    rec = _rejected_rec()
+    _loop(_loop_args(), rec, built, tmp_path)
+    first, second = rec["revisions"]
+    assert calls["kernels"] == 1 and "exec_skipped" not in first
+    assert second["exec_skipped"] == "markdown-only"          # the kept ones are THAT run's
+    assert rec["verdict"] == "verify-approved"
+
+
+def test_a_markdown_only_round_still_reexecutes_over_an_error_output(monkeypatch, tmp_path):
+    """Fail-closed: an error output on disk is not a sound execution to keep."""
+    built = _nb(tmp_path)
+    nb = json.loads(built.read_text(encoding="utf-8"))
+    nb["cells"][1]["outputs"] = [{"output_type": "error", "ename": "E", "evalue": "x",
+                                  "traceback": []}]
+    built.write_text(json.dumps(nb), encoding="utf-8")
+    calls = _fake_engine(monkeypatch, [REVISION_MD], [("approve", [])])
+    rec = _executed_rec(built)
+    _loop(_loop_args(), rec, built, tmp_path)
+    assert calls["kernels"] == 1 and "exec_skipped" not in rec["revisions"][0]
+
+
+def test_a_markdown_only_round_still_reexecutes_without_a_recorded_execution(monkeypatch, tmp_path):
+    """Fail-closed: outputs nobody recorded producing are not known to be sound. A cell
+    that raised does not always leave an error output in the file (the papermill session
+    does not persist them by default): the record is the evidence, and it must cover
+    every code cell, successfully."""
+    built = _nb(tmp_path)
+    for runs in (None,                                  # nothing carried
+                 [{"cell": 1, "ok": True}],             # a partial record
+                 [{"cell": 1, "ok": True}, {"cell": 3, "ok": False}]):   # a cell that raised
+        calls = _fake_engine(monkeypatch, [REVISION_MD], [("approve", [])])
+        rec = _rejected_rec()
+        if runs is not None:
+            rec["execution"] = runs
+        _loop(_loop_args(), rec, built, tmp_path)
+        assert calls["kernels"] == 1 and "exec_skipped" not in rec["revisions"][0], runs
+        assert _cells(built)[1]["execution_count"] == 1          # re-executed, not left bare
+
+
+def test_the_prompt_declares_the_markdown_only_exception():
+    p = D.revision_prompt({"title": "T", "body": "B"}, "V", [], spec=True)
+    assert "réexécute TOUT le carnet" in p                  # a code change: unchanged
+    assert "ne touche QUE du markdown" in p and "LISANT dans une sortie affichée" in p
