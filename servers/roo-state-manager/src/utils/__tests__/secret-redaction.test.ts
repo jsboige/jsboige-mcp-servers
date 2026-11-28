@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { redactKnownSecretValues, createKnownValueMasker } from '../secret-redaction.js';
+import { redactKnownSecretValues, createKnownValueMasker } from '@vibesync/core/utils/secret-redaction';
 
 /** Valeur de la fuite fondatrice #3584 : clé d'API nue, 64 hexadécimaux, sans nom. */
 const LEAKED_KEY = '89ed6fb1'.padEnd(64, 'a1b2c3d4'.slice(0, 8));

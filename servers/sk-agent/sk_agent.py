@@ -4910,7 +4910,7 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
                     [custom_path, "--version"],
                     stdin=subprocess.DEVNULL,
                     capture_output=True,
-                    text=True,
+                    text=True, encoding="utf-8", errors="replace",
                     timeout=10,
                 )
                 version = (
@@ -4931,7 +4931,7 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
                 [libreoffice_cmd, "--version"],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=10,
             )
             version = result.stdout.strip() or result.stderr.strip()
@@ -4959,7 +4959,7 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
                 ],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=300,
             )
             if result.returncode == 0:
@@ -4978,7 +4978,7 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
                 [choco_path, "install", "libreoffice", "-y"],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
                 timeout=300,
             )
             if result.returncode == 0:

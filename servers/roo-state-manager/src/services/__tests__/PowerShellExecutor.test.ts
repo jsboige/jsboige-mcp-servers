@@ -17,7 +17,7 @@ import {
   getDefaultExecutor,
   resetDefaultExecutor
 } from '../PowerShellExecutor.js';
-import { PowerShellExecutorError } from '../../types/errors.js';
+import { PowerShellExecutorError } from '@vibesync/core/types/errors';
 import fs from 'fs';
 import { spawn } from 'child_process';
 

@@ -153,11 +153,24 @@ describe('Maintenance#358 — setup-env per-worker temp dirs are torn down at pr
     // CI included.
     const { sweepRsmTestWorkerDirs, registerRsmTestTempDir } = await import('../setup-env-teardown');
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-sweep-base-'));
-    registerRsmTestTempDir(base); // cleaned at this process's exit — matches no sweep prefix
-    const planted = fs.mkdtempSync(path.join(base, 'rsm-test-locks-'));
-    const removed = sweepRsmTestWorkerDirs(Date.now() - 1_000, base);
-    expect(removed).toBe(1);
-    expect(fs.existsSync(planted)).toBe(false);
+    registerRsmTestTempDir(base); // belt-and-braces for a normal exit — matches no sweep prefix
+    try {
+      const planted = fs.mkdtempSync(path.join(base, 'rsm-test-locks-'));
+      const removed = sweepRsmTestWorkerDirs(Date.now() - 1_000, base);
+      expect(removed).toBe(1);
+      expect(fs.existsSync(planted)).toBe(false);
+    } finally {
+      // ms#1918 follow-up: `base` matches NO sweep prefix, and on Windows the
+      // forks-pool worker is hard-killed (TerminateProcess — no 'exit' handler
+      // ever runs), so the registration above never fired and every run left
+      // one empty `rsm-test-sweep-base-*` dir behind (13 measured on po-2024
+      // 27/11). Remove it in the test that created it, whatever the assertions
+      // did.
+      fs.rmSync(base, { recursive: true, force: true });
+    }
+    // The witness: the leak is the base dir SURVIVING the test — assert the
+    // cleanup, not just its intent (removing the rmSync above turns this red).
+    expect(fs.existsSync(base)).toBe(false);
   }, 30_000);
 
   it('every os.tmpdir() mkdtemp prefix in setup-env.ts is in the sweep list (class guard)', async () => {

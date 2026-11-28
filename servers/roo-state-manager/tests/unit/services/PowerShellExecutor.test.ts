@@ -52,7 +52,7 @@ import {
   getDefaultExecutor,
   resetDefaultExecutor
 } from '../../../src/services/PowerShellExecutor.js';
-import { PowerShellExecutorError, PowerShellExecutorErrorCode } from '../../../src/types/errors.js';
+import { PowerShellExecutorError, PowerShellExecutorErrorCode } from '@vibesync/core/types/errors';
 
 // ---------------------------------------------------------------------------
 // Helpers

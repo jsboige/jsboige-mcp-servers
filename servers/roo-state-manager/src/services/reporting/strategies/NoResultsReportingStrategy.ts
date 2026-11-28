@@ -11,7 +11,7 @@
 import { BaseReportingStrategy, FormattedMessage } from '../IReportingStrategy.js';
 import { ClassifiedContent, EnhancedSummaryOptions } from '../../../types/enhanced-conversation.js';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
-import { StateManagerError } from '../../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 
 export class NoResultsReportingStrategy extends BaseReportingStrategy {
     readonly detailLevel = 'NoResults';

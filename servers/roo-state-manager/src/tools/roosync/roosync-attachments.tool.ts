@@ -14,7 +14,7 @@ import { getMessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath, assertSharedStoreAccessible } from '../../utils/shared-state-path.js';
 import { getAttachmentPgReader, scanAttachmentMetadataFromPg } from '../../services/unified-store/roosync-attachment-pg.js';
 import { getChannelMessageFromPg } from '../../services/unified-store/roosync-channel-read.js';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('RooSyncAttachmentTools');
 

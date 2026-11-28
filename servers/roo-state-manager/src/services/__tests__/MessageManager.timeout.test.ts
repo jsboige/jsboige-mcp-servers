@@ -34,7 +34,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 // Logger mock: capture error calls to assert the skip is logged.
-vi.mock('../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     warn: vi.fn(),

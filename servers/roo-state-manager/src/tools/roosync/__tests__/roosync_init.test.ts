@@ -63,7 +63,7 @@ vi.mock('../../../utils/encoding-helpers.js', () => ({
 	stripBOM: vi.fn((s: string) => s)
 }));
 
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
 	createLogger: vi.fn(() => ({
 		info: vi.fn(),
 		warn: vi.fn(),

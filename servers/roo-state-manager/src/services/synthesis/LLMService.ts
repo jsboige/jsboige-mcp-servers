@@ -23,7 +23,7 @@ import { z } from 'zod';
 import * as crypto from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { SynthesisServiceError, SynthesisServiceErrorCode } from '../../types/errors.js';
+import { SynthesisServiceError, SynthesisServiceErrorCode } from '@vibesync/core/types/errors';
 
 // =============================================================================
 // SCHEMAS ZOD POUR STRUCTURED OUTPUT

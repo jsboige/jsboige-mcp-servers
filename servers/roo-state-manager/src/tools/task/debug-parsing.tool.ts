@@ -8,7 +8,7 @@ import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import path from 'path';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
-import { GenericError, GenericErrorCode } from '../../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 
 export interface DebugTaskParsingArgs {
     task_id: string;

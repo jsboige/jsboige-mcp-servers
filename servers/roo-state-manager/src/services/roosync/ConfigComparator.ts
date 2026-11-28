@@ -12,7 +12,7 @@ import { join } from 'path';
 import { parseConfigJson } from '../../utils/roosync-parsers.js';
 import { BaselineService } from '../BaselineService.js';
 import { RooSyncConfig } from '../../config/roosync-config.js';
-import { RooSyncServiceError } from '../../types/errors.js';
+import { RooSyncServiceError } from '@vibesync/core/types/errors';
 import { RooSyncDashboard } from '../../utils/roosync-parsers.js';
 import { ConfigurationProfile } from '../../types/non-nominative-baseline.js';
 import { ConfigurationValueExtractor } from './ConfigurationValueExtractor.js';

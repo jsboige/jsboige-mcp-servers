@@ -17,7 +17,7 @@
  * missing relation) do not heal on retry and are re-thrown immediately.
  */
 
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('pg-cold-pool-resume');
 

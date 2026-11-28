@@ -53,7 +53,7 @@ describe('roosync_get_message - Validation', () => {
       getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')
     }));
 
-    vi.doMock('../../../../src/utils/logger.js', () => ({
+    vi.doMock('@vibesync/core/utils/logger', () => ({
       createLogger: vi.fn().mockReturnValue({
         info: vi.fn(),
         debug: vi.fn(),
@@ -180,7 +180,7 @@ describe('roosync_get_message - Validation', () => {
     vi.doMock('../../../../src/utils/server-helpers.js', () => ({
       getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')
     }));
-    vi.doMock('../../../../src/utils/logger.js', () => ({
+    vi.doMock('@vibesync/core/utils/logger', () => ({
       createLogger: vi.fn().mockReturnValue({
         info: vi.fn(), debug: vi.fn(), error: vi.fn(), warn: vi.fn()
       })

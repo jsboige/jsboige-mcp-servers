@@ -26,7 +26,7 @@ vi.mock('../../../../src/utils/message-helpers.js', () => ({
     getLocalMachineId: mockGetLocalMachineId,
 }));
 
-vi.mock('../../../../src/utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
     createLogger: () => ({
         info: vi.fn(),
         debug: vi.fn(),

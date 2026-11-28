@@ -53,7 +53,7 @@ vi.mock('../../../../src/services/unified-store/roosync-channel-write.js', () =>
   updateRooSyncMessagePrimary: mockUpdatePrimary,
 }));
 
-vi.mock('../../../../src/utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     debug: vi.fn(),
@@ -63,7 +63,7 @@ vi.mock('../../../../src/utils/logger.js', () => ({
 }));
 
 import { markCliMessageReadInPg } from '../../../../src/services/unified-store/roosync-channel-read.js';
-import { setBackfillMarkerState } from '../../../../src/services/unified-store/pg-backfill-marker.js';
+import { setBackfillMarkerState } from '@vibesync/core/services/unified-store/pg-backfill-marker';
 
 const MACHINE = 'myia-ai-01';
 

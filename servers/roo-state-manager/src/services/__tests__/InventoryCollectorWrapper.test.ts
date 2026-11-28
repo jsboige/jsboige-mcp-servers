@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { InventoryCollectorWrapper } from '../InventoryCollectorWrapper.js';
 import { InventoryCollector, type MachineInventory } from '../InventoryCollector.js';
-import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../types/errors.js';
+import { InventoryCollectorError, InventoryCollectorErrorCode } from '@vibesync/core/types/errors';
 
 // Mock des modules
 vi.mock('fs', () => ({
@@ -29,7 +29,7 @@ vi.mock('../../utils/server-helpers.js', () => ({
   getSharedStatePath: vi.fn(() => '/mock/shared-state')
 }));
 
-vi.mock('../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     warn: vi.fn(),

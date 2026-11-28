@@ -8,7 +8,7 @@ import {
   DisplayPreset,
   DisplayOptions
 } from '../../../src/interfaces/UnifiedToolInterface.js';
-import { GenericError } from '../../../src/types/errors.js';
+import { GenericError } from '@vibesync/core/types/errors';
 
 describe('ValidationEngine', () => {
   describe('validatePresetOptions', () => {

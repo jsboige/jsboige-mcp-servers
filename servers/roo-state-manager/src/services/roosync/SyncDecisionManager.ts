@@ -10,7 +10,7 @@
 
 import { promises as fs } from 'fs';
 import { join } from 'path';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('sync-decision-manager');
 import {
@@ -22,7 +22,7 @@ import {
 } from '../../utils/roosync-parsers.js';
 import { PowerShellExecutor } from '../PowerShellExecutor.js';
 import { RooSyncConfig } from '../../config/roosync-config.js';
-import { RooSyncServiceError } from '../../types/errors.js';
+import { RooSyncServiceError } from '@vibesync/core/types/errors';
 
 /**
  * Résultat d'exécution de décision

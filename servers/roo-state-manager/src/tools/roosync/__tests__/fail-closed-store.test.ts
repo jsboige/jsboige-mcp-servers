@@ -26,7 +26,7 @@ import { MessageManager } from '../../../services/MessageManager.js';
 import { BaselineService } from '../../../services/BaselineService.js';
 import { registerMachineId } from '../../../config/roosync-config.js';
 import { ensureStoreSubdir } from '../../../utils/shared-state-path.js';
-import { Logger } from '../../../utils/logger.js';
+import { Logger } from '@vibesync/core/utils/logger';
 
 // #858 / #864: these modules import a chat client for LLM condensation; keep it
 // inert so a read/list failing on the guard never needs (and never touches) it.

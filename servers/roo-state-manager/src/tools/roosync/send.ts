@@ -10,9 +10,9 @@
 import { MessageManager, getMessageManager } from '../../services/MessageManager.js';
 import { AttachmentManager } from '../../services/roosync/AttachmentManager.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
-import { createLogger, Logger } from '../../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
-import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
+import { MessageManagerError, MessageManagerErrorCode } from '@vibesync/core/types/errors';
 import {
   formatDate,
   formatDateFull,
@@ -21,7 +21,7 @@ import {
   getLocalMachineId,
   resolveCallerIdentity
 } from '../../utils/message-helpers.js';
-import { maskSecretTextForPublication } from '../../utils/secret-redaction.js';
+import { maskSecretTextForPublication } from '@vibesync/core/utils/secret-redaction';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { updateDashboardActivityAsync, validateSendMessageRecipient } from '../../utils/dashboard-helpers.js';
 

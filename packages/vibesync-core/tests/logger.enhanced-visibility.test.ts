@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { Logger, createLogger, resetDefaultLogger, LogLevel } from '../../../src/utils/logger';
+import { Logger, createLogger, resetDefaultLogger, LogLevel } from '../src/utils/logger.js';
 import { existsSync, unlinkSync, readdirSync } from 'fs';
 import { join } from 'path';
 
 describe('Logger - Enhanced Visibility', () => {
-    const TEST_LOG_DIR = join(__dirname, '../../fixtures/logger-test');
+    const TEST_LOG_DIR = join(__dirname, 'fixtures/logger-test');
     let logger: Logger;
 
     beforeEach(() => {

@@ -27,7 +27,7 @@ import lockfile from 'proper-lockfile';
 import { mkdir, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createLogger } from '../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('gdrive-scan-lock');
 

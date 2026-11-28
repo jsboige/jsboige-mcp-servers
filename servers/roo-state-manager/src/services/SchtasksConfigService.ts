@@ -16,7 +16,7 @@ import os from 'os';
 import fs from 'fs';
 import { PowerShellExecutor } from './PowerShellExecutor.js';
 import { ConfigNormalizationService } from './ConfigNormalizationService.js';
-import { createLogger, type Logger } from '../utils/logger.js';
+import { createLogger, type Logger } from '@vibesync/core/utils/logger';
 
 /**
  * Represents a single scheduled task's declarative config

@@ -11,7 +11,7 @@ import { getMessageManager } from '../../services/MessageManager.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import os from 'os';
-import { createLogger, Logger } from '../../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import { getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { getCallerContext } from '../../transport/caller-context.js';
 

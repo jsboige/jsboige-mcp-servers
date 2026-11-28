@@ -17,7 +17,7 @@ import { existsSync, statSync } from 'fs';
 // server-helpers → tools/index → roosync/* → RooSyncService → InventoryCollector → server-helpers
 // This circular dep causes ESM module evaluation deadlock (Node.js v24).
 // Only 2 functions use toolExports, so lazy-loading is safe.
-import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 
 // #1628: Re-export from shared-state-path.ts instead of duplicating.
 // The isolated module has no project imports, so this does not create cycles.

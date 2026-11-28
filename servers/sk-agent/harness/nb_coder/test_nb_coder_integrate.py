@@ -442,6 +442,15 @@ def test_find_twin_pair_by_python_member():
         assert nbci.find_twin_pair(Path(td), "MyIA.AI.Notebooks/Sudoku/other.ipynb") is None
 
 
+def _parity_level_line(text: str) -> str:
+    """Value of the entry's single `parity_level:` field -- a field, never a
+    word of the entry's prose."""
+    lines = [ln.strip() for ln in text.splitlines()
+             if ln.strip().startswith("parity_level:")]
+    assert len(lines) == 1, lines
+    return lines[0].split(":", 1)[1].strip()
+
+
 def test_register_pair_csharp_only_and_honest():
     import tempfile
     with tempfile.TemporaryDirectory() as td:
@@ -456,7 +465,7 @@ def test_register_pair_csharp_only_and_honest():
                                        "executed_cells": 12, "verdict": "approve"})
         assert cs["registered"] and cs["pair"] == "S C#"
         text = (wt / cs["file"]).read_text(encoding="utf-8")
-        assert "parity_level: native-both" in text
+        assert _parity_level_line(text) == "semantic"
         assert "bridge_verdict" not in text  # no fabricated SOTA judgment
         assert "firsthand" not in text
         assert ".net-csharp" in text and "approve" in text
@@ -464,6 +473,29 @@ def test_register_pair_csharp_only_and_honest():
         assert not nbci.register_pair(wt, "N/S-Python.ipynb", "N/S-CSharp.ipynb",
                                       "lane")["registered"]
         assert "Execution reelle sur kernel .net-csharp" in text
+
+
+def test_register_pair_is_semantic_never_native_both():
+    """CoursIA#28196 (25/11), after Integrales-01 (23/11): Hermes contested the
+    generator's `parity_level: native-both` on two deliveries, a review round
+    each. The registry schema reserves that level for a pair whose EACH side
+    does the notebook's work through a NAMED external engine ("un cote qui
+    reimplemente le sujet du notebook a la main n'est PAS natif"); a
+    hand-written C# port is `semantic`. The record says why, and spells
+    neither identifier: a registry-wide grep for a level or for a verdict
+    must only ever hit a field."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        wt = Path(td)
+        (wt / "scripts" / "notebook_tools" / "twin_pairs.d").mkdir(parents=True)
+        cs = nbci.register_pair(wt, "N/S-Python.ipynb", "N/S-CSharp.ipynb", "lane",
+                                facts={"kernel": ".net-csharp",
+                                       "executed_cells": 12, "verdict": "approve"})
+        text = (wt / cs["file"]).read_text(encoding="utf-8")
+        assert _parity_level_line(text) == "semantic"
+        assert "native-both" not in text and "bridge_verdict" not in text
+        assert "Parite semantic" in text and "laisse a la review" in text
+        assert text.isascii()
 
 
 def test_register_pair_never_upgrades_a_read_kernel_to_an_execution():
@@ -561,7 +593,7 @@ def test_sync_main_aborts_on_foreign_conflict():
         # abort left no merge in progress and our side intact
         p = subprocess.run(["git", "-C", str(wt), "rev-parse", "-q",
                             "--verify", "MERGE_HEAD"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         assert p.returncode != 0
         assert f.read_text(encoding="utf-8") == "pr side\n"
 
@@ -966,7 +998,7 @@ def _pr_branch_behind_main(td: Path, conflict: bool) -> Path:
 
 def _status(wt: Path) -> str:
     return subprocess.run(["git", "-C", str(wt), "status", "--porcelain"],
-                          capture_output=True, text=True).stdout
+                          capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
 
 
 def _head_subject(wt: Path) -> str:
@@ -997,7 +1029,7 @@ def test_sync_main_conflict_merge_concludes_with_the_integration(tmp_path, monke
     assert out["merge"].get("resolved_theirs") == [README_REL]
     assert _status(wt) == ""
     parents = subprocess.run(["git", "-C", str(wt), "log", "-1", "--format=%P"],
-                             capture_output=True, text=True).stdout.split()
+                             capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split()
     assert len(parents) == 2                            # the merge commit itself
     assert "| main row |" in seen["head_readme"] and "| X-Rust |" in seen["head_readme"]
 

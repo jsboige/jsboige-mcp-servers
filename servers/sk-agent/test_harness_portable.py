@@ -14,6 +14,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 HERE = Path(__file__).resolve().parent
 HARNESS = HERE / "harness"
 SHA = "7a09e1caec22441d9402ab25a222206c8905bfe1"
@@ -183,3 +185,30 @@ def test_every_copied_file_carries_the_provenance_header():
     assert files, "harness copy is missing"
     missing = [str(p.relative_to(HERE)) for p in files if SHA not in p.read_text(encoding="utf-8")]
     assert missing == []
+
+
+# ------------------------------------------------------------------ CI wiring
+def _sk_agent_pytest_lines() -> list[str]:
+    ci = HERE.parents[1] / ".github" / "workflows" / "ci.yml"
+    if not ci.exists():
+        pytest.skip("server copied without its repository (no ci.yml)")
+    lines = ci.read_text(encoding="utf-8").splitlines()
+    start = lines.index("  test-sk-agent:")
+    job = []
+    for line in lines[start + 1:]:
+        if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
+            break  # next job
+        job.append(line)
+    return [line for line in job if "python -m pytest" in line]
+
+
+def test_ci_runs_every_harness_test_file():
+    """The test-sk-agent job runs a closed file list: a harness test file absent from it
+    runs nowhere. Measured 26/11 — test_nb_coder_unmeasured_output.py was committed
+    without its line, so the pins of the gate it carries were inert in CI, and only the
+    provenance guard above saw the file. Every harness test file on disk has its line."""
+    tokens = {tok for line in _sk_agent_pytest_lines() for tok in line.split()}
+    on_disk = sorted(p.relative_to(HERE).as_posix() for p in HARNESS.rglob("test_*.py"))
+    assert on_disk, "harness copy is missing"
+    missing = [rel for rel in on_disk if rel not in tokens]
+    assert missing == [], f"harness test files absent from the test-sk-agent pytest list: {missing}"

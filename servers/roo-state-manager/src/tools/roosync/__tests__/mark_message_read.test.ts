@@ -33,12 +33,12 @@ vi.mock('../../../utils/server-helpers.js', () => ({
 	getSharedStatePath: mockGetSharedStatePath
 }));
 
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
 	createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
 	Logger: class {}
 }));
 
-vi.mock('../../../types/errors.js', () => ({
+vi.mock('@vibesync/core/types/errors', () => ({
 	MessageManagerError: class extends Error {
 		code: string;
 		details: any;

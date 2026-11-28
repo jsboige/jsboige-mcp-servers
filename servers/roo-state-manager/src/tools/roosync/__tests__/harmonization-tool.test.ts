@@ -168,6 +168,52 @@ describe('Chemin public — cycle de vie complet (create → apply → confirm �
     expect(closed.status).toBe('success');
   });
 
+  test('status sur une campagne FERMÉE ne dit jamais « close possible » et expose la fermeture (#3544)', async () => {
+    const created = await roosyncHarmonization(args({
+      action: 'create', target_file: 'claude-settings', canon, fleet: [LOCAL],
+    }));
+    const campaignId = (created as any).campaign.id;
+    await roosyncHarmonization(args({ action: 'apply', campaign_id: campaignId }));
+    await roosyncHarmonization(args({ action: 'confirm', campaign_id: campaignId }));
+
+    // Active et entièrement confirmée : l'invitation à fermer est légitime.
+    const before = await roosyncHarmonization(args({ action: 'status', campaign_id: campaignId }));
+    expect((before as any).message).toContain('close possible');
+
+    const closed = await roosyncHarmonization(args({ action: 'close', campaign_id: campaignId }));
+    expect(closed.status).toBe('success');
+    const closedAt = (closed as any).closedAt as string;
+    expect(closedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    // Fermée : l'organe ne doit plus inviter à fermer — c'est le défaut constaté
+    // (status « close possible » sur une campagne que list rend `closed`).
+    // Jugé en premier, avant toute lecture de la charge : le défaut est un
+    // message, pas une clé absente.
+    const after = await roosyncHarmonization(args({ action: 'status', campaign_id: campaignId }));
+    expect((after as any).message).not.toContain('close possible');
+    expect((after as any).message).toContain('FERMÉE');
+    expect((after as any).message).toContain(closedAt);
+
+    // La fermeture est lisible en machine : état, quand, pourquoi.
+    expect((after as any).campaign.status).toBe('closed');
+    expect((after as any).campaign.closedAt).toBe(closedAt);
+    expect((after as any).campaign.closeReason).toBe('flotte entièrement confirmée');
+    // Le verdict de conformité reste servi pour mémoire : c'est l'invitation
+    // qui change, pas la mesure.
+    expect((after as any).summary.allConfirmed).toBe(true);
+
+    // `list` porte la même fermeture : quand et pourquoi.
+    const listed = await roosyncHarmonization(args({ action: 'list', include_closed: true }));
+    const entry = ((listed as any).campaigns as any[]).find(c => c.id === campaignId);
+    expect(entry.status).toBe('closed');
+    expect(entry.closedAt).toBe(closedAt);
+    expect(entry.closeReason).toBe('flotte entièrement confirmée');
+
+    // Contrôle : la campagne active ne portait aucune fermeture.
+    expect((before as any).campaign.status).toBe('active');
+    expect((before as any).campaign.closedAt).toBeNull();
+  });
+
   test('confirm écho claimedHashReceived (#4006) — null sans claimed_hash, écho avec', async () => {
     const created = await roosyncHarmonization(args({
       action: 'create', target_file: 'claude-settings', canon, fleet: [LOCAL],

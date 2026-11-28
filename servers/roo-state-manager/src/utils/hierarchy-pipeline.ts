@@ -9,7 +9,7 @@ import { join, dirname, basename, extname } from 'path';
 import { fileURLToPath } from 'url';
 import { MessageExtractionCoordinator } from './message-extraction-coordinator.js';
 import { NewTaskInstruction } from '../types/conversation.js';
-import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

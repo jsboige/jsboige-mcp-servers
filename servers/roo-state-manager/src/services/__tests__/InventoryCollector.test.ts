@@ -28,7 +28,7 @@ vi.mock('os', async (importOriginal) => {
 // (the previous '../utils/*' resolved to src/services/utils/* which doesn't exist → no-op silently).
 // Also corrected the module name: SUT imports getSharedStatePath from 'shared-state-path.js'
 // (InventoryCollector.ts:20), not from 'server-helpers.js'.
-vi.mock('../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     warn: vi.fn(),

@@ -2,7 +2,7 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import * as fs from 'fs/promises';
 import { Dirent } from 'fs';
 import * as path from 'path';
-import { sanitizeInt } from '../utils/int-validator.js';
+import { sanitizeInt } from '@vibesync/core/utils/int-validator';
 
 // #3990 — the four robustness defects of this tool, and the guards below.
 // 1. ReDoS: the user `filter` was compiled and applied to every line with no

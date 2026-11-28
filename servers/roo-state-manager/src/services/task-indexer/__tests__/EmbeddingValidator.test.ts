@@ -5,7 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { validateVectorGlobal, sanitizePayload, redactSecrets, resetKnownValueMaskerCache } from '../EmbeddingValidator.js';
-import { StateManagerError } from '../../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 
 // Mock the openai module
 vi.mock('../../../services/openai.js', () => ({
@@ -294,7 +294,7 @@ describe('EmbeddingValidator', () => {
 
   describe('maskSecretTextForPublication — dashboard and DM boundary', () => {
     it('should publish a task- identifier intact and still mask a key beside it', async () => {
-      const { maskSecretTextForPublication } = await import('../../../utils/secret-redaction.js');
+      const { maskSecretTextForPublication } = await import('@vibesync/core/utils/secret-redaction');
       const out = maskSecretTextForPublication(
         '[TASK] ai01-task-po2024-archive-sync-20261101 key sk-proj-AAAA1111bbbb2222cccc3333dddd4444',
       );

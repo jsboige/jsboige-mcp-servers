@@ -29,6 +29,8 @@
 
 import type { Dashboard, IntercomMessage } from '../../tools/roosync/dashboard-schemas.js';
 import type {
+  ArchivedDashboardBatchWindow,
+  ArchivePgGap,
   RooSyncDashboardRow,
   RooSyncDashboardMessageRow,
   DashboardRetirementMark,
@@ -37,14 +39,14 @@ import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import type { RooSyncLockAcquireStatus, UnifiedStoreWriteOutcome } from './UnifiedStoreWriter.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { PgUnifiedStoreReader } from './PgUnifiedStoreReader.js';
-import { withColdPoolResume } from './pg-cold-pool-resume.js';
+import { isPgConnectionTimeout, withColdPoolResume } from './pg-cold-pool-resume.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
-import { isPgFlagOn } from './pg-flags.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
 import {
   isDashboardPgPrimaryEnabled,
   isDashboardReadPgEnabled,
-} from './pg-read-gates.js';
-import { createLogger } from '../../utils/logger.js';
+} from '@vibesync/core/services/unified-store/pg-read-gates';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('roosync-dashboard-store');
 
@@ -201,21 +203,7 @@ export function mapRowsToDashboard(
   row: RooSyncDashboardRow,
   messages: RooSyncDashboardMessageRow[]
 ): Dashboard {
-  const reconstructed: IntercomMessage[] = messages.map(m => {
-    const msg: IntercomMessage = {
-      id: m.message_id ?? `${m.author_machine}:${m.author_workspace}:pg-${m.id}`,
-      timestamp: m.created_at,
-      author: { machineId: m.author_machine, workspace: m.author_workspace },
-      content: m.content,
-    };
-    if (m.team_stage !== null) msg.teamStage = m.team_stage as IntercomMessage['teamStage'];
-    if (m.reply_to !== null) msg.reply_to = m.reply_to;
-    if (m.acknowledged_at && Object.keys(m.acknowledged_at).length > 0) {
-      msg.acknowledged_at = m.acknowledged_at;
-    }
-    if (m.tags && m.tags.length > 0) msg.tags = m.tags;
-    return msg;
-  });
+  const reconstructed: IntercomMessage[] = messages.map(mapRowToIntercomMessage);
 
   const dashboard: Dashboard = {
     type: row.type,
@@ -235,6 +223,30 @@ export function mapRowsToDashboard(
     dashboard.status.lastDiffCommit = row.status_json.lastDiffCommit;
   }
   return dashboard;
+}
+
+/**
+ * One journal row → one intercom message.
+ *
+ * The single mapping the live dashboard read and the archive batch read share
+ * (#4131 residual): a message must read the same from either surface, or the
+ * PG fallback of `read_archive` would hand the organ a shape the file path
+ * never produces.
+ */
+export function mapRowToIntercomMessage(m: RooSyncDashboardMessageRow): IntercomMessage {
+  const msg: IntercomMessage = {
+    id: m.message_id ?? `${m.author_machine}:${m.author_workspace}:pg-${m.id}`,
+    timestamp: m.created_at,
+    author: { machineId: m.author_machine, workspace: m.author_workspace },
+    content: m.content,
+  };
+  if (m.team_stage !== null) msg.teamStage = m.team_stage as IntercomMessage['teamStage'];
+  if (m.reply_to !== null) msg.reply_to = m.reply_to;
+  if (m.acknowledged_at && Object.keys(m.acknowledged_at).length > 0) {
+    msg.acknowledged_at = m.acknowledged_at;
+  }
+  if (m.tags && m.tags.length > 0) msg.tags = m.tags;
+  return msg;
 }
 
 /**
@@ -400,6 +412,172 @@ export async function fetchArchivedDashboardMessageIds(key: string, messageId?: 
       error: String(error),
     });
     return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+// ─── Archive surface reads (#4131 residual — `read_archive` reads the mirror) ──
+//
+// `read_archive` lists and reads this seat's G: mirror only. Condensation
+// writes its `.md` on the seat that performs it, and the PG-primary gate no
+// longer maintains the G: dashboard copy (Phase D) — so the mirror is one
+// seat's archive window, not the fleet's. Measured po-2024 26/11:
+// `workspace-roo-extensions` had 9 condensation batches in PG over 30 h and 2
+// files on disk; the escalation organ reads that window and cannot name what
+// the listing does not list (a confident verdict over a blind window).
+//
+// The gate is the CAPACITY to query PG (the URL), not the dashboard read flag:
+// a listing is a decision input, exactly like the #3782 tombstones above, and
+// a seat whose content read gate is off still must not answer with its own
+// archive window alone. The fallback only ADDS batches that have no local
+// file; a present file keeps precedence for reads.
+//
+// A partial window is REPORTED, never silent: the three causes come back as
+// `gap` so the listing and the read can say that PG did not answer. The caller
+// keeps the file-only behaviour in every case — never a window smaller than
+// today's — but a consumer can no longer mistake the seat's mirror for the
+// fleet's archive (review ms#1934 : « garder visible une fenêtre partielle
+// lorsque PG ne répond pas »).
+
+const ARCHIVE_BATCH_TIMEOUT_MS = 3000;
+
+/**
+ * Server-side bound, strictly BELOW the client race. When the race wins, the
+ * caller stops awaiting but the query keeps running to the server's own
+ * `statement_timeout` — on a one-connection pool that orphan blocks every
+ * later read until then (review ms#1934, finding 3). Bounding the query
+ * itself means the server kills it before the client gives up on it.
+ */
+const ARCHIVE_STATEMENT_TIMEOUT_MS = 2500;
+
+/**
+ * CONNECT-phase bound, strictly below the same client race. Without it the
+ * pool keeps node-postgres' 15 000 ms default while the caller stops awaiting
+ * at 3 000 ms: on a host whose connect hangs (the cold-pool signature of
+ * #4731, measured 26/11) the orphan is still CONNECTING when the race is lost,
+ * and on a `poolMax: 1` pool that orphan holds the only slot — every later
+ * read of the batch listing waits on it. Bounding the connect means the pool
+ * gives up on its own before the caller does (review ms#1934, finding 3).
+ */
+const ARCHIVE_CONNECT_TIMEOUT_MS = 2500;
+
+/**
+ * Archive reads ride their OWN one-connection pool, never the shared reader:
+ * the bound above only holds on a pool whose config is ours, and an organ
+ * cycle's listing must neither starve the write path's pool nor be starved by
+ * it. One extra connection per host process — what the #3782 tombstones
+ * reader already does on a read-only seat.
+ */
+let dedicatedArchiveReader: PgUnifiedStoreReader | null = null;
+
+function getArchiveReader(pgUrl: string): PgUnifiedStoreReader {
+  if (!dedicatedArchiveReader) {
+    dedicatedArchiveReader = new PgUnifiedStoreReader({
+      connectionString: pgUrl,
+      poolMax: 1,
+      statementTimeoutMs: ARCHIVE_STATEMENT_TIMEOUT_MS,
+      connectionTimeoutMillis: ARCHIVE_CONNECT_TIMEOUT_MS,
+    });
+  }
+  return dedicatedArchiveReader;
+}
+
+export function resetArchiveReaderForTests(): void {
+  dedicatedArchiveReader = null;
+}
+
+/** The batch window PG holds for a key, and why it may be partial. */
+export async function fetchArchivedDashboardBatches(
+  key: string,
+): Promise<ArchivedDashboardBatchWindow> {
+  const pgUrl = process.env.UNIFIED_STORE_PG_URL;
+  if (!pgUrl) return { batches: [], gap: 'no-url' };
+  const reader = getArchiveReader(pgUrl);
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => { timedOut = true; resolve(null); }, ARCHIVE_BATCH_TIMEOUT_MS);
+  });
+  try {
+    const result = await Promise.race([
+      reader.getArchivedRooSyncDashboardBatches(key),
+      timeout,
+    ]);
+    if (result === null && timedOut) {
+      logger.warn('[archive-pg] batch listing timed out — file-only listing stands', { key });
+      return { batches: [], gap: 'timeout' };
+    }
+    return { batches: result ?? [], gap: null };
+  } catch (error) {
+    // A connect-phase timeout is PG not ANSWERING in time, not a failed
+    // read. The dedicated pool now gives up on its own (ARCHIVE_CONNECT_TIMEOUT_MS,
+    // under the race), so what the race used to report as a timeout arrives
+    // here instead — same condition, same gap.
+    if (isPgConnectionTimeout(error)) {
+      logger.warn('[archive-pg] batch listing timed out (connection) — file-only listing stands', { key });
+      return { batches: [], gap: 'timeout' };
+    }
+    logger.warn('[archive-pg] batch listing failed — file-only listing stands', {
+      key,
+      error: String(error),
+    });
+    return { batches: [], gap: 'error' };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** One batch's journal rows, and `gap` when PG could not hand them over. */
+export interface ArchivedDashboardBatchRead {
+  /**
+   * The journal rows of one batch as intercom messages (oldest first). `[]`
+   * means the batch is known and empty — the caller answers "introuvable" for
+   * it, not a PG read. `null` = no PG story (`gap` says which).
+   */
+  messages: IntercomMessage[] | null;
+  gap: ArchivePgGap;
+}
+
+export async function fetchArchivedDashboardBatch(
+  key: string,
+  batchSecondIso: string,
+): Promise<ArchivedDashboardBatchRead> {
+  const pgUrl = process.env.UNIFIED_STORE_PG_URL;
+  if (!pgUrl) return { messages: null, gap: 'no-url' };
+  const reader = getArchiveReader(pgUrl);
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => { timedOut = true; resolve(null); }, ARCHIVE_BATCH_TIMEOUT_MS);
+  });
+  try {
+    const result = await Promise.race([
+      reader.getArchivedRooSyncDashboardBatch(key, batchSecondIso),
+      timeout,
+    ]);
+    if (result === null && timedOut) {
+      logger.warn('[archive-pg] batch read timed out — the file answer stands', {
+        key,
+        batchSecondIso,
+      });
+      return { messages: null, gap: 'timeout' };
+    }
+    return { messages: result ? result.map(mapRowToIntercomMessage) : null, gap: null };
+  } catch (error) {
+    if (isPgConnectionTimeout(error)) {
+      logger.warn('[archive-pg] batch read timed out (connection) — the file answer stands', {
+        key,
+        batchSecondIso,
+      });
+      return { messages: null, gap: 'timeout' };
+    }
+    logger.warn('[archive-pg] batch read failed — the file answer stands', {
+      key,
+      batchSecondIso,
+      error: String(error),
+    });
+    return { messages: null, gap: 'error' };
   } finally {
     if (timer) clearTimeout(timer);
   }

@@ -364,3 +364,270 @@ def test_pr_body_says_the_spec_declared_absent_sides():
         "conformance": {"todo": True, "file": "f.yaml", "measures": 3, "three_sided": 0,
                         "spec_absent": [], "divergences": []}})
     assert "déclaré absent" not in clean
+
+
+# =============================================================================
+# CoursIA#28944 (28/11) : le vocabulaire du coordinateur -- « non comparee »,
+# « forme seulement », « ecart declare » -- et le MASQUE qui les honore.
+#
+# Ces trois lignes ne disent PAS « cette cellule n'est pas comparee » : elles
+# nomment UNE valeur. L'organe les lisait comme `strict` (toute la table
+# d'etre stricte), donc la porte de l'etape 3 exigeait l'egalite stricte du
+# texte -- et le producteur recopiait les constantes du jumeau Python au lieu
+# de ses durees mesurees (deux refus successifs, 22/11 et 28/11).
+#
+# Le masque remplace la valeur nommee par une classe non capturante et compare
+# TOUT LE RESTE, morceau par morceau : un compteur change, une ligne en trop,
+# un mot ajoute restent des divergences.
+# =============================================================================
+
+_TEMPS_HEADER = "Strategie                    Assigns   Backtracks    Temps(ms)   Succes"
+_TEMPS_PY = ("=== Benchmark sur 2 puzzles faciles ===\n"
+             + _TEMPS_HEADER + "\n"
+             "BACKTRACKING SIMPLE          2889322       499461         1613 2/2\n"
+             "FORWARD CHECKING                  81            0            9 2/2\n")
+_TEMPS_RS = ("=== Benchmark sur 2 puzzles faciles ===\n"
+             + _TEMPS_HEADER + "\n"
+             "BACKTRACKING SIMPLE          2889322       499461           15 2/2\n"
+             "FORWARD CHECKING                  81            0           11 2/2\n")
+
+_ROW_NON_COMPARABLE = ("| 1 | `Temps(ms)` (2 valeurs) | **non comparee** |"
+                       " declaree non comparable (machines et langages differents) |\n")
+# Une grandeur qui n'est PAS une duree : une ligne de duree est deja portee par
+# le mecanisme des ancres (decimales en presence seule, le reste du modele
+# compare) ; le masque `forme seulement` est ce qui reste quand elle ne l'est pas.
+_ROW_FORM = ("| 1 | `Taux de resolution: …%` | **forme seulement** |"
+             " regex `Taux de resolution: [0-9.]+ % \\(81 grilles, 0 echec\\)` |\n")
+_ROW_GAP = ("| 1 | separateur de chemin | **ecart declare** |"
+            " `/` au lieu de `\\`, une seule ligne concernee |\n")
+
+
+def test_parse_keeps_every_row_of_a_cell():
+    """Une cellule peut porter PLUSIEURS lignes de tolerance (#28944 cellule 33
+    : les compteurs exacts ET la duree non comparee). Jusqu'ici la derniere
+    ligne ecrasait les precedentes : une ligne stricte disparaissait sous la
+    ligne toleree posee en dessous."""
+    spec = _spec(_ROW_NON_COMPARABLE
+                 + "| 1 | `assignations`, `backtracks` | **exacte** (entiers) |"
+                   " sortie Python cellule 1 |\n")
+    rows = nbci.parse_spec_tolerance_rows(spec)
+    assert len(rows[1]) == 2
+    assert rows[1][0]["tolerance"] == "**non comparee**"
+    assert rows[1][1]["tolerance"] == "**exacte** (entiers)"
+    merged = nbci.parse_spec_tolerances(spec)[1]
+    assert merged["rows"] == rows[1]
+    assert "non comparee" in merged["tolerance"] and "exacte" in merged["tolerance"]
+
+
+def test_new_vocabulary_is_classified():
+    assert nbci._spec_one_row_kind(
+        {"quantity": "`Temps(ms)` (6 valeurs)", "tolerance": "**non comparee**",
+         "compare": "declaree non comparable"}) == "non_comparable"
+    assert nbci._spec_one_row_kind(
+        {"quantity": "`Solution (MAC)`", "tolerance": "**forme seulement**",
+         "compare": "regex `x`"}) == "form"
+    assert nbci._spec_one_row_kind(
+        {"quantity": "separateur", "tolerance": "**ecart declare**",
+         "compare": "`/` au lieu de `\\`"}) == "declared_gap"
+    # accents et casse : la table du coordinateur les porte
+    assert nbci._spec_one_row_kind(
+        {"quantity": "x", "tolerance": "**non comparée**", "compare": "y"}) == "non_comparable"
+    assert nbci._spec_one_row_kind(
+        {"quantity": "x", "tolerance": "**forme seule**", "compare": "y"}) == "form"
+    assert nbci._spec_one_row_kind(
+        {"quantity": "x", "tolerance": "**écart déclaré**", "compare": "y"}) == "declared_gap"
+
+
+def test_rows_kind_never_loses_a_strict_row():
+    """Le kind d'une CELLULE vient de TOUTES ses lignes, et fail-closed : une
+    ligne qui exige l'egalite exacte n'est jamais absorbee par une ligne
+    tolerante."""
+    exact = {"quantity": "a", "tolerance": "**exacte**", "compare": "sortie Python"}
+    noncomp = {"quantity": "`Temps(ms)`", "tolerance": "**non comparee**", "compare": "x"}
+    inv = {"quantity": "a", "tolerance": "invariants", "compare": "invariants, pas le committe"}
+    dur = {"quantity": "a", "tolerance": "durees : presence seule", "compare": "sortie Python"}
+    assert nbci.spec_rows_kind([exact, noncomp]) == "strict"
+    assert nbci.spec_rows_kind([noncomp, exact]) == "strict"
+    assert nbci.spec_rows_kind([inv, inv]) == "invariants"
+    assert nbci.spec_rows_kind([inv, exact]) == "strict"
+    assert nbci.spec_rows_kind([dur, noncomp]) == "duration"
+    assert nbci.spec_rows_kind([noncomp]) == "strict"
+    # la ligne fusionnee d'une cellule multi-lignes porte le kind de ses lignes
+    # (#28944 cellule 33 : la duree non comparee POSEE SOUS les compteurs exacts)
+    merged = nbci.parse_spec_tolerances(_spec(
+        _ROW_NON_COMPARABLE
+        + "| 1 | `assignations`, `backtracks` | **exacte** (entiers) |"
+          " sortie Python cellule 1 |\n"))[1]
+    assert merged["rows"] and nbci.spec_row_kind(merged) == "strict"
+
+
+def test_non_comparable_masks_the_duration_and_keeps_the_counters(tmp_path):
+    """La duree n'est pas comparee ; le compteur qui l'accompagne, si."""
+    spec = _spec(_ROW_NON_COMPARABLE)
+    wt = _repo(tmp_path, [_md(), _code([_stream(_TEMPS_PY)])],
+               [_md(), _code([_stream(_TEMPS_RS)])])
+    b = nbci.build_conformance_entry(wt, RS, PY, spec_body=spec, spec_ref="#28944")
+    assert b["divergences"] == []
+    assert len(b["spec_masked"]) == 1 and b["spec_masked"][0]["cell"] == 1
+    ids = [m["id"] for m in b["entry"]["measures"]]
+    assert "c1_text_structure" in ids           # l'ordre des lignes et des jetons
+    assert "c1_text_l1" in ids                  # la ligne de titre
+    assert len(ids) == 7                        # titre + en-tete + 4 morceaux + structure
+    assert ids[:2] == ["c1_text_l1", "c1_text_l2"]
+    _assert_checker_reads_back(wt, b)
+    # le compteur qui suit la duree ne voyage PAS avec elle
+    bad = _TEMPS_RS.replace("2889322", "2889323")
+    wt2 = _repo(tmp_path / "counter", [_md(), _code([_stream(_TEMPS_PY)])],
+                [_md(), _code([_stream(bad)])])
+    b2 = nbci.build_conformance_entry(wt2, RS, PY, spec_body=spec, spec_ref="#28944")
+    assert [d["id"] for d in b2["divergences"]] == ["c1_text"]
+    assert "ne couvre que la valeur qu'elle nomme" in b2["divergences"][0]["text"]
+    # le message nomme le compteur fautif et JAMAIS la duree toleree : un
+    # message qui montre d'abord l'ecart de duree envoie le producteur recopier
+    # les constantes du jumeau Python (defaut mesure sur #28944)
+    text = b2["divergences"][0]["text"]
+    assert "« 2889323 » côté Rust contre « 2889322 » côté Python" in text
+    assert "1613" not in text and "15 2/2" not in text
+
+
+def test_an_invariants_row_beside_an_exact_row_is_named(tmp_path):
+    """Deux lignes pour une cellule : des compteurs EXACTS et une grandeur
+    « invariants ». La cellule reste stricte (fail-closed : le contrat
+    `invariants` declare TOUT le cote Rust absent, les compteurs avec) et la
+    divergence dit laquelle de ses lignes n'a pas pu s'appliquer, et comment
+    l'ecrire pour qu'elle le soit."""
+    spec = _spec("| 1 | `Temps(ms)` (2 valeurs) : durees non reproductibles |"
+                 " **invariants** | invariants, pas le committe |\n"
+                 "| 1 | `Assigns`, `Backtracks` | **exacte** (entiers) |"
+                 " sortie Python cellule 1 |\n")
+    wt = _repo(tmp_path, [_md(), _code([_stream(_TEMPS_PY)])],
+               [_md(), _code([_stream(_TEMPS_RS)])])
+    b = nbci.build_conformance_entry(wt, RS, PY, spec_body=spec, spec_ref="#28944")
+    assert [d["id"] for d in b["divergences"]] == ["c1_text"]
+    assert b["spec_masked"] == [] and b["spec_absent"] == []
+    text = b["divergences"][0]["text"]
+    assert "tenues pour strictes" in text and "**invariants**" in text
+    assert "« non comparée »" in text
+
+
+def test_non_comparable_refuses_when_the_declared_count_is_not_read(tmp_path):
+    """La ligne declare SIX valeurs ; la colonne n'en porte que deux : le
+    masque ne s'applique pas et le dit."""
+    spec = _spec("| 1 | `Temps(ms)` (6 valeurs) | **non comparee** | x |\n")
+    wt = _repo(tmp_path, [_md(), _code([_stream(_TEMPS_PY)])],
+               [_md(), _code([_stream(_TEMPS_RS)])])
+    b = nbci.build_conformance_entry(wt, RS, PY, spec_body=spec, spec_ref="#28944")
+    assert [d["id"] for d in b["divergences"]] == ["c1_text"]
+    assert "6 valeur(s)" in b["divergences"][0]["text"]
+    assert b["spec_masked"] == []
+
+
+def test_non_comparable_refuses_a_value_that_is_not_a_number(tmp_path):
+    spec = _spec(_ROW_NON_COMPARABLE)
+    bad = _TEMPS_RS.replace("           15 2/2", "           abc 2/2")
+    wt = _repo(tmp_path, [_md(), _code([_stream(_TEMPS_PY)])],
+               [_md(), _code([_stream(bad)])])
+    b = nbci.build_conformance_entry(wt, RS, PY, spec_body=spec, spec_ref="#28944")
+    assert [d["id"] for d in b["divergences"]] == ["c1_text"]
+    assert "un nombre est attendu" in b["divergences"][0]["text"]
+
+
+def test_non_comparable_refuses_a_line_more(tmp_path):
+    spec = _spec(_ROW_NON_COMPARABLE)
+    bad = _TEMPS_RS + "MAC                               81            0           11 2/2\n"
+    wt = _repo(tmp_path, [_md(), _code([_stream(_TEMPS_PY)])],
+               [_md(), _code([_stream(bad)])])
+    b = nbci.build_conformance_entry(wt, RS, PY, spec_body=spec, spec_ref="#28944")
+    assert [d["id"] for d in b["divergences"]] == ["c1_text"]
+    assert "lignes côté Python" in b["divergences"][0]["text"]
+
+
+def test_form_masks_the_number_and_pins_the_counters(tmp_path):
+    """`forme seulement` : la regex de la ligne est satisfaite par les DEUX
+    cotes, et seule la partie variable (le nombre) est masquee."""
+    py = "Taux de resolution: 33.7 % (81 grilles, 0 echec)\n"
+    rs = "Taux de resolution: 6.1 % (81 grilles, 0 echec)\n"
+    spec = _spec(_ROW_FORM)
+    wt = _repo(tmp_path, [_md(), _code([_stream(py)])],
+               [_md(), _code([_stream(rs)])])
+    b = nbci.build_conformance_entry(wt, RS, PY, spec_body=spec, spec_ref="#28944")
+    assert b["divergences"] == []
+    assert len(b["spec_masked"]) == 1 and b["spec_masked"][0]["cell"] == 1
+    ids = [m["id"] for m in b["entry"]["measures"]]
+    assert len(ids) == 3 and "c1_text_structure" in ids   # 2 morceaux + structure
+    _assert_checker_reads_back(wt, b)
+    # le compteur que la regex pinne reste compare : la sortie Rust ne
+    # satisfait plus la forme declaree -- le masque ne s'applique pas et le dit
+    bad = rs.replace("81 grilles", "82 grilles")
+    wt2 = _repo(tmp_path / "counter", [_md(), _code([_stream(py)])],
+                [_md(), _code([_stream(bad)])])
+    b2 = nbci.build_conformance_entry(wt2, RS, PY, spec_body=spec, spec_ref="#28944")
+    assert [d["id"] for d in b2["divergences"]] == ["c1_text"]
+    assert "ne satisfait pas la regex" in b2["divergences"][0]["text"]
+    assert b2["spec_masked"] == []
+
+
+def test_declared_gap_masks_the_named_difference_only(tmp_path):
+    py = "Dossier Puzzles: <repo>MyIA.AI.Notebooks\\Sudoku\\Puzzles\n"
+    rs = "Dossier Puzzles: <repo>MyIA.AI.Notebooks/Sudoku/Puzzles\n"
+    spec = _spec(_ROW_GAP)
+    wt = _repo(tmp_path, [_md(), _code([_stream(py)])],
+               [_md(), _code([_stream(rs)])])
+    b = nbci.build_conformance_entry(wt, RS, PY, spec_body=spec, spec_ref="#28944")
+    assert b["divergences"] == []
+    assert len(b["spec_masked"]) == 1
+    _assert_checker_reads_back(wt, b)
+    # une AUTRE difference sur la meme ligne : l'ecart declare n'est pas la
+    # seule difference -- le masque ne s'applique pas et le dit
+    bad = rs.replace("Dossier Puzzles:", "Dossier Puzzles extra:")
+    wt2 = _repo(tmp_path / "word", [_md(), _code([_stream(py)])],
+                [_md(), _code([_stream(bad)])])
+    b2 = nbci.build_conformance_entry(wt2, RS, PY, spec_body=spec, spec_ref="#28944")
+    assert [d["id"] for d in b2["divergences"]] == ["c1_text"]
+    assert "n'est pas la seule différence" in b2["divergences"][0]["text"]
+    assert b2["spec_masked"] == []
+
+
+def test_masked_cell_is_written_in_the_yaml_with_its_reason(tmp_path):
+    yaml = pytest.importorskip("yaml")
+    spec = _spec(_ROW_NON_COMPARABLE)
+    wt = _repo(tmp_path, [_md(), _code([_stream(_TEMPS_PY)])],
+               [_md(), _code([_stream(_TEMPS_RS)])])
+    b = nbci.build_conformance_entry(wt, RS, PY, spec_body=spec, spec_ref="#28944")
+    text = nbci.render_conformance_yaml(b)
+    assert "Valeurs non comparées" in text
+    assert "c1_text : valeur non comparée" in text
+    doc = yaml.safe_load(text)
+    assert doc[0]["measures"] == b["entry"]["measures"]
+
+
+def test_gate_goes_green_on_a_masked_cell_and_red_on_a_counter(tmp_path):
+    """La porte de l'etape 3 : sous la table du #28944, la duree mesuree par
+    le port Rust est acceptee ; un compteur change reste un echec."""
+    nbcd = _driver()
+    spec = _spec(_ROW_NON_COMPARABLE)
+    src = _nb(tmp_path / "twin.ipynb", [_md(), _code([_stream(_TEMPS_PY)])])
+    built = _nb(tmp_path / "built.ipynb", [_md(), _code([_stream(_TEMPS_RS)])], "rust")
+    strict = nbcd.rust_conformance_gate(src, built)
+    assert strict["ok"] is False
+    tol = nbcd.rust_conformance_gate(src, built, spec_body=spec, spec_ref="#28944")
+    assert tol["ok"] is True and tol["detail"]["cells"] == []
+    bad = _nb(tmp_path / "bad.ipynb", [_md(), _code([_stream(_TEMPS_RS.replace(
+        "2889322", "2889323"))])], "rust")
+    red = nbcd.rust_conformance_gate(src, bad, spec_body=spec, spec_ref="#28944")
+    assert red["ok"] is False and red["detail"]["cells"] == [1]
+
+
+def test_pr_body_says_the_masked_value():
+    nbcd = _driver()
+    body = nbcd.integration_pr_lines({
+        "readme": "Rust", "nav": "list",
+        "conformance": {"todo": True, "file": "f.yaml", "measures": 6, "three_sided": 0,
+                        "spec_absent": [],
+                        "spec_masked": [{"id": "c1_text", "cell": 1,
+                                         "reason": "valeur non comparée, déclarée par la spec "
+                                                   "(#28944, Tolerances, cellule 1) : "
+                                                   "**non comparee**"}],
+                        "divergences": []}})
+    assert "Valeur non comparée c1_text" in body
+    assert "tout le reste comparé" in body

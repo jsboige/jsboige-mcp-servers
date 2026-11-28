@@ -9,7 +9,9 @@
  * - **CONSUMER** = ce que le parseur de failover a ACCEPTÉ. Source :
  *   `docker logs` → `[Failover] configured=N armed=[…] auto=…`. Une valeur
  *   dégradée en silence n'est visible QUE là : un `configured` inférieur au
- *   nombre de rôles du payload vaut dérive, pas alignement.
+ *   nombre de rôles du payload vaut dérive, pas alignement. La ligne n'est
+ *   émise qu'au DÉMARRAGE, et se lit dans la fenêtre du démarrage — pas dans
+ *   la queue, qui l'a perdue dès la première minute sur un siège occupé.
  *
  * **Une lecture de conteneur seule n'est jamais une confirmation** : un
  * consommateur muet rend `consumer: null`, et le verdict de l'appelant doit
@@ -105,6 +107,58 @@ function parseConsumer(logText: string): CascadeConsumerReading | null {
     };
 }
 
+/**
+ * Fenêtre lue autour du démarrage du conteneur (120 s).
+ *
+ * La ligne `[Failover]` n'est émise QU'UNE FOIS, au démarrage (~1,6 s après,
+ * mesuré sur ai-01 le 29/10). Sur un siège occupé — le hub écrit ~500
+ * lignes/min — elle quitte la queue de 400 lignes en moins d'une minute :
+ * tout `confirm` rendu ensuite lisait un consommateur « muet » qui avait
+ * parlé (#4968). La fenêtre, elle, reste lisible à vie.
+ */
+const STARTUP_WINDOW_MS = 120_000;
+
+/**
+ * Arguments de lecture des logs : la FENÊTRE de démarrage, la queue en repli.
+ *
+ * Le repli `--tail 400` ne sert qu'à ne pas perdre la lecture quand le
+ * démarrage est INCONNU (inspect muet) : la queue est alors tout ce qu'il
+ * reste, et une ligne absente y reste le verdict honnête (`consumer: null`).
+ */
+function logsArgs(container: string, startedAt: string | null): string[] {
+    const startedAtMs = startedAt === null ? Number.NaN : Date.parse(startedAt);
+    if (startedAt === null || !Number.isFinite(startedAtMs)) {
+        return ['logs', '--tail', '400', container];
+    }
+    return [
+        'logs',
+        '--since', startedAt,
+        '--until', new Date(startedAtMs + STARTUP_WINDOW_MS).toISOString(),
+        container,
+    ];
+}
+
+/**
+ * Lit les logs du conteneur — fenêtre de démarrage d'abord.
+ *
+ * La queue n'est relue que si la fenêtre est ILLISIBLE (docker muet) ou le
+ * démarrage inconnu. Quand la fenêtre est lisible, elle fait foi : une ligne
+ * `[Failover]` aperçue dans la queue peut dater d'un boot PRÉCÉDENT
+ * (`docker restart` conserve le journal), et la rendre fabriquerait un
+ * consommateur fantôme.
+ */
+function readContainerLogs(
+    run: CascadeCommandRun,
+    container: string,
+    startedAt: string | null,
+    timeoutMs: number,
+): { status: number | null; stdout: string; stderr: string; error?: string } {
+    const args = logsArgs(container, startedAt);
+    const read = run('docker', args, timeoutMs);
+    if (read.status === 0 || args[2] === '--tail') return read;
+    return run('docker', ['logs', '--tail', '400', container], timeoutMs);
+}
+
 export interface ReadCascadeContainerArgs {
     /** Nom du conteneur, fourni par l'appelant. */
     container: string;
@@ -180,7 +234,7 @@ export function readCascadeContainer(args: ReadCascadeContainerArgs): CascadeCon
     const startedAt =
         startedAtRead.status === 0 && startedAtRead.stdout.trim() !== '' ? startedAtRead.stdout.trim() : null;
 
-    const logsRead = run('docker', ['logs', '--tail', '400', container], timeoutMs);
+    const logsRead = readContainerLogs(run, container, startedAt, timeoutMs);
     const consumer = logsRead.status === 0 ? parseConsumer(`${logsRead.stdout}\n${logsRead.stderr}`) : null;
 
     if (Object.keys(cascadeEnv).length === 0) {

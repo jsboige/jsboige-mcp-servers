@@ -10,8 +10,8 @@
  */
 
 import { z } from 'zod';
-import { getServerCapabilities } from '../../utils/server-capabilities.js';
-import { createLogger } from '../../utils/logger.js';
+import { getServerCapabilities } from '@vibesync/core/utils/server-capabilities';
+import { createLogger } from '@vibesync/core/utils/logger';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';

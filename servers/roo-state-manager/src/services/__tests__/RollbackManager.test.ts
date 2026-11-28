@@ -9,7 +9,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { RollbackManager } from '../RollbackManager.js';
-import type { Logger } from '../../utils/logger.js';
+import type { Logger } from '@vibesync/core/utils/logger';
 
 describe('RollbackManager', () => {
   let rollbackManager: RollbackManager;

@@ -15,14 +15,14 @@ import { promisify } from 'util';
 import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import os from 'os';
-import { createLogger, Logger } from '../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import { getGitHelpers, type GitHelpers } from '../utils/git-helpers.js';
 import { getSharedStatePath, ensureStoreSubdir } from '../utils/shared-state-path.js';
 import type { BootResilienceInfo } from '../types/inventory.js';
 import { inventoryMetaKey, readStoreMetaValue, storeMetaUrl, upsertStoreMetaValue } from './unified-store/store-meta.js';
-import { isPgFlagExplicitlyOff } from './unified-store/pg-flags.js';
+import { isPgFlagExplicitlyOff } from '@vibesync/core/services/unified-store/pg-flags';
 import { INVENTORY_PG_PRIMARY_ENV } from './roosync/InventoryService.js';
-import { maskSecretTextForPublication } from '../utils/secret-redaction.js';
+import { maskSecretTextForPublication } from '@vibesync/core/utils/secret-redaction';
 import { describeError } from '../utils/error-format.js';
 
 const execAsync = promisify(exec);

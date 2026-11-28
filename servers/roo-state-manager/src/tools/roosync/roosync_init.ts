@@ -14,7 +14,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { promisify } from 'util';
 import { exec } from 'child_process';
-import { createLogger, Logger } from '../../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import { readJSONFileSyncWithoutBOM } from '../../utils/encoding-helpers.js';
 
 const execAsync = promisify(exec);

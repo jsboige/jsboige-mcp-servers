@@ -111,6 +111,21 @@ pushed and replaces it only while origin still sits on the commit recorded at th
 
 - Python 3.11+; the **sk-agent venv** is the intended interpreter (it carries `mcp`).
 - `gh` CLI authenticated for the claim / PR stages (`nb_coder`), REST only.
+- **Claim stage, rc=3 only — the occupation belt** (`nb_coder_driver.py`, `feed_occupation`).
+  The CoursIA guard's IMPLICIT leg keeps, for a lane that already holds its claim, only the
+  open PRs anterior to that claim (#26751). A PR of another lane opened LATER, which may
+  hold the notebook, therefore never reaches `implicit_occupation` (CoursIA#27130 / PR
+  #28250, 25/11). On rc=3 the harness lists the open PRs **through the guard's own
+  reader**, with no date filter, reads their files, and hands the result to
+  `implicit_verdict` — the single decision point, unchanged. It is **not a second guard**:
+  it refuses nothing itself, it reads at most 20 PRs' files per pass under one deadline
+  (measured 25/11: 4 REST calls, under 5 s, 277 open PRs), and a failed leg adds nothing
+  and traces `[claim] occupation_check: unavailable`. Same `gh` identity as the rest of the
+  run; no nominal-path cost (rc=0 never enters it). **The rc=0 CLEAR the guard gives when
+  no anterior PR is left — the answer #27130 got on 25/11 — is not covered**: that face
+  stays with the preflight bar and the guard's own fix.
+  **It disappears when the guard itself reports the PR posterior to the claim** in
+  `implicit_occupation` — that fix is the guard's, not the harness's.
 - For `nb_coder`: a jupyter-papermill MCP server reachable — `NBCODER_PM_PY` (defaults to
   the ai-01 conda env when present, else the running interpreter) and `NBCODER_PM_CWD`.
 

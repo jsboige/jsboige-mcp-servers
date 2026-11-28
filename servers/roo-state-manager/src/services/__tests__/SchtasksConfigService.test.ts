@@ -3,7 +3,7 @@ import { SchtasksConfigService, type SchtaskConfig } from '../SchtasksConfigServ
 import type { PowerShellExecutionResult } from '../PowerShellExecutor';
 
 // Mock logger
-vi.mock('../../utils/logger', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     warn: vi.fn(),

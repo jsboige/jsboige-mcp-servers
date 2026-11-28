@@ -26,8 +26,8 @@ import { IConfigSharingService,
    ClaudeCodeScope // #601: Import ClaudeCodeScope type
 } from '../types/config-sharing.js';
 import { IInventoryCollector, IConfigService } from '../types/baseline.js';
-import { createLogger, Logger } from '../utils/logger.js';
-import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../types/errors.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
+import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '@vibesync/core/types/errors';
 import { InventoryService } from './roosync/InventoryService.js';
 import { readJSONFileWithoutBOM, readFileWithoutBOM } from '../utils/encoding-helpers.js';
 import { RollbackManager } from './RollbackManager.js';

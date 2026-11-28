@@ -17,7 +17,7 @@
 import type { IUnifiedStoreWriter } from './UnifiedStoreWriter.js';
 import { NullUnifiedStoreWriter } from './UnifiedStoreWriter.js';
 import { PgUnifiedStoreWriter } from './PgUnifiedStoreWriter.js';
-import { isPgFlagOn } from './pg-flags.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
 
 let instance: IUnifiedStoreWriter | null = null;
 

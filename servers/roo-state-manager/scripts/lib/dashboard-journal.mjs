@@ -179,6 +179,101 @@ export function nextDashboardState(dashboard, message) {
   };
 }
 
+// Identity of a message across two reads of the same key that do NOT come from
+// the same half (PG rows vs the parsed file). An id only counts when it was
+// persisted (`[msg: …]`): `parseDashboardMarkdown` synthesizes a FRESH id at
+// every parse for a block that carries none (dashboard-markdown.ts), so an
+// id-only comparison would see a "file-only addition" in every id-less block.
+// The content key is what survives the file round-trip (CRLF → LF, trimmed
+// block) — same basis as the module's own `intercomMessageFingerprint`.
+const messageKey = (m) =>
+  `${m.timestamp}|${m.author?.machineId}|${m.author?.workspace}|${String(m.content ?? '').replace(/\r\n/g, '\n').trim()}`;
+
+/**
+ * #4915 (review ms#1919): the messages a FILE state holds that `state` does
+ * not. `readDashboardFile` answers from PG as soon as the key has a readable
+ * row there, so an append whose own PG attempt failed — it exists only in the
+ * file — is invisible to that read. Returns the file messages absent from
+ * `state`, in file order; empty when the file holds nothing more.
+ */
+export function fileOnlyMessages(state, fileState) {
+  const own = state?.intercom?.messages ?? [];
+  const ownIds = new Set(own.map((m) => m.id));
+  const ownKeys = new Set(own.map(messageKey));
+  return (fileState?.intercom?.messages ?? []).filter(
+    (m) => !ownIds.has(m.id) && !ownKeys.has(messageKey(m))
+  );
+}
+
+/**
+ * Same read, with the file-only messages folded in: base order, then the
+ * file-only ones in file order. The counter never goes down. Returns `state`
+ * itself when there is nothing to fold. The input is never mutated.
+ */
+export function withFileOnlyMessages(state, fileState) {
+  const extra = fileOnlyMessages(state, fileState);
+  if (extra.length === 0) {
+    return state;
+  }
+  const total = (d) => d.intercom.totalMessages ?? d.intercom.messages.length;
+  return {
+    ...state,
+    intercom: {
+      ...state.intercom,
+      messages: [...state.intercom.messages, ...extra],
+      totalMessages: Math.max(total(state), total(fileState)),
+    },
+  };
+}
+
+/**
+ * #4915 (tier-2 review ai-01, 26/11 blocker 1): a STATUS change writes no
+ * message, so `fileOnlyMessages` is blind to it — a file whose status was
+ * updated during the PG attempt looks unchanged, and a mirror rendered from
+ * the pre-attempt base replaces it, then stamps the result `mirrorExportAt`
+ * ("up to date" while PG holds the older status).
+ *
+ * Returns true when the file's status DIFFERS from `state`'s and the file is
+ * not provably older: only then may the file not be replaced. A file that is
+ * merely BEHIND the base (its `lastModified` precedes the base's — the normal
+ * state of a mirror between two exports) is still mirrored: the status in
+ * `state` is the newer one, and refusing would freeze the file for good.
+ * An empty status on the file carries no claim to lose (older renderers wrote
+ * no section), and an undated file makes no freshness claim either.
+ */
+export function fileStatusSupersedes(state, fileState) {
+  const fileStatus = fileState?.status?.markdown;
+  if (typeof fileStatus !== 'string' || fileStatus.trim() === '') return false;
+  const stateStatus = state?.status?.markdown;
+  if (fileStatus.trim() === String(stateStatus ?? '').trim()) return false;
+  const fileAt = Date.parse(fileState?.lastModified ?? '');
+  if (Number.isNaN(fileAt)) return false;
+  const stateAt = Date.parse(state?.lastModified ?? '');
+  // An undated base cannot prove the file stale: the file's claim stands.
+  if (Number.isNaN(stateAt)) return true;
+  return fileAt >= stateAt;
+}
+
+/**
+ * #4915 follow-up (re-review ms#1919, web1 27/11): preserve is not carry.
+ * `fileStatusSupersedes` made the mirror SKIP, so the file kept a status PG had
+ * never received — and that preservation lasts one append at most: the base's
+ * `lastModified` advances with every append (`nextDashboardState`), after which
+ * the helper answers false and the next mirror renders the stale PG status over
+ * the newer one — on BOTH surfaces. The status is then lost for good.
+ *
+ * Returns `state` with the file's status carried into it (field-wise, the file
+ * wins on `markdown`), so the caller can report that status to PG and then
+ * render a mirror that is a TRUE export of what PG holds. Inputs are never
+ * mutated; a file without a status carries nothing and `state` is returned
+ * as-is.
+ */
+export function withFileStatus(state, fileState) {
+  const fileStatus = fileState?.status;
+  if (!fileStatus || typeof fileStatus.markdown !== 'string') return state;
+  return { ...state, status: { ...(state?.status ?? {}), ...fileStatus } };
+}
+
 // ── CLI arg grammar (shared, testable) ──────────────────────────────────────
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/;

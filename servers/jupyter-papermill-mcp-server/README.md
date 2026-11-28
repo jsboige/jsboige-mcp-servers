@@ -13,6 +13,9 @@ Un serveur MCP (Model Context Protocol) Python pour les opérations Jupyter Note
 - `add_cell` - Ajouter une cellule à un notebook
 - `remove_cell` - Supprimer une cellule d'un notebook
 - `update_cell` - Modifier une cellule d'un notebook
+  - Adressage par `index` et/ou `cell_id` ; les deux ensemble doivent désigner la même cellule
+  - Résultat : écho de la cellule écrite (`index`, `id`, `previous_source`)
+  - `dry_run=True` : valide l'adressage sans écrire (#4969)
 - **`read_cells`** 🆕 - **Outil consolidé** pour lire des cellules (remplace `read_cell`, `read_cells_range`, `list_notebook_cells`)
   - Mode `single` : Lire une cellule spécifique
   - Mode `range` : Lire une plage de cellules
@@ -256,6 +259,29 @@ async def main():
         "read_cells",
         path="example.ipynb",
         mode="all"
+    )
+
+    # 🆕 Modifier une cellule : adressage par index OU par id (#4969)
+    # `cell_id` reste valide même si une insertion a décalé les index depuis
+    # la construction de la carte d'index de l'appelant. Si les deux sont
+    # fournis, ils doivent désigner la même cellule, sinon l'appel est refusé.
+    # Le résultat écho la cellule réellement écrite : `index`, `id` et
+    # `previous_source` — de quoi prouver ce qui a été écrasé.
+    updated = await client.call_tool(
+        "update_cell",
+        path="example.ipynb",
+        cell_id="cfedaca8",
+        source="print('edited')"
+    )
+    # updated == {"index": 2, "id": "cfedaca8",
+    #             "previous_source": "print('original')", ...}
+
+    # `dry_run=True` valide l'adressage sans écrire (aucune `source` requise).
+    preview = await client.call_tool(
+        "update_cell",
+        path="example.ipynb",
+        index=2,
+        dry_run=True
     )
     
     # Démarrer un kernel et exécuter

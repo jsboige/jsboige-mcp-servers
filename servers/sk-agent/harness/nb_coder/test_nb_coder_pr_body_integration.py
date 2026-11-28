@@ -20,7 +20,7 @@ import nb_coder_driver as d
 
 
 def _sh(*cmd, cwd=None):
-    p = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd)
     assert p.returncode == 0, (cmd, p.stderr)
     return p.stdout
 

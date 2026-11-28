@@ -59,7 +59,7 @@ vi.mock('../../../src/utils/message-helpers.js', () => ({
 }));
 
 // logger
-vi.mock('../../../src/utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => mockLogger,
 }));
 

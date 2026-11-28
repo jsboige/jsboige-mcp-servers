@@ -21,7 +21,7 @@ import { createHash } from 'crypto';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { readFileWithoutBOM } from '../utils/encoding-helpers.js';
-import { createLogger, Logger } from '../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 
 const logger: Logger = createLogger('ClaudeSettingsService');
 
@@ -1064,12 +1064,21 @@ export interface PublishedSnapshotLookup {
 /**
  * Trouve le snapshot claude-settings le plus récent publié par une machine,
  * dans {shared}/configs/{machineId}/ :
- *   1. claude-settings/claude-settings.json (standalone)
- *   2. latest.json → .path (pointeur posé par publishConfig — source de vérité)
+ *   1. claude-settings/claude-settings.json (standalone) — CANDIDAT, pas un
+ *      raccourci : il perd contre la meilleure publication s'il est plus
+ *      ancien (#3544 — un standalone périmé masquait tout publish ultérieur,
+ *      et aucun writer de ce fichier n'existe dans la source : la preuve
+ *      publiée restait figée sans que rien ne le signale)
+ *   2. latest.json → .path (pointeur posé par publishConfig — source de vérité,
+ *      prioritaire sur les paquets même s'il pointe un paquet plus ancien)
  *   3. paquets versionnés — max par collectedAt du snapshot (JAMAIS par nom de
  *      dossier : #4010 — un dossier `vv…` ou `v2026.…` gagne lexicalement sur
  *      tous les `v1.1.1-…` publiés après lui, et la garde semver du publish
  *      n'est pas rétroactive sur les dossiers existants)
+ *
+ * La meilleure publication = pointeur s'il est lisible, sinon paquet le plus
+ * récent. Standalone vs publication : le plus récent gagne ; égalité (ou
+ * collectedAt illisible des deux côtés) => standalone, ordre historique.
  *
  * Retourne found:false (pas d'exception) si rien — l'appelant décide si
  * « pas de snapshot » = non couvert (compare) ou inconnu (drift distant).
@@ -1094,14 +1103,14 @@ export async function findLatestClaudeSettingsSnapshot(
     }
   };
 
-  // 1. Standalone
+  // 1. Standalone — candidat (#3544 : rendu seul, il masquait toute publication
+  //    plus récente).
   const standalone = join(configsDir, 'claude-settings', 'claude-settings.json');
-  if (existsSync(standalone)) {
-    const snap = await tryRead(standalone);
-    if (snap) return { found: true, snapshot: snap, path: standalone, collectedAt: snap.collectedAt };
-  }
+  let standaloneSnap: ClaudeSettingsSnapshot | undefined;
+  if (existsSync(standalone)) standaloneSnap = await tryRead(standalone);
 
   // 2. latest.json (pointeur explicite posé à chaque publish — prioritaire)
+  let published: { snap: ClaudeSettingsSnapshot; path: string } | undefined;
   try {
     const latestPath = join(configsDir, 'latest.json');
     if (existsSync(latestPath)) {
@@ -1110,7 +1119,7 @@ export async function findLatestClaudeSettingsSnapshot(
         const p = join(latest.path, 'claude-settings', 'claude-settings.json');
         if (existsSync(p)) {
           const snap = await tryRead(p);
-          if (snap) return { found: true, snapshot: snap, path: p, collectedAt: snap.collectedAt };
+          if (snap) published = { snap, path: p };
         }
       }
     }
@@ -1118,30 +1127,47 @@ export async function findLatestClaudeSettingsSnapshot(
 
   // 3. Paquets versionnés — max par collectedAt (date de collecte réelle),
   //    tie-break lexical inverse (comportement historique pour les égalités).
-  try {
-    const entries = await fs.readdir(configsDir, { withFileTypes: true });
-    const candidates: Array<{ dir: string; snap: ClaudeSettingsSnapshot }> = [];
-    for (const e of entries) {
-      if (!e.isDirectory() || !e.name.startsWith('v')) continue;
-      const p = join(configsDir, e.name, 'claude-settings', 'claude-settings.json');
-      if (!existsSync(p)) continue;
-      const snap = await tryRead(p);
-      if (snap) candidates.push({ dir: e.name, snap });
+  //    Consultés seulement sans pointeur lisible (#4010).
+  if (!published) {
+    try {
+      const entries = await fs.readdir(configsDir, { withFileTypes: true });
+      const candidates: Array<{ dir: string; snap: ClaudeSettingsSnapshot }> = [];
+      for (const e of entries) {
+        if (!e.isDirectory() || !e.name.startsWith('v')) continue;
+        const p = join(configsDir, e.name, 'claude-settings', 'claude-settings.json');
+        if (!existsSync(p)) continue;
+        const snap = await tryRead(p);
+        if (snap) candidates.push({ dir: e.name, snap });
+      }
+      candidates.sort((a, b) => {
+        const ta = Date.parse(a.snap.collectedAt);
+        const tb = Date.parse(b.snap.collectedAt);
+        const na = Number.isNaN(ta) ? -Infinity : ta;
+        const nb = Number.isNaN(tb) ? -Infinity : tb;
+        if (na !== nb) return nb - na; // plus récent d'abord
+        return b.dir.localeCompare(a.dir);
+      });
+      const winner = candidates[0];
+      if (winner) {
+        published = { snap: winner.snap, path: join(configsDir, winner.dir, 'claude-settings', 'claude-settings.json') };
+      }
+    } catch { /* répertoire illisible => pas de snapshot */ }
+  }
+
+  // #3544 : standalone vs meilleure publication — la collecte la plus récente
+  // gagne ; égalité (collectedAt illisible compris) => standalone.
+  if (standaloneSnap) {
+    const tStandalone = Date.parse(standaloneSnap.collectedAt);
+    const tPublished = published ? Date.parse(published.snap.collectedAt) : NaN;
+    const publicationIsNewer = !Number.isNaN(tPublished)
+      && (Number.isNaN(tStandalone) || tPublished > tStandalone);
+    if (!publicationIsNewer) {
+      return { found: true, snapshot: standaloneSnap, path: standalone, collectedAt: standaloneSnap.collectedAt };
     }
-    candidates.sort((a, b) => {
-      const ta = Date.parse(a.snap.collectedAt);
-      const tb = Date.parse(b.snap.collectedAt);
-      const na = Number.isNaN(ta) ? -Infinity : ta;
-      const nb = Number.isNaN(tb) ? -Infinity : tb;
-      if (na !== nb) return nb - na; // plus récent d'abord
-      return b.dir.localeCompare(a.dir);
-    });
-    const winner = candidates[0];
-    if (winner) {
-      const p = join(configsDir, winner.dir, 'claude-settings', 'claude-settings.json');
-      return { found: true, snapshot: winner.snap, path: p, collectedAt: winner.snap.collectedAt };
-    }
-  } catch { /* répertoire illisible => pas de snapshot */ }
+  }
+  if (published) {
+    return { found: true, snapshot: published.snap, path: published.path, collectedAt: published.snap.collectedAt };
+  }
 
   return { found: false };
 }

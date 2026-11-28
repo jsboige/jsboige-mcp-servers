@@ -10,7 +10,7 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypt
 import { promises as fs } from 'fs';
 import { join, dirname } from 'path';
 import { existsSync, mkdirSync } from 'fs';
-import { createLogger, Logger } from '../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import { ensureStoreSubdir } from '../utils/shared-state-path.js';
 
 const ALGORITHM = 'aes-256-gcm';

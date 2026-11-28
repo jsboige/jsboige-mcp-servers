@@ -168,7 +168,8 @@ Le même chemin par MCP depuis n'importe quel agent du siège :
 - `NBCODER_LANE` ou le param `lane` : le refus sans identité est voulu (F1/vllm#438).
 
 Variables de wiring (`NBCODER_SK_DIR/SK_PY/SK_CONFIG`, `NBCODER_GATE`,
-`NBCODER_ENGINE_METRICS`, `NBCODER_KERNEL_MAP`, `SK_AGENT_NB_CODER_HOME`) :
+`NBCODER_ENGINE_METRICS`, `NBCODER_KERNEL_MAP`, `SK_AGENT_NB_CODER_HOME`,
+`NBCODER_KERNEL_START_ATTEMPTS` — tentatives de démarrage de noyau, défaut 3) :
 résolution sibling par défaut, surchargeables — détail dans `harness/README.md`.
 
 **Prévol (24/11)** : avant toute dépense, le pilote refuse trois familles de défaut —
@@ -211,3 +212,112 @@ de l'incident (262 144 jetons, 400 `context_length_exceeded`).
 
 Le verdict JSON (`replay_report`) est la pièce jointe de l'issue ; les
 assertions vivent dans `test_nb_coder_window_replay.py` (CI).
+
+## 7. Relance du tapis — feeder puis scheduler (#1913)
+
+Le feeder (`nb_coder_feeder.py`) est **le seul observateur des créneaux libres** du tapis :
+il ajoute à la file du scheduler au plus `NBCODER_FEEDER_CAP` lignes de son `pending.jsonl`,
+dans son ordre. Il vit dans ce dossier depuis le portage #1913 ; aucune copie locale
+(`feeder.py`, `unfold.py`, `live_reserve.py`, `check_leaf.py`) ne doit tourner hors de
+l'arbre.
+
+### 7.1 Ordre : feeder, puis scheduler
+
+1. **Arrêter l'ancienne paire.** `TaskStop` tue **l'arbre** du processus : vérifier que
+   l'ancien pid du feeder **et** ses drivers (`nb_coder_driver`, noyaux jupyter) ne tournent
+   plus — un driver orphelin continue d'écrire son `driver.log`, et le scheduler marquerait
+   ses grains `orphaned` au lieu de les relancer.
+2. **Revalider** chaque ligne de la file et de `pending.jsonl` sur données vivantes (§7.2).
+3. **Démarrer le feeder.** Il relit `state.json` à chaque poll et **attend** tant que ce
+   fichier manque ou est illisible (`state-unreadable waiting` dans `feeder.log`) : c'est ce
+   qui lui interdit de re-nourrir un grain que le scheduler connaît déjà (trap 1).
+4. **Démarrer le scheduler** : il adopte la file au premier merge. Un scheduler ne démarre
+   pas sur une file vide (`queue is empty`), d'où l'ordre — sur un tapis **sans état**
+   (premier démarrage), écrire à la main la première ligne de la file, démarrer le
+   scheduler, puis le feeder.
+
+```bash
+python nb_coder_feeder.py --pending <dir>/pending.jsonl --queue <dir>/queue.jsonl \
+  --state-dir <dir>/state --repo jsboige/CoursIA --checkout <clone> --lane <machine>:<lane>
+python nb_coder_scheduler.py --queue <dir>/queue.jsonl --state-dir <dir>/state \
+  --repo <clone> --lane <machine>:<lane> --watch --timeout-s 86400
+```
+
+### 7.2 Revalider chaque ligne sur données vivantes
+
+Toute ligne de `pending.jsonl` est un cache **périmé par définition** (trap 5). Le feeder la
+revalide juste avant de la nourrir et **jette** (jamais rejouée : trap 4) une feuille fermée,
+livrée, tenue par une autre lane, dont la cible est déjà sur `origin/main` ou le jumeau
+source absent ; une lecture GitHub indisponible **garde** la ligne pour le poll suivant. Une
+réserve écrite à la main se **reconstruit**, elle ne se consomme pas telle quelle (trap 6) :
+
+```bash
+python nb_coder_reserve.py --repo jsboige/CoursIA --checkout <clone> --lane <machine>:<lane> --json reserve.json
+python nb_coder_leaf_check.py --issue <N> --repo jsboige/CoursIA --checkout <clone> --lane <machine>:<lane>
+```
+
+`nb_coder_leaf_check.py` sort 0 (nourrissable), 1 (rejet mesuré, voir `reject_reason`), 2
+(données vivantes indisponibles). `reserve_stale(ts)` dit qu'une réserve datée de plus de
+12 h — ou dans le futur — n'est plus digne de confiance. `NBCODER_KERNEL_START_ATTEMPTS`
+(défaut 3) borne les tentatives de démarrage de noyau du driver ; il est lu **à l'import**
+du driver, donc une valeur non entière ou < 1 refuse **tout** point d'entrée qui l'importe.
+
+### 7.3 Invariants du feeder (chacun un test de non-régression)
+
+- jamais re-nourrir un grain connu du scheduler, `withdrawn` compris, sans `"retry": N+1` ;
+- un `retry` **rajoute** la ligne si elle a quitté la file et la retient dans
+  `fed_lines.json` ;
+- un grain `deferred` ne compte pas contre `CAP` ;
+- aucune ligne que le chargeur fermé du scheduler refuserait n'entre dans la file : c'est
+  **son propre chargeur** (`nb_coder_scheduler.load_queue`) qui la juge, pas une seconde liste
+  de règles tenue à la main — champ inconnu, type faux, mais aussi `issue` ou `notebook`
+  manquant, chemin hors du dépôt, combinaisons interdites (`from_spec`/`claim_late`,
+  `revise_from`/`verify_from`) ;
+- cette vérification a lieu **à l'entrée de `pending.jsonl`**, avant tout appel GitHub
+  (`rejected <issue> bad-line <défaut> <ligne>`, `rejected unparseable-line …`) : une ligne
+  fausse qui attendrait dans `pending` tuerait le démon au poll suivant (revue du 28/11) ;
+- aucune page déjà dans `specs.txt` du kit n'est republiée, aucune feuille livrée rouverte.
+
+### 7.4 Une ligne d'unfold ne tue jamais le démon (revue du 27/11)
+
+Une lecture d'`origin/main` indisponible, un kit en échec (rc ≠ 0) ou qui écrit une bannière
+sur sa sortie : la ligne d'attente est **gardée** (`unfold-unmeasured`, ou
+`unfold-no-queue-line <clé> kit-error`), jamais jetée sur une supposition. Deux cas à
+connaître pour lire `feeder.log` :
+
+- **`rejected <issue> held-by-another-lane <lane>`** : la ligne est **jetée** (le journal
+  disait `skip`, qui se lit « on y reviendra »). La tenue n'a pas d'âge : un `[CLAIMED]`
+  d'une autre lane jette la ligne, quelle que soit sa date.
+- **Publication sans ligne de file** : `publish.py` sort 0 puis le kit ne rend pas exactement
+  une ligne (`unfold-no-queue-line`). La ligne d'attente est gardée **marquée
+  `"published": true`** ; au poll suivant le feeder relit la ligne du kit
+  (`unfold-resume-published`) **sans republier**. Tant que le kit ne la rend pas, la ligne
+  reste et le même message revient à chaque poll : c'est au kit de corriger son index, pas au
+  feeder de deviner. Une page publiée *avant* la ligne d'attente (sans la marque) reste
+  jetée : `unfold-rejected page-already-published`.
+
+### 7.5 Une réouverture écrit son commentaire avant de changer l'état (revue du 28/11)
+
+Une réouverture de feuille (`unfold.kind = reopen`) écrit deux fois sur GitHub : le
+**commentaire** `**Redépliée (c0021)** — … prise par le tapis nb_coder de la lane <lane>`,
+puis le passage de la feuille en `open`. **Le commentaire va toujours en premier** : il nomme
+la lane, c'est la seule marque qui dise, au poll suivant, si une feuille ouverte est *notre*
+réouverture. L'état va en dernier : une coupure entre les deux (limite secondaire, démon
+tué) laisse une feuille **fermée portant notre commentaire**, que le poll suivant termine
+sans second commentaire. L'ordre inverse laissait une feuille **ouverte sans commentaire**,
+indiscernable d'une feuille rouverte par une autre lane : le poll suivant la jetait
+`reopen-already-open` — feuille rouverte, sans commentaire, sans coche du lot, sans grain.
+
+`leaf_verdict` lit `reopened_by` : la lane nommée par le dernier commentaire de réouverture
+de la feuille. Pour une feuille **ouverte**, trois cas :
+
+- sans notre commentaire → `reopen-already-open`, **jetée** : une autre lane l'a rouverte, on
+  ne la prend pas et on ne commente pas deux fois ;
+- avec notre commentaire → notre réouverture, finie ou interrompue : la ligne est nourrie,
+  sans aucune écriture sur la feuille (la règle du scheduler sur les grains connus fait le
+  reste) ;
+- avec notre commentaire **puis** un `[CLAIMED]` d'une autre lane →
+  `reopen-held-by-another-lane`, jetée : la tenue se lit après la marque.
+
+Tests : `test_nb_coder_unfold.py` (`Seat`), `test_nb_coder_feeder.py` (`ReopenSeat`),
+`test_nb_coder_leaf_check.py` (`test_a_reopen_comment_names_the_lane_that_reopened_the_leaf`).

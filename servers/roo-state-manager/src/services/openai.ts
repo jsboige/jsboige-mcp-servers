@@ -1,7 +1,7 @@
 import * as crypto from 'crypto';
 import OpenAI from 'openai';
-import { StateManagerError } from '../types/errors.js';
-import { createLogger, Logger } from '../utils/logger.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import { refreshChatKeyEnvIfChanged } from './chat-key-refresh.js';
 import { resolveChatApiKey } from './chat-key.js';
 import { getEmbeddingClientTimeoutMs, getEmbeddingEndpointPlan, withoutExplicitContentLength } from './embedding-endpoints.js';

@@ -15,7 +15,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { DetailLevelStrategyFactory } from '../DetailLevelStrategyFactory.js';
 import { DetailLevel } from '../../../types/enhanced-conversation.js';
-import { StateManagerError } from '../../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 import { FullReportingStrategy } from '../strategies/FullReportingStrategy.js';
 import { MessagesReportingStrategy } from '../strategies/MessagesReportingStrategy.js';
 import { SummaryReportingStrategy } from '../strategies/SummaryReportingStrategy.js';

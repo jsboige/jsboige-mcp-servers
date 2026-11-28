@@ -10,7 +10,7 @@
  * CONTRAINTE : DRY-RUN ONLY - Aucune modification logs production
  */
 
-import { Logger } from '../../src/utils/logger';
+import { Logger } from '@vibesync/core/utils/logger';
 import { TestLogger, TestResult, generateTestReport } from './helpers/test-logger';
 import { existsSync, mkdirSync, writeFileSync, statSync, readdirSync, unlinkSync } from 'fs';
 import { join, normalize } from 'path';

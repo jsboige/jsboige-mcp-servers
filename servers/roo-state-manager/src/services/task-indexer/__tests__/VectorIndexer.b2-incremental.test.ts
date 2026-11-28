@@ -255,7 +255,7 @@ describe('VectorIndexer — #4861 B2 incremental pass + fail-closed scroll', () 
 
 	test('a pre-ledger session (all hashes found by scroll) converges to zero scrolls on pass 2', async () => {
 		const { indexTask } = await freshModule();
-		const { getDefaultLogger } = await import('../../../utils/logger.js');
+		const { getDefaultLogger } = await import('@vibesync/core/utils/logger');
 		const restore = silenceConsole();
 		const loopLines: string[] = [];
 		const infoSpy = vi.spyOn(getDefaultLogger(), 'info').mockImplementation((line: string) => {
@@ -312,7 +312,7 @@ describe('VectorIndexer — #4861 B2 incremental pass + fail-closed scroll', () 
 
 	test('a B2 scroll failure defers the pass: CIRCUIT_BREAKER_OPEN + scrollFailed, NO embedding, file-logged', async () => {
 		const { indexTask, getCircuitBreakerState } = await freshModule();
-		const { getDefaultLogger } = await import('../../../utils/logger.js');
+		const { getDefaultLogger } = await import('@vibesync/core/utils/logger');
 		const restore = silenceConsole();
 		const infoSpy = vi.spyOn(getDefaultLogger(), 'info');
 		try {
@@ -399,7 +399,7 @@ describe('VectorIndexer — #4861 B2 incremental pass + fail-closed scroll', () 
 
 	test('the B2 done loop line carries ledgerHits + scrollBatches (closure criterion measurable)', async () => {
 		const { indexTask } = await freshModule();
-		const { getDefaultLogger } = await import('../../../utils/logger.js');
+		const { getDefaultLogger } = await import('@vibesync/core/utils/logger');
 		const restore = silenceConsole();
 		const loopLines: string[] = [];
 		const infoSpy = vi.spyOn(getDefaultLogger(), 'info').mockImplementation((line: string) => {
@@ -426,7 +426,7 @@ describe('VectorIndexer — #4861 B2 incremental pass + fail-closed scroll', () 
 
 	test('ledgerHits counts TRUE ledger hits — duplicate content inside a session is not a ledger hit', async () => {
 		const { indexTask } = await freshModule();
-		const { getDefaultLogger } = await import('../../../utils/logger.js');
+		const { getDefaultLogger } = await import('@vibesync/core/utils/logger');
 		const restore = silenceConsole();
 		const loopLines: string[] = [];
 		const infoSpy = vi.spyOn(getDefaultLogger(), 'info').mockImplementation((line: string) => {
@@ -479,7 +479,7 @@ describe('VectorIndexer — #4861 B2 incremental pass + fail-closed scroll', () 
 
 	test('a fail-closed abort KEEPS the progress of the batches that answered — the retry does not restart at batch 0', async () => {
 		const { indexTask, resetCircuitBreakerForTest } = await freshModule();
-		const { getDefaultLogger } = await import('../../../utils/logger.js');
+		const { getDefaultLogger } = await import('@vibesync/core/utils/logger');
 		const restore = silenceConsole();
 		const loopLines: string[] = [];
 		const infoSpy = vi.spyOn(getDefaultLogger(), 'info').mockImplementation((line: string) => {
@@ -526,7 +526,7 @@ describe('VectorIndexer — #4861 B2 incremental pass + fail-closed scroll', () 
 
 	test('per-pass re-scan counter: hashes a previous pass found ABSENT are rescanned, never-scanned ones are newScan', async () => {
 		const { indexTask, resetCircuitBreakerForTest } = await freshModule();
-		const { getDefaultLogger } = await import('../../../utils/logger.js');
+		const { getDefaultLogger } = await import('@vibesync/core/utils/logger');
 		const restore = silenceConsole();
 		const loopLines: string[] = [];
 		const infoSpy = vi.spyOn(getDefaultLogger(), 'info').mockImplementation((line: string) => {

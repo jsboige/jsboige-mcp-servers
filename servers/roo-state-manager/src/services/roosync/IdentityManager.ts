@@ -9,14 +9,14 @@
  * @version 2.0.0 (#2121 Phase 2.1: dashboard-derived identity)
  */
 
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import { RooSyncConfig } from '../../config/roosync-config.js';
 import { PresenceManager } from './PresenceManager.js';
 import { HeartbeatService } from './HeartbeatService.js';
 import {
   IdentityManagerError,
   IdentityManagerErrorCode
-} from '../../types/errors.js';
+} from '@vibesync/core/types/errors';
 
 const logger = createLogger('IdentityManager');
 

@@ -87,7 +87,7 @@ def _commit(r: Path, rel: str, nb: dict, msg: str) -> str:
     _sh("git", "add", rel, cwd=r)
     _sh("git", "commit", "-q", "-m", msg, cwd=r)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=r, capture_output=True,
-                          text=True, check=True).stdout.strip()
+                          text=True, encoding="utf-8", errors="replace", check=True).stdout.strip()
 
 
 SRC = "Sudoku/Sudoku-07-Norvig-Python.ipynb"
@@ -117,7 +117,7 @@ def test_source_absent_at_base_or_unreadable_main_is_unmeasured(tmp_path):
     _sh("git", "rm", "-q", SRC, cwd=r)
     _sh("git", "commit", "-q", "-m", "drop twin", cwd=r)
     main = subprocess.run(["git", "rev-parse", "HEAD"], cwd=r, capture_output=True,
-                          text=True, check=True).stdout.strip()
+                          text=True, encoding="utf-8", errors="replace", check=True).stdout.strip()
     _sh("git", "update-ref", "refs/remotes/origin/main", main, cwd=r)
     assert nbdr.source_drift(r, gone, SRC)["drift"] == "deleted"
 
@@ -169,7 +169,7 @@ def _worktree_on(tmp_path, main_nb):
 
 def _head(r):
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=r, capture_output=True,
-                          text=True, check=True).stdout.strip()
+                          text=True, encoding="utf-8", errors="replace", check=True).stdout.strip()
 
 
 def test_stage5_markdown_only_drift_rebases_on_origin_main(tmp_path):
@@ -658,7 +658,8 @@ def test_a_resume_with_nothing_new_rewrites_nothing(tmp_path):
     assert built.read_bytes() == raw and not list(out.glob("*.pre-graft-*"))
     assert "gagné" not in bodies["pr"] and "markdown seul" not in bodies["pr"]
     parent = subprocess.run(["git", "-C", str(r), "rev-parse", "HEAD^"], capture_output=True,
-                            text=True, check=True).stdout.strip()
+                            text=True, encoding="utf-8", errors="replace",
+                            check=True).stdout.strip()
     assert parent == main and _head(r) != prev
 
 
@@ -694,7 +695,8 @@ def test_a_resume_starts_its_branch_from_origin_main_even_without_drift(tmp_path
         assert "rebased" not in rec["pr"]["source_drift"]
     assert "markdown seul" not in bodies["pr"]
     parent = subprocess.run(["git", "-C", str(r), "rev-parse", "HEAD^"], capture_output=True,
-                            text=True, check=True).stdout.strip()
+                            text=True, encoding="utf-8", errors="replace",
+                            check=True).stdout.strip()
     assert parent == main and _head(r) != prev
 
 
@@ -747,7 +749,8 @@ def test_stage5_base_rev_is_the_head_the_trace_recorded(tmp_path):
 
 def _origin_head(r: Path, ref: str) -> str:
     out = subprocess.run(["git", "-C", str(r), "ls-remote", "origin", ref], capture_output=True,
-                         text=True, check=True).stdout.split()
+                         text=True, encoding="utf-8", errors="replace",
+                         check=True).stdout.split()
     return out[0] if out else ""
 
 
@@ -814,7 +817,8 @@ def test_a_resume_from_pr_create_failed_replaces_only_the_commit_it_pushed(tmp_p
     assert rec["pr"]["commit"] != 0 and _head(r).startswith(rec["pr"]["commit"])
     assert _origin_head(r, f"refs/heads/{name}") == _head(r), "origin holds the resume's commit"
     parent = subprocess.run(["git", "-C", str(r), "rev-parse", "HEAD^"], capture_output=True,
-                            text=True, check=True).stdout.strip()
+                            text=True, encoding="utf-8", errors="replace",
+                            check=True).stdout.strip()
     assert parent == main
 
 

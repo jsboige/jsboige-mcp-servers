@@ -29,7 +29,7 @@
  * @issue #4608 (mandate user 04/11 — « La condensation RSM est tjs HS »)
  */
 
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import { readStoreMetaValue, upsertStoreMetaValue } from '../../services/unified-store/store-meta.js';
 
 /**

@@ -43,9 +43,9 @@ import type { UnifiedStoreWriteOutcome } from './UnifiedStoreWriter.js';
 import type { HarmonizationCampaignRow, HarmonizationConfirmationRow } from './types.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
-import { isPgFlagOn } from './pg-flags.js';
-import { isHarmonizationPgPrimaryEnabled, isHarmonizationReadPgEnabled } from './pg-read-gates.js';
-import { createLogger } from '../../utils/logger.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
+import { isHarmonizationPgPrimaryEnabled, isHarmonizationReadPgEnabled } from '@vibesync/core/services/unified-store/pg-read-gates';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('roosync-harmonization-store');
 

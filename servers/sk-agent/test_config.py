@@ -8,8 +8,10 @@ Tests cover:
 - Dataclass parsing (round-trip)
 - Edge cases (missing fields, duplicates, etc.)
 - Default agent resolution
+- Loader contract on the PARSED config (v1 witness, duplicate-id fusion)
 """
 
+import copy
 import json
 import os
 import sys
@@ -630,3 +632,400 @@ class TestHelpers:
 
     def test_infer_context_window_default(self):
         assert _infer_context_window({}) == 32_000
+
+
+# ---------------------------------------------------------------------------
+# Loader contract on the PARSED config (vllm#627 follow-up)
+# ---------------------------------------------------------------------------
+#
+# A clean `validate_config` is not a sound config. Fusing two files by block
+# (append the second file's ``models`` / ``agents`` to the first's) produces
+# duplicate ids that validation only LOGS; ``load_config`` then keeps every
+# entry in the list while ``get_agent`` / ``get_model`` resolve the LAST one
+# (``_agent_map = {a.id: a for a in agents}``), so the earlier entry stays in
+# ``cfg.agents`` and no lookup reaches it. The witness below is the reverse
+# check: a form the loader demonstrably degrades must FAIL the same criteria
+# the healthy forms PASS — a harness that only ever says OK proves nothing
+# (measured outside the repo on vllm#627; frozen here at po-2028's request).
+#
+# These tests live in this file, not in a new ``test_config_*.py``, on
+# purpose: CI runs an explicit file list (``.github/workflows/ci.yml``, job
+# ``test-sk-agent``) and a file missing from it never runs — the stale assert
+# of ``test_inventory_validation.py`` sat red, unseen, for exactly that
+# reason.
+
+TEMPLATE_PATH = Path(__file__).parent / "sk_agent_config.template.json"
+
+# The pre-fix example file declared these 10 presets (vllm#627 old head).
+V1_WITNESS_PRESETS = [
+    "analyst",
+    "fast",
+    "classifier-local",
+    "summarizer-local",
+    "formatter-local",
+    "vision-local",
+    "voltron-extract",
+    "voltron-classify",
+    "voltron-numbers",
+    "voltron-diff",
+]
+
+
+def _set_placeholder_env(monkeypatch) -> None:
+    """Deterministic placeholder resolution: CI carries no fleet environment."""
+    monkeypatch.setenv("HUB_BASE_URL", "http://hub.example.test/v1")
+    monkeypatch.setenv("OPEN_TERMINAL_URL", "http://open-terminal.example.test:8000")
+    monkeypatch.setenv("SEARXNG_URL", "http://searxng.example.test")
+
+
+def _load_doc(tmp_path, doc: dict, name: str = "cfg.json"):
+    """Write ``doc`` and load it through the real entry point.
+
+    ``sk_agent_config`` is imported at CALL time: ``test_recursion_guard``
+    reloads the module into the same pytest process (see
+    ``test_inventory_validation.py``), so a name bound at collection time can
+    belong to the pre-reload class.
+    """
+    import sk_agent_config  # noqa: PLC0415
+
+    path = tmp_path / name
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return sk_agent_config.load_config(str(path))
+
+
+def _duplicates(values) -> list[str]:
+    seen, dups = set(), set()
+    for value in values:
+        if value in seen:
+            dups.add(value)
+        seen.add(value)
+    return sorted(dups)
+
+
+def _resolution(cfg) -> dict[str, bool]:
+    """Per-agent verdict read from the PARSE: can a call reach a model?"""
+    out = {}
+    for agent in cfg.agents:
+        model = cfg.get_model(agent.model) if agent.model else None
+        out[agent.id] = bool(
+            agent.config_error is None
+            and model is not None
+            and model.enabled
+            and model.base_url_error is None
+        )
+    return out
+
+
+def _publication_report(cfg, declared_ids) -> dict[str, list[str]]:
+    """The criteria a published config must satisfy, all read from the parse."""
+    parsed = [agent.id for agent in cfg.agents]
+    resolved = _resolution(cfg)
+    return {
+        "missing": sorted(set(declared_ids) - set(parsed)),
+        "duplicates": _duplicates(parsed),
+        "unresolved": sorted(agent_id for agent_id, ok in resolved.items() if not ok),
+    }
+
+
+class TestLoaderContractOnParsedConfig:
+    """The loader's contract, asserted on what ``load_config`` RETURNS."""
+
+    @pytest.fixture
+    def v1_single_model_witness(self) -> dict:
+        """The pre-fix shape (vllm#627 old head ``fe831e5e62``), sanitised.
+
+        No ``config_version``; a SINGULAR ``model`` block carrying
+        ``default_model`` and ``sampling``; an ``agents`` array of 10 presets.
+        Every value is a dummy — the shape is the point, not the values.
+        """
+        return {
+            "_comment": "v1-shaped: singular model block, preset list below",
+            "model": {
+                "base_url": "https://models.example.test/v1",
+                "api_key_env": "VLLM_API_KEY_SWIFT",
+                "default_model": "swift-1.5-27b",
+                "vision": True,
+                "sampling": {
+                    "temperature": 0.7,
+                    "top_p": 0.95,
+                    "top_k": 20,
+                    "presence_penalty": 1.5,
+                    "max_tokens": 4096,
+                },
+            },
+            "agents": [
+                {"id": agent_id, "model": "swift-1.5-27b", "system_prompt": "p"}
+                for agent_id in V1_WITNESS_PRESETS
+            ],
+            "mcps": [],
+        }
+
+    def test_v1_single_model_witness_fails_the_publication_criteria(
+        self, tmp_path, v1_single_model_witness
+    ):
+        """Witness: the old head does not survive the loader.
+
+        ``migrate_config_v1_to_v2`` turns the singular ``model`` block into a
+        one-entry pool with id ``default`` and derives ONE agent from it; the
+        declared ``agents`` array is never copied, so all 10 presets are lost
+        before any parse. The declared sampling is ignored too: it sits inside
+        the model entry, so the global sampling keeps its defaults — the block
+        was not merely superfluous, it was unread.
+        """
+        import sk_agent_config  # noqa: PLC0415
+
+        cfg = _load_doc(tmp_path, v1_single_model_witness, "witness.json")
+
+        # The file is migrated, not rejected: nothing raises.
+        assert cfg.config_version == 2
+        assert [model.id for model in cfg.models] == ["default"]
+        assert [agent.id for agent in cfg.agents] == ["default"]
+        assert cfg.sampling.temperature == 1.0
+        assert cfg.sampling.top_p == 1.0
+        assert cfg.sampling.top_k == -1
+
+        # The criteria the healthy forms PASS report the amputation.
+        report = _publication_report(cfg, V1_WITNESS_PRESETS)
+        assert report["missing"] == sorted(V1_WITNESS_PRESETS)  # 10 declared, 0 kept
+
+        # Validation names the two leftovers that leaked into the model entry.
+        # The errors exist, but they are NOT what makes this file broken: the
+        # presets are already gone by then.
+        migrated = sk_agent_config.migrate_config_v1_to_v2(
+            copy.deepcopy(v1_single_model_witness)
+        )
+        errors = sk_agent_config.validate_config(migrated)
+        assert any("models.0.default_model" in error for error in errors), errors
+        assert any("models.0.sampling" in error for error in errors), errors
+
+    def test_shipped_template_parses_every_declared_agent(self, monkeypatch):
+        """The versioned template must come back entry for entry.
+
+        ``test_inventory_validation`` guards it at the VALIDATION level; this
+        asserts the PARSE — no entry dropped, none rejected, every agent
+        reaching an enabled model without a base_url error.
+        """
+        import sk_agent_config  # noqa: PLC0415
+
+        _set_placeholder_env(monkeypatch)
+        raw = json.loads(TEMPLATE_PATH.read_text(encoding="utf-8"))
+        declared = [agent["id"] for agent in raw.get("agents", [])]
+
+        cfg = sk_agent_config.load_config(str(TEMPLATE_PATH))
+
+        assert [agent.id for agent in cfg.agents] == declared
+        assert all(agent.config_error is None for agent in cfg.agents)
+        report = _publication_report(cfg, declared)
+        assert report == {"missing": [], "duplicates": [], "unresolved": []}
+
+    def test_additive_publication_keeps_every_template_agent_intact(
+        self, monkeypatch, tmp_path
+    ):
+        """The publication path measured on vllm#627: additive, distinct ids.
+
+        Base + one model + four presets at ids the template does not carry.
+        Every template agent must come back identical — same model, same MCP
+        list, same memory flag, same prompt — and the presets must resolve.
+        This is the positive control: the criteria above can PASS.
+        """
+        import sk_agent_config  # noqa: PLC0415
+
+        _set_placeholder_env(monkeypatch)
+        base_raw = json.loads(TEMPLATE_PATH.read_text(encoding="utf-8"))
+        base = sk_agent_config.load_config(str(TEMPLATE_PATH))
+        declared = [agent["id"] for agent in base_raw.get("agents", [])]
+        # Test-owned ids. The scenario is "one model + four presets the base
+        # does not carry", so the ids must stay distinct from the template
+        # even on the day the real voltron-* presets are published to it —
+        # hard-coding their names would turn this test red on that
+        # legitimate change instead of on the regression it guards.
+        model_id = "publication-test-harness"
+        preset_ids = [
+            "publication-test-" + suffix
+            for suffix in ("extract", "classify", "numbers", "diff")
+        ]
+
+        additive = copy.deepcopy(base_raw)
+        model_ids = {m.get("id") for m in additive.get("models", [])}
+        assert model_id not in model_ids  # distinct id, by construction
+        assert not set(preset_ids) & set(declared)
+        additive["models"].append(
+            {
+                "id": model_id,
+                "enabled": True,
+                "base_url": "https://harness.example.test/v1",
+                "api_key_env": "VLLM_API_KEY_SWIFT",
+                "model_id": model_id,
+            }
+        )
+        additive["agents"].extend(
+            {
+                "id": agent_id,
+                "model": model_id,
+                "system_prompt": "p",
+                "mcps": [],
+                "memory": {"enabled": False},
+            }
+            for agent_id in preset_ids
+        )
+
+        assert sk_agent_config.validate_config(additive) == []
+
+        cfg = _load_doc(tmp_path, additive, "additive.json")
+
+        assert [agent.id for agent in cfg.agents] == declared + preset_ids
+        for agent in base.agents:
+            grown = cfg.get_agent(agent.id)
+            assert grown is not None
+            assert grown.model == agent.model
+            assert grown.mcps == agent.mcps
+            assert grown.memory.enabled == agent.memory.enabled
+            assert grown.system_prompt == agent.system_prompt
+        report = _publication_report(cfg, declared + preset_ids)
+        assert report == {"missing": [], "duplicates": [], "unresolved": []}
+
+    def test_block_fusion_last_id_wins_and_amputates_the_parse(self, tmp_path):
+        """The trap: fusing two files by appending the second one's lists.
+
+        Measured on vllm#627: validation LOGS the duplicate ids and lets the
+        load through, and on the PARSED config the later entry wins — the
+        earlier one keeps its place in ``cfg.agents`` but no lookup reaches
+        it. Assertions below read the parse, never the log: a test that only
+        reads the errors reports them and still calls the file sound.
+        """
+        import sk_agent_config  # noqa: PLC0415
+
+        base = {
+            "config_version": 2,
+            "models": [
+                {
+                    "id": "swift-1.5-27b",
+                    "enabled": True,
+                    "base_url": "https://medium.example.test/v1",
+                    "api_key_env": "VLLM_API_KEY_SWIFT",
+                    "model_id": "swift-1.5-27b",
+                },
+                {
+                    "id": "swift-1.5-27b-no-thinking",
+                    "enabled": True,
+                    "base_url": "https://medium.example.test/v1",
+                    "api_key_env": "VLLM_API_KEY_SWIFT",
+                    "model_id": "swift-1.5-27b-no-thinking",
+                },
+                {
+                    "id": "frognano-4b",
+                    "enabled": True,
+                    "base_url": "https://nano.example.test/v1",
+                    "api_key_env": "FROGNANO_API_KEY",
+                    "model_id": "frognano-4b",
+                },
+            ],
+            "mcps": [
+                {"id": "searxng", "command": "npx", "args": ["-y", "mcp-searxng"]},
+                {"id": "playwright", "command": "npx", "args": ["-y", "@playwright/mcp"]},
+                {"id": "markitdown", "command": "uvx", "args": ["markitdown-mcp"]},
+            ],
+            "agents": [
+                {
+                    "id": "analyst",
+                    "model": "swift-1.5-27b",
+                    "system_prompt": "base analyst",
+                    "mcps": ["searxng", "playwright", "markitdown"],
+                    "memory": {"enabled": True},
+                },
+                {
+                    "id": "vision-local",
+                    "model": "swift-1.5-27b",
+                    "system_prompt": "base vision",
+                    "mcps": ["searxng", "playwright", "markitdown"],
+                    "memory": {"enabled": False},
+                },
+                {
+                    "id": "summarizer-local",
+                    "model": "frognano-4b",
+                    "system_prompt": "base summarizer",
+                    "mcps": [],
+                    "memory": {"enabled": False},
+                },
+            ],
+            "embeddings": {"base_url": "https://emb.example.test", "model_id": "emb"},
+        }
+        # The example file's shape: agent ids already in the base, with no
+        # MCPs and no memory of their own, plus a new model and a new preset.
+        overlay = {
+            "config_version": 2,
+            "models": [
+                {**base["models"][0], "base_url": "https://hub.example.test/v1"},
+                {**base["models"][1], "base_url": "https://hub.example.test/v1"},
+                {
+                    "id": "voltron-harness",
+                    "enabled": True,
+                    "base_url": "https://harness.example.test/v1",
+                    "api_key_env": "VLLM_API_KEY_SWIFT",
+                    "model_id": "voltron-harness",
+                },
+            ],
+            "agents": [
+                {
+                    "id": "analyst",
+                    "model": "swift-1.5-27b",
+                    "system_prompt": "overlay analyst",
+                },
+                {
+                    "id": "vision-local",
+                    "model": "swift-1.5-27b",
+                    "system_prompt": "overlay vision",
+                },
+                {
+                    "id": "summarizer-local",
+                    "model": "swift-1.5-27b-no-thinking",
+                    "system_prompt": "overlay summarizer",
+                },
+                {
+                    "id": "voltron-extract",
+                    "model": "voltron-harness",
+                    "system_prompt": "overlay extract",
+                },
+            ],
+            "mcps": [],
+        }
+        fused = copy.deepcopy(base)
+        fused["models"].extend(copy.deepcopy(overlay["models"]))
+        fused["agents"].extend(copy.deepcopy(overlay["agents"]))
+
+        # Validation SEES the duplicates — and lets the load through anyway.
+        errors = sk_agent_config.validate_config(fused)
+        for duplicated_id in ("swift-1.5-27b", "analyst", "vision-local", "summarizer-local"):
+            assert any(duplicated_id in error for error in errors), (
+                duplicated_id,
+                errors,
+            )
+
+        cfg = _load_doc(tmp_path, fused, "fused.json")
+
+        # Nothing is dropped: the earlier entries are still in the list...
+        ids = [agent.id for agent in cfg.agents]
+        assert len(ids) == len(base["agents"]) + len(overlay["agents"])
+        assert _duplicates(ids) == ["analyst", "summarizer-local", "vision-local"]
+
+        # ...but every lookup resolves the LAST entry, so the earlier one is
+        # unreachable by id — the amputation. Only the parse shows it.
+        analyst = cfg.get_agent("analyst")
+        assert analyst is not None
+        assert analyst.system_prompt == "overlay analyst"
+        assert analyst.mcps == []
+        assert analyst.memory.enabled is False
+        first_analyst = [agent for agent in cfg.agents if agent.id == "analyst"][0]
+        assert first_analyst.mcps == ["searxng", "playwright", "markitdown"]
+        assert first_analyst.memory.enabled is True
+
+        assert cfg.get_agent("vision-local").mcps == []
+        assert cfg.get_agent("summarizer-local").model == "swift-1.5-27b-no-thinking"
+        assert cfg.get_model("swift-1.5-27b").base_url == "https://hub.example.test/v1"
+
+        # The file is not rejected: the new preset resolves fine, and the
+        # shared criteria report the duplicates.
+        assert _resolution(cfg)["voltron-extract"] is True
+        report = _publication_report(cfg, [a["id"] for a in base["agents"]])
+        assert report["duplicates"] == ["analyst", "summarizer-local", "vision-local"]
+        assert report["unresolved"] == []

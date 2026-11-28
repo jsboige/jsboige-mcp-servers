@@ -496,29 +496,59 @@ def _stable_str(obj: Any) -> str:
         return str(obj)
 
 
-def _replace_text_in_message(
-    message: ChatMessageContent, new_text: str
+def _condense_message_payload(
+    message: ChatMessageContent, summary: str, args_cap: int
 ) -> ChatMessageContent:
-    """Return a copy of ``message`` whose TextContent items are collapsed
-    into a single TextContent with ``new_text``.
+    """Return a copy of ``message`` whose bulky payloads carry ``summary``.
 
-    Non-text items (tool calls, images) are preserved in their original
-    order. The returned message has the same role as the input.
+    A message's bulk can live in a TextContent (agent prose) or in the
+    ``arguments`` of a FunctionCallContent (nb_coder's ~10 KB per-round
+    call). The pre-#4816 pass only collapsed text and *appended* a
+    summary to call-only messages, so on the nb_coder morphology it grew
+    the history instead of shrinking it (measured: +69 691 estimated
+    tokens over a 70-round turn, #4816). Oversized arguments are now
+    condensed too, exactly as the issue asks ("paramètres d'appels
+    condensés plus agressivement").
+
+    The call keeps its ``id`` and ``name`` — only the payload changes —
+    so the result still answers the same call on the wire. When the
+    rebuilt message would not be smaller than the original, the original
+    is returned: this pass never grows a message.
     """
+    summary_placed = False
     new_items: list[Any] = []
-    inserted = False
     for item in message.items:
         if isinstance(item, TextContent):
-            if not inserted:
-                new_items.append(TextContent(text=new_text))
-                inserted = True
+            if not summary_placed:
+                new_items.append(TextContent(text=summary))
+                summary_placed = True
             # else: drop the additional TextContent items — they get merged.
             continue
+        if isinstance(item, FunctionCallContent):
+            args_chars = len(_stable_str(getattr(item, "arguments", None) or {}))
+            if args_chars > args_cap:
+                if summary_placed:
+                    # The summary already rides this message's text slot;
+                    # the call only needs a marker, not a second copy.
+                    new_items.append(
+                        item.model_copy(
+                            update={"arguments": {"_condensed_chars": args_chars}}
+                        )
+                    )
+                else:
+                    new_items.append(
+                        item.model_copy(update={"arguments": {"_summary": summary}})
+                    )
+                    summary_placed = True
+                continue
         new_items.append(item)
-    if not inserted:
+    if not summary_placed:
         # Nothing textual to replace — append a TextContent at the end.
-        new_items.append(TextContent(text=new_text))
-    return ChatMessageContent(role=message.role, items=new_items)
+        new_items.append(TextContent(text=summary))
+    condensed = ChatMessageContent(role=message.role, items=new_items)
+    if _message_chars(condensed) >= _message_chars(message):
+        return message
+    return condensed
 
 
 def _set_tool_result_text(
@@ -526,19 +556,18 @@ def _set_tool_result_text(
 ) -> ChatMessageContent:
     """Replace ``FunctionResultContent.result`` text in a copy of the message.
 
-    Tool calls themselves are preserved; only the result payload is
-    rewritten. When a message carries multiple tool results, each is
+    Only the payload changes: ``id``, ``call_id`` and ``plugin_name`` stay
+    on the item (#4816) — they are what pairs the result with its call on
+    the wire. When a message carries multiple tool results, each is
     rewritten to the same compact form.
     """
     new_items: list[Any] = []
     for item in message.items:
         if isinstance(item, FunctionResultContent):
-            new_items.append(
-                FunctionResultContent(
-                    function_name=item.function_name,
-                    result=new_text,
-                )
-            )
+            # Rebuilding the item dropped ``id``, and SK renders a TOOL
+            # message's wire field as ``items[0].id or ""`` — the pruned
+            # result then travelled as an unpaired ``tool_call_id``.
+            new_items.append(item.model_copy(update={"result": new_text}))
         else:
             new_items.append(item)
     return ChatMessageContent(role=message.role, items=new_items)
@@ -889,7 +918,13 @@ class ContextCondenser:
         messages: list[ChatMessageContent],
         cfg: CondensationConfig,
     ) -> tuple[list[ChatMessageContent], PassMetrics]:
-        """Summarise non-recent messages (text + oversized tool results)."""
+        """Summarise non-recent messages, text and call arguments alike.
+
+        Differs deliberately from pass 2 (which truncates tool results):
+        here the message keeps its place and its call identity, and only
+        its payload is replaced by a bounded summary. Never grows a
+        message — see :func:`_condense_message_payload`.
+        """
         start = time.monotonic()
         chars_in = sum(_message_chars(m) for m in messages)
         if len(messages) <= cfg.recent_message_window:
@@ -911,7 +946,7 @@ class ContextCondenser:
                 summary = await self._summariser.summarise(
                     text, max_tokens=cfg.summarise_max_tokens
                 )
-                out.append(_replace_text_in_message(m, summary))
+                out.append(_condense_message_payload(m, summary, cfg.max_tool_chars))
             else:
                 out.append(m)
         chars_out = sum(_message_chars(m) for m in out)
@@ -945,6 +980,17 @@ class ContextCondenser:
            falls under ``context_window * trigger_fraction * 0.6`` (60 %
            of the trigger threshold leaves a safety margin).
 
+        Trimming is **atomic per tool round** (#4816): a message carrying
+        tool calls travels with the pure tool-result messages that answer
+        it, because the wire pairs a result with its call — dropping one
+        half sends an orphan result (or a call whose result never comes),
+        with nothing left to tie the result to its call. The hard cap is
+        therefore a lower bound: when the next whole pair would straddle
+        it, the pair is kept and the pass stops one message above the
+        floor. A call still awaiting its result (mid-turn: SK appends the
+        current tool's result only after its filter stack returns) is
+        never trimmed.
+
         When neither bound kicks in, the messages pass through unchanged.
         """
         start = time.monotonic()
@@ -966,29 +1012,32 @@ class ContextCondenser:
         target = None
         if context_window and cfg.trigger_fraction is not None:
             target = int(context_window * cfg.trigger_fraction * 0.6)
-        out = list(messages)
-        while len(out) > keep:
-            total = sum(_message_tokens(m) for m in out)
-            if target is not None and total <= target:
-                break
-            # Review #3944 pt 1 + #1266: never trim the system prompt nor
-            # the FIRST user message (mission preservation) — pop the
-            # oldest message that is neither.
-            first_user_idx = next(
-                (i for i, m in enumerate(out) if m.role == AuthorRole.USER),
-                None,
-            )
-            idx = next(
-                (
-                    i
-                    for i, m in enumerate(out)
-                    if m.role != AuthorRole.SYSTEM and i != first_user_idx
-                ),
-                None,
-            )
-            if idx is None:
-                break  # only protected messages left — nothing trimmable
-            out.pop(idx)
+        # Review #3944 pt 1 + #1266: never trim the system prompt nor the
+        # FIRST user message (mission preservation).
+        first_user_idx = next(
+            (i for i, m in enumerate(messages) if m.role == AuthorRole.USER),
+            None,
+        )
+        out: list[ChatMessageContent] = []
+        kept = len(messages)
+        total = sum(_message_tokens(m) for m in messages)
+        trimming = True
+        for indices in _tool_units(messages):
+            size = len(indices)
+            if trimming:
+                if kept <= keep or (target is not None and total <= target):
+                    trimming = False
+                elif _unit_is_protected(messages, indices, first_user_idx):
+                    pass  # never dropped; the units after it are younger
+                elif kept - size >= keep:
+                    total -= sum(_message_tokens(messages[i]) for i in indices)
+                    kept -= size
+                    continue  # dropped as a whole
+                else:
+                    # A whole pair would straddle the floor — keep it, and
+                    # everything newer, rather than split it.
+                    trimming = False
+            out.extend(messages[i] for i in indices)
         chars_out = sum(_message_chars(m) for m in out)
         return out, PassMetrics(
             name="threshold",
@@ -1035,6 +1084,62 @@ class ContextCondenser:
 
 def _has_tool_result(message: ChatMessageContent) -> bool:
     return any(isinstance(item, FunctionResultContent) for item in message.items)
+
+
+def _has_tool_call(message: ChatMessageContent) -> bool:
+    return any(isinstance(item, FunctionCallContent) for item in message.items)
+
+
+def _is_pure_tool_result(message: ChatMessageContent) -> bool:
+    """A result-only message — no text, no call (pass 1's own definition)."""
+    return _has_tool_result(message) and not _has_text_or_call(message)
+
+
+def _tool_units(messages: list[ChatMessageContent]) -> list[list[int]]:
+    """Partition message indices into atomic trim units (#4816).
+
+    A message carrying tool calls forms one unit with the pure tool-result
+    messages that immediately follow it: the wire pairs a result with its
+    call, so the two are kept or dropped together. Any other message is a
+    unit of its own.
+    """
+    units: list[list[int]] = []
+    i = 0
+    while i < len(messages):
+        j = i + 1
+        if _has_tool_call(messages[i]):
+            while j < len(messages) and _is_pure_tool_result(messages[j]):
+                j += 1
+        units.append(list(range(i, j)))
+        i = j
+    return units
+
+
+def _unit_is_protected(
+    messages: list[ChatMessageContent],
+    indices: list[int],
+    first_user_idx: int | None,
+) -> bool:
+    """True when this unit must survive the threshold pass.
+
+    Two causes: the system prompt and the FIRST user message are never
+    trimmed (#3944 pt 1 / #1266, mission preservation); and a tool call
+    whose results have not all landed yet cannot be trimmed mid-turn — SK
+    1.42 appends the current tool's result only after its filter stack
+    returns, so the result would then arrive orphaned (#4816).
+    """
+    calls = 0
+    results = 0
+    for i in indices:
+        message = messages[i]
+        if message.role == AuthorRole.SYSTEM or i == first_user_idx:
+            return True
+        for item in message.items:
+            if isinstance(item, FunctionCallContent):
+                calls += 1
+            elif isinstance(item, FunctionResultContent):
+                results += 1
+    return results < calls
 
 
 def _first_text(message: ChatMessageContent) -> str:

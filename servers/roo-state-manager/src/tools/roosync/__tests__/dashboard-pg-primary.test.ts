@@ -78,9 +78,11 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   isDashboardPgPrimary: mockIsDashboardPgPrimary,
 }));
 
-import { roosyncDashboard, getAppendLockPath } from '../dashboard.js';
-import { isDashboardReadPgEnabled } from '@/services/unified-store/pg-read-gates';
-import { setBackfillMarkerState } from '@/services/unified-store/pg-backfill-marker';
+import { roosyncDashboard, getAppendLockPath, writeDashboardFile } from '../dashboard.js';
+import { MIRROR_SKIP_REASON_NOT_DESIGNATED } from '@/services/unified-store/dashboard-mirror-writer';
+import { Logger } from '@vibesync/core/utils/logger';
+import { isDashboardReadPgEnabled } from '@vibesync/core/services/unified-store/pg-read-gates';
+import { setBackfillMarkerState } from '@vibesync/core/services/unified-store/pg-backfill-marker';
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-pg-primary-');
 
@@ -118,6 +120,19 @@ const waitForDetachedMirror = async (key: string): Promise<void> => {
     expect(existsSync(getAppendLockPath(key))).toBe(false);
   }, { timeout: 5000, interval: 10 });
 };
+
+// #4596 — cette suite épingle le comportement d'AVANT la désignation (le
+// miroir par append explicitement demandé est écrit). Un `*` la place sur
+// l'écrivain désigné sans changer ce qu'elle mesure ; le siège NON désigné
+// est couvert par les tests dédiés du garde, plus bas dans ce fichier.
+const savedMirrorWriterEnv = process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+beforeEach(() => {
+  process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = '*';
+});
+afterEach(() => {
+  if (savedMirrorWriterEnv === undefined) delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+  else process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = savedMirrorWriterEnv;
+});
 
 describe('PG-premier, GDrive miroir borné (#4131 G-B lot 2)', () => {
   let tmpDir: string;
@@ -631,6 +646,41 @@ describe('PG d\'abord, miroir fichier hors du chemin critique (#4286)', () => {
   });
 
   /**
+   * #4596 — le miroir a UN écrivain désigné. Un opérateur qui a rallumé le
+   * miroir par append sur un siège non désigné a demandé un miroir, pas un
+   * SECOND écrivain du même fichier Drive : la demande est honorée exactement
+   * comme le défaut — le fichier reste à l'éditeur désigné, et l'appelant voit
+   * `gdriveSkipped` (succès, mais pas « fichier à jour »).
+   */
+  it('#4596 APPEND_MIRROR=1 sur un siège NON désigné : aucun miroir, gdriveSkipped', async () => {
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
+    process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR = '1';
+    // Un nom qu'aucun COMPUTERNAME ne peut porter (`#` est interdit dans un nom
+    // NetBIOS) : le siège est forcément non désigné, où que tourne le test.
+    process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = '#nobody';
+    setPgView(pgView());
+
+    const result = await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: 'append miroir demandé mais siège non désigné',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.writeVerification?.gdriveSkipped).toBe(true);
+    expect(result.writeVerification?.gdriveDeferred).toBeFalsy();
+    expect(result.writeVerification?.gdriveDegraded).toBeFalsy();
+    // Aucune moitié fichier : ni étape mesurée, ni écriture vers G:.
+    expect(result.durationBreakdown?.writeBreakdown?.gdriveReadMs).toBeUndefined();
+    expect(mockWriteFile.mock.calls.map(c => String(c[0])).filter(p => p.includes('dashboards'))).toEqual([]);
+    expect(existsSync(path.join(tmpDir, 'dashboards', `${result.key}.md`))).toBe(false);
+    // PG a porté l'écriture autoritaire une seule fois.
+    expect(mockDualWriteSyncChecked).toHaveBeenCalledTimes(1);
+  });
+
+  /**
    * Garde du défaut : « off par défaut » ne doit JAMAIS devenir « le fichier
    * disparaît sur un siège qui n'a pas de store ». Sans DUAL_WRITE ni URL PG,
    * le fichier est la seule surface — il reste écrit, comme avant.
@@ -884,5 +934,243 @@ message présent seulement sur le fichier
     } finally {
       consoleSpy.mockRestore();
     }
+  });
+});
+
+/**
+ * #4596 — le 5ᵉ point gardé (review ai-01 du 27/11 05:11Z).
+ *
+ * `writeDashboardFile` sous PG-primaire porte les écritures NON-append : la
+ * passe de condensation détachée, write/merge/archive/retire/cross-post et
+ * l'alerte de troncature. Le verrou de flotte sérialise ces passes dans le
+ * temps, il n'élit personne : sans ce garde, n'importe quel siège qui tient le
+ * verrou `condense` réécrit le fichier, et le critère « aucune nouvelle copie
+ * ` (N)` sur 24 h » ne peut pas tenir.
+ *
+ * Ce bloc appelle la FONCTION directement (les appelants sont nombreux et
+ * hétérogènes — c'est justement pourquoi le garde vit à un seul site) : PG
+ * rend `ok`, donc `pgMirrorMode` est vrai, et seul le verdict d'élection décide
+ * si le fichier est écrit.
+ */
+describe('#4596 — writeDashboardFile n\'exporte le miroir que sur le siège désigné', () => {
+  let tmpDir: string;
+  const savedComputerName = process.env.COMPUTERNAME;
+  const savedHostName = process.env.HOSTNAME;
+  const key = 'workspace-fifth-guarded-point';
+
+  const minimalDashboard = () => ({
+    type: 'workspace' as const,
+    key,
+    lastModified: new Date().toISOString(),
+    lastModifiedBy: { machineId: 'test-machine', workspace: 'test-workspace' },
+    status: { markdown: '# statut' },
+    intercom: { messages: [], totalMessages: 0 },
+  }) as unknown as Parameters<typeof writeDashboardFile>[1];
+
+  const dashboardPath = (): string => path.join(tmpDir, 'dashboards', `${key}.md`);
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(testTmpBase);
+    const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+    fsWriteFileReal = actual.writeFile;
+    fsCopyFileReal = actual.copyFile;
+    mockWriteFile.mockReset().mockImplementation(((file: unknown, data: unknown, opts: unknown) =>
+      fsWriteFileReal(file as string, data as string, opts as undefined)) as typeof fsWriteFileReal);
+    mockCopyFile.mockReset().mockImplementation(((src: unknown, dest: unknown) =>
+      fsCopyFileReal(src as string, dest as string)) as typeof fsCopyFileReal);
+    mockReadDashboardFromPg.mockReset().mockResolvedValue(null);
+    mockReadDashboardFromPgUngated.mockReset().mockResolvedValue(null);
+    mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
+    mockDualWriteSync.mockClear().mockResolvedValue(undefined);
+    mockDualWriteSyncChecked.mockClear().mockResolvedValue({ ok: true, reason: 'written' });
+    // PG-primaire armé : c'est la porte de la branche `pgMirrorMode`.
+    mockIsDashboardPgPrimary.mockReset().mockReturnValue(true);
+
+    process.env.ROOSYNC_SHARED_PATH = tmpDir;
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine';
+    process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+    process.env.UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS = '150';
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+    delete process.env.ROOSYNC_SHARED_PATH;
+    delete process.env.ROOSYNC_MACHINE_ID;
+    delete process.env.ROOSYNC_WORKSPACE_ID;
+    delete process.env.UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS;
+    delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    delete process.env.UNIFIED_STORE_PG_URL;
+    if (savedComputerName === undefined) delete process.env.COMPUTERNAME;
+    else process.env.COMPUTERNAME = savedComputerName;
+    if (savedHostName === undefined) delete process.env.HOSTNAME;
+    else process.env.HOSTNAME = savedHostName;
+  });
+
+  it('siège NON désigné : aucun fichier, gdriveSkipped + raison, l\'écriture PG reste acquise', async () => {
+    // `#` est interdit dans un nom NetBIOS : le siège est non désigné partout.
+    process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = '#nobody';
+
+    const wv = await writeDashboardFile(key, minimalDashboard());
+
+    expect(wv.gdriveSkipped).toBe(true);
+    expect(wv.gdriveSkippedReason).toBe(MIRROR_SKIP_REASON_NOT_DESIGNATED);
+    expect(wv.gdriveDegraded).toBeFalsy();
+    // Aucune écriture vers le store de dashboards : le miroir n'a pas été touché.
+    expect(mockWriteFile.mock.calls.map(c => String(c[0])).filter(p => p.includes('dashboards'))).toEqual([]);
+    expect(existsSync(dashboardPath())).toBe(false);
+    // PG a bien porté l'écriture autoritaire — le refus ne la retire pas.
+    expect(mockDualWriteSyncChecked).toHaveBeenCalledTimes(1);
+  });
+
+  it('siège désigné par `*` : le fichier est écrit, aucun gdriveSkipped', async () => {
+    process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = '*';
+
+    const wv = await writeDashboardFile(key, minimalDashboard());
+
+    expect(wv.gdriveSkipped).toBeFalsy();
+    expect(existsSync(dashboardPath())).toBe(true);
+    expect(mockDualWriteSyncChecked).toHaveBeenCalledTimes(1);
+  });
+
+  it('défaut (variable absente) sur le siège par défaut `myia-ai-01` : désigné, fichier écrit', async () => {
+    delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+    // Le siège se déclare ET se nomme : les deux sources disent ai-01.
+    process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
+    process.env.COMPUTERNAME = 'myia-ai-01';
+
+    const wv = await writeDashboardFile(key, minimalDashboard());
+
+    expect(wv.gdriveSkipped).toBeFalsy();
+    expect(existsSync(dashboardPath())).toBe(true);
+  });
+
+  it('hôte sans COMPUTERNAME qui déclare `myia-ai-01` (conteneur, WSL) : désigné, fichier écrit (review 27/11)', async () => {
+    // Lu sur le seul hostname, ce siège n'était jamais l'écrivain : le défaut
+    // ne désignait personne, et le critère « aucune copie ` (N)` » restait vert.
+    delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+    delete process.env.COMPUTERNAME;
+    process.env.HOSTNAME = 'a29e7f8c9e1a';
+    process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
+
+    const wv = await writeDashboardFile(key, minimalDashboard());
+
+    expect(wv.gdriveSkipped).toBeFalsy();
+    expect(existsSync(dashboardPath())).toBe(true);
+  });
+
+  it('un hôte qui DÉCLARE l’éditeur écrit — coût assumé, et le chemin d’écriture le dit à chaque écriture (round 3)', async () => {
+    // La sonde de la revue, à CETTE couche : MYIA-PO-2024 dont le `.env`
+    // déclare myia-ai-01 écrit le fichier Drive. Épinglé comme comportement
+    // documenté — la déclaration est l'identité du siège pour les estampilles
+    // aussi, et `return [declared]` (la piste d'asymétrie de la revue) l'élit
+    // à l'identique ; le gain de l'union est l'autre sens. Ce que ce test
+    // épingle en plus est le remède du round 3 : le chemin qui ÉCRIT nomme la
+    // divergence dans le journal — à chaque écriture, pas une fois par hôte
+    // (le journal tourne : 10 Mo par fichier, 7 jours de rétention).
+    const infoSpy = vi.spyOn(Logger.prototype, 'info');
+    try {
+      delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+      process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
+      process.env.COMPUTERNAME = 'MYIA-PO-2024';
+
+      for (let write = 1; write <= 2; write++) {
+        const wv = await writeDashboardFile(key, minimalDashboard());
+        expect(wv.gdriveSkipped).toBeFalsy();
+        expect(existsSync(dashboardPath())).toBe(true);
+      }
+
+      const said = () => infoSpy.mock.calls.filter((c) => String(c[0]).includes('[MIRROR-WRITER #4596]'));
+      // Deux écritures, deux lignes : la divergence ne s'éteint pas avec la
+      // rotation du journal.
+      expect(said()).toHaveLength(2);
+      for (const call of said()) {
+        expect(call[1]).toMatchObject({
+          key,
+          writer: 'myia-ai-01',
+          electedBy: 'declared',
+          seat: 'myia-ai-01',
+          host: 'myia-po-2024',
+        });
+      }
+
+      // Contre-exigence (pas de bruit) : un siège dont les deux noms
+      // s'accordent écrit sans rien avoir à dire — la ligne n'existe que sur
+      // un siège qui a une divergence à expliquer.
+      process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
+      process.env.COMPUTERNAME = 'MYIA-AI-01';
+      const agreeing = await writeDashboardFile(key, minimalDashboard());
+      expect(agreeing.gdriveSkipped).toBeFalsy();
+      expect(said()).toHaveLength(2);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('le journal distingue les deux lectures : élu par le HOSTNAME, la déclaration est la fautive (round 3)', async () => {
+    // L'autre sens de la divergence — celui que l'union a apporté au tour 2 :
+    // la machine désignée, élue par son nom, avec une ligne
+    // `ROOSYNC_MACHINE_ID` qui dit une autre machine. La ligne du journal doit
+    // nommer le HOSTNAME comme nom élu, sinon les deux lectures se ressemblent.
+    const infoSpy = vi.spyOn(Logger.prototype, 'info');
+    try {
+      delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+      process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
+      process.env.COMPUTERNAME = 'MYIA-AI-01';
+
+      const wv = await writeDashboardFile(key, minimalDashboard());
+
+      expect(wv.gdriveSkipped).toBeFalsy();
+      const said = infoSpy.mock.calls.filter((c) => String(c[0]).includes('[MIRROR-WRITER #4596]'));
+      expect(said).toHaveLength(1);
+      expect(said[0][1]).toMatchObject({
+        electedBy: 'hostname',
+        seat: 'myia-po-2024',
+        host: 'myia-ai-01',
+        writer: 'myia-ai-01',
+      });
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+  it('l\'hôte NOMMÉ comme l\'éditeur publie même si sa déclaration dit autre chose (revue indépendante 27/11)', async () => {
+    // Le défaut nomme une MACHINE : son hôte Windows reste l'éditeur quand la
+    // ligne `ROOSYNC_MACHINE_ID` de son `.env` porte une autre valeur — ligne
+    // qu'aucun autre siège ne peut lire avant une fusion.
+    delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+    process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
+    process.env.COMPUTERNAME = 'MYIA-AI-01';
+
+    const wv = await writeDashboardFile(key, minimalDashboard());
+
+    expect(wv.gdriveSkipped).toBeFalsy();
+    expect(existsSync(dashboardPath())).toBe(true);
+  });
+
+  it('ni la déclaration ni le hostname ne nomment l\'éditeur : non désigné', async () => {
+    process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = 'myia-po-2025';
+    process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
+    process.env.COMPUTERNAME = 'MYIA-AI-01';
+
+    const wv = await writeDashboardFile(key, minimalDashboard());
+
+    expect(wv.gdriveSkipped).toBe(true);
+    expect(wv.gdriveSkippedReason).toBe(MIRROR_SKIP_REASON_NOT_DESIGNATED);
+    expect(existsSync(dashboardPath())).toBe(false);
+    // Rendu : la variable n'est pas restaurée par l'afterEach de ce describe.
+    delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+  });
+
+  it('défaut (variable absente) sur un autre siège : non désigné, miroir laissé au publisher', async () => {
+    delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+    process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
+    process.env.COMPUTERNAME = 'MYIA-PO-2024';
+
+    const wv = await writeDashboardFile(key, minimalDashboard());
+
+    expect(wv.gdriveSkipped).toBe(true);
+    expect(wv.gdriveSkippedReason).toBe(MIRROR_SKIP_REASON_NOT_DESIGNATED);
+    expect(existsSync(dashboardPath())).toBe(false);
   });
 });

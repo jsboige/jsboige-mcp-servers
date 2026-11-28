@@ -59,7 +59,7 @@ vi.mock('pg', () => ({ default: { Pool: vi.fn(() => mockPool) } }));
 
 const { mockLoggerWarn } = vi.hoisted(() => ({ mockLoggerWarn: vi.fn() }));
 
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     warn: mockLoggerWarn,
     info: vi.fn(),

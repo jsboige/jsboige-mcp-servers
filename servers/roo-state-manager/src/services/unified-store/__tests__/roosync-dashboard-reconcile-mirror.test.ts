@@ -21,7 +21,12 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync, mkdtempSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { reconcileDashboardsFromGDrive, MIRROR_REPAIR_LOCK_KEY } from '../roosync-dashboard-reconcile.js';
+import {
+  reconcileDashboardsFromGDrive,
+  MIRROR_REPAIR_LOCK_KEY,
+  mainPassCadenceKey,
+  mainPassLockKey,
+} from '../roosync-dashboard-reconcile.js';
 import type { RooSyncDashboardRow, RooSyncDashboardMessageRow } from '../types.js';
 import type { Dashboard } from '../../../tools/roosync/dashboard-schemas.js';
 
@@ -51,6 +56,20 @@ vi.mock('fs/promises', async (importOriginal) => {
       return (actual.readFile as unknown as (p: unknown, ...r: unknown[]) => Promise<unknown>)(path, ...rest);
     },
   };
+});
+
+// #4596 — les trois describes de ce fichier épinglent le comportement d'AVANT
+// la désignation (réparation et matérialisation actives). `*` les place sur
+// l'écrivain désigné sans changer ce qu'elles mesurent ; la retenue sur un
+// siège non désigné a son propre fichier
+// (`roosync-dashboard-reconcile-mirror-writer.test.ts`).
+const savedMirrorWriterEnv = process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+beforeEach(() => {
+  process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = '*';
+});
+afterEach(() => {
+  if (savedMirrorWriterEnv === undefined) delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+  else process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = savedMirrorWriterEnv;
 });
 
 /** A dashboard file whose intercom holds exactly `ids`, at `stamp` seconds. */
@@ -362,6 +381,63 @@ describe('dashboard reconcile — mirror repair (#4131 demande 2)', () => {
     expect(result.failures.some((f) => f.includes('mirror repair failed'))).toBe(true);
   });
 
+  /**
+   * ms#1926 review (#4850) — the same pass with the daemon's 6 h window armed,
+   * counting every ask for the cadence row: 1 = the check only, i.e. the pass
+   * did NOT stamp the window; 2 = the check + the end-of-pass stamp.
+   */
+  const runCadenced = async () => {
+    const cadenceAsks: string[] = [];
+    const recordingWriter = {
+      ...writerDouble,
+      async tryAcquireRooSyncDashboardLock(lockKey: string, holder: string, ttl: number) {
+        if (lockKey === mainPassCadenceKey()) cadenceAsks.push(holder);
+        // The cadence check only runs under a HELD main-pass lock: grant it here,
+        // where the sibling double leaves the pass unlocked.
+        if (lockKey === mainPassLockKey()) return 'acquired' as const;
+        return (
+          writerDouble.tryAcquireRooSyncDashboardLock as unknown as (
+            k: string,
+            h: string,
+            t: number
+          ) => Promise<string>
+        )(lockKey, holder, ttl);
+      },
+    };
+    const result = await reconcileDashboardsFromGDrive({
+      dashboardsDir: dir,
+      writer: recordingWriter,
+      reader: readerDouble,
+      writeMirror,
+      mainPassCadenceMs: 6 * 3600_000,
+    });
+    return { result, cadenceAsks };
+  };
+
+  test('a SUCCESSFUL rewrite stamps the window (control: check + end stamp)', async () => {
+    write('workspace-a.md', fixture('workspace-a', []));
+    pgRows.set('workspace-a', [{ id: 'x', createdAt: '2026-09-17T10:00:00Z' }]);
+
+    const { result, cadenceAsks } = await runCadenced();
+
+    expect(result.mirrorRepaired).toBe(1);
+    expect(result.mirrorRepairFailed).toBe(0);
+    expect(cadenceAsks).toHaveLength(2); // the instrument sees the stamp when there is one
+  });
+
+  test('a FAILED rewrite leaves the window unstamped — the next tick retries (#4850, ms#1926 review)', async () => {
+    write('workspace-a.md', fixture('workspace-a', []));
+    pgRows.set('workspace-a', [{ id: 'x', createdAt: '2026-09-17T10:00:00Z' }]);
+    mirrorThrows.add('workspace-a');
+
+    const { result, cadenceAsks } = await runCadenced();
+
+    // The rewrite is the ONLY thing this pass left to redo: no file error.
+    expect(result.errors).toBe(0);
+    expect(result.mirrorRepairFailed).toBe(1);
+    expect(cadenceAsks).toHaveLength(1); // check only — no end stamp
+  });
+
   test('a repaired key never loses a row to the archival pass in the same pass', async () => {
     // The two directions are disjoint: repair only fires when the file lags, and
     // a lagging file is exactly what the archival pass refuses to act on. Pinned
@@ -618,6 +694,58 @@ describe('dashboard reconcile — materialization of PG-only keys (#4131 G-DASH,
     expect(result.mirrorMaterialized).toBe(0);
     expect(result.status).toBe('ok');
     expect(result.failures.some((f) => f.includes('mirror materialize failed'))).toBe(true);
+  });
+
+  /** ms#1926 review (#4850) — same instrument as the repair describe: 1 ask = no end stamp, 2 = stamped. */
+  const runCadenced = async () => {
+    const cadenceAsks: string[] = [];
+    const recordingWriter = {
+      ...writerDouble,
+      async tryAcquireRooSyncDashboardLock(lockKey: string, holder: string, ttl: number) {
+        if (lockKey === mainPassCadenceKey()) cadenceAsks.push(holder);
+        // The cadence check only runs under a HELD main-pass lock: grant it here,
+        // where the sibling double leaves the pass unlocked.
+        if (lockKey === mainPassLockKey()) return 'acquired' as const;
+        return (
+          writerDouble.tryAcquireRooSyncDashboardLock as unknown as (
+            k: string,
+            h: string,
+            t: number
+          ) => Promise<string>
+        )(lockKey, holder, ttl);
+      },
+    };
+    const result = await reconcileDashboardsFromGDrive({
+      dashboardsDir: dir,
+      writer: recordingWriter,
+      reader: readerDouble,
+      writeMirror,
+      mainPassCadenceMs: 6 * 3600_000,
+    });
+    return { result, cadenceAsks };
+  };
+
+  test('a SUCCESSFUL materialization stamps the window (control: check + end stamp)', async () => {
+    pgKeysList = ['workspace-newborn'];
+    pgRows.set('workspace-newborn', [{ id: 'n1', createdAt: '2026-11-01T10:00:00Z' }]);
+
+    const { result, cadenceAsks } = await runCadenced();
+
+    expect(result.mirrorMaterialized).toBe(1);
+    expect(cadenceAsks).toHaveLength(2);
+  });
+
+  test('a FAILED materialization leaves the window unstamped — the next tick retries (#4850, ms#1926 review)', async () => {
+    pgKeysList = ['workspace-newborn'];
+    pgRows.set('workspace-newborn', [{ id: 'n1', createdAt: '2026-11-01T10:00:00Z' }]);
+    mirrorThrows.add('workspace-newborn');
+
+    const { result, cadenceAsks } = await runCadenced();
+
+    // The materialization is the ONLY thing this pass left to redo: no file error.
+    expect(result.errors).toBe(0);
+    expect(result.mirrorMaterializeFailed).toBe(1);
+    expect(cadenceAsks).toHaveLength(1); // check only — no end stamp
   });
 
   test('invalid-shape keys from the PG listing are ignored (#G-B shape guard)', async () => {

@@ -23,7 +23,7 @@ import sqlite3 from 'sqlite3';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { resolveActiveVscdbKey, getActiveTasksPath } from '../../utils/extension-paths.js';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('rebuild-task-index');
 

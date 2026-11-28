@@ -90,7 +90,7 @@ vi.mock('../../PowerShellExecutor.js', () => ({
 
 // Mock logger at the SUT's import depth (src/utils/logger.js) to observe the
 // warn side-effect of generateDecisionsFromReport (L290).
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({ warn: mockLoggerWarn, info: vi.fn(), debug: vi.fn(), error: vi.fn() }),
 }));
 

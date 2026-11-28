@@ -37,9 +37,12 @@ cycle (~1 h) for remedies a deterministic pass applies itself:
      attestation(s) of the same pair that this branch added under the same
      lane (CoursIA#27855 review: an intermediate seal is not registry history).
   4. C# ports additionally REGISTER the new pair at delivery
-     (``twin_pairs.d/<slug>.yaml``, parity_level native-both, schema python/
+     (``twin_pairs.d/<slug>.yaml``, parity_level semantic, schema python/
      csharp -- a Rust notebook is not a schema member and lot 1 measured no
      Rust registration: Rust ports only re-seal the twin's existing pair).
+     `semantic`, never `native-both`: the registry schema reserves
+     `native-both` for a pair whose EACH side works through a named external
+     engine, and a port re-implements the subject by hand (CoursIA#28196).
 
 All file surgery a script does better than a model turn. The twin edit is
 asserted MARKDOWN-ONLY (cell count and every non-source key identical, code
@@ -55,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import difflib
 import io
 import json
 import re
@@ -893,7 +897,7 @@ def _csharp_member_exists(worktree: Path, nb_rel: str) -> bool:
 def register_pair(worktree: Path, source_rel: str, nb_rel: str, lane: str,
                   facts: dict | None = None) -> dict:
     """Register the NEW pair (source twin + new C# notebook) at delivery —
-    parity_level native-both, schema python/csharp, attestation written LAST
+    parity_level semantic, schema python/csharp, attestation written LAST
     by reseal_pair (po-2028 order, held on 14 PRs). Rust notebooks are NOT
     registered: the registry schema has no rust member and lot 1 measured no
     Rust registration on review-accepted branches.
@@ -901,7 +905,17 @@ def register_pair(worktree: Path, source_rel: str, nb_rel: str, lane: str,
     The entry states DELIVERY facts only (harness, verifier verdict, execution
     count) -- no `bridge_verdict` (optional in the schema; a SOTA verdict is a
     firsthand judgment the harness does not make) and no 'verified firsthand'
-    claim. """
+    claim.
+
+    `semantic`, never `native-both`. The registry schema reserves `native-both`
+    for a pair whose EACH side does the notebook's work through a named
+    external engine -- "un cote qui reimplemente le sujet du notebook a la main
+    n'est PAS natif" -- and a C# port re-implements it by hand on both sides.
+    This generator wrote `native-both` until 25/11; Hermes contested the line
+    on two deliveries (CoursIA Integrales-01, 23/11; CoursIA#28196 Chaines-09,
+    25/11), each contest costing a review round. The delivery record says why
+    the level is `semantic` and why no verdict is carried, so their absence is
+    read as a decision, not as an oversight."""
     source_rel = source_rel.replace("\\", "/")
     nb_rel = nb_rel.replace("\\", "/")
     base_stem, lang = split_port_name(nb_rel)
@@ -921,7 +935,7 @@ def register_pair(worktree: Path, source_rel: str, nb_rel: str, lane: str,
         f"  family: {family}\n"
         f"  python: {source_rel}\n"
         f"  csharp: {nb_rel}\n"
-        f"  parity_level: native-both\n"
+        f"  parity_level: semantic\n"
         f"  known_differences:\n"
         f"    - \"Enregistrement de livraison ({lane}, harnais nb_coder stages 0-5) : "
         f"portage C# de {Path(source_rel).name}. "
@@ -933,7 +947,14 @@ def register_pair(worktree: Path, source_rel: str, nb_rel: str, lane: str,
         f"{facts.get('kernel', 'n/a')} : {facts.get('executed_cells', 'n/a')} cellules, "
         f"0 erreur. Verification independente : {facts.get('verdict', 'n/a')}. "
         f"Premiere attestation ecrite par l'integration de livraison (check_twin_parity "
-        f"--update), en DERNIERE operation (cf #8957).\"\n")
+        f"--update), en DERNIERE operation (cf #8957). "
+        # Why the level is semantic and why no verdict is carried (ASCII, as
+        # the rest of the entry). Neither registry identifier is spelled in
+        # this prose: a registry-wide grep for a level or for a verdict must
+        # only ever hit a field (CoursIA#28196).
+        f"Parite semantic : portage ecrit a la main des deux cotes, sans moteur "
+        f"externe nommable (le niveau natif des deux cotes en exige un par cote). "
+        f"Aucun verdict de pont porte : jugement de premiere main, laisse a la review.\"\n")
     dest = worktree / TWIN_PAIRS_DIR / f"{_slug(name)}.yaml"
     if dest.exists():
         return {"registered": False, "why": f"{dest.name} already exists"}
@@ -1273,16 +1294,46 @@ def _flat(s: str) -> str:
     return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
 
 
-def parse_spec_tolerances(spec_body: str | None) -> dict[int, dict]:
-    """`{cell_index: {"quantity", "tolerance", "compare"}}` from a lot spec's
-    `## Tolerances` table (`| Cellule (source) | Grandeur comparee | Tolerance |
-    Compare a |`, one row per cell -- the first column may list several cells
-    (`9, 16, 32, 39, 41, 43`) and carry bold markup). The table is read from
-    its heading to the next heading; prose in between is skipped. No table ->
-    `{}`: today's strict behaviour, unchanged."""
+# The CoursIA coordinator's own vocabulary (CoursIA#28944, 28/11: an 11-row table
+# on ONE notebook). Three rows say a quantity is not compared between the twins.
+# None of them is an ABSENCE: each is a MASK, and every other token of the cell
+# stays exactly compared (the spec's rule, quoted: « une égalité de compteurs qui
+# échoue n'est pas arrondie ni tolérée — elle se mesure, se déclare dans cette
+# table »). Measured 28/11: the organ read all 7 cells of that table as `strict`,
+# so a stage-3 gate would have pushed the producer to print the Python twin's
+# wall-clock values instead of the ones it had measured.
+#   `non comparée`     a machine-dependent value (a `Temps(ms)` column). The row
+#                      names HOW MANY (`(6 valeurs)`): that count is the contract.
+#   `forme seulement`  `Compare a` holds a REGEX the output satisfies on its own
+#                      (`Solution \(MAC\): [0-9.]+ms, 81 assignations, 0 backtracks`:
+#                      the milliseconds float, the counters are pinned by the regex).
+#   `écart déclaré`    a named, counted difference: `` `/` au lieu de `\`, une seule
+#                      ligne concernée ``.
+_SPEC_NON_COMPARABLE_RE = re.compile(r"\bnon\s*compar|\bnot\s+compared\b")
+_SPEC_FORM_ONLY_RE = re.compile(r"forme\s+seule(?:ment)?|forme\s+uniquement")
+_SPEC_DECLARED_GAP_RE = re.compile(r"ecart\s+declare|declared\s+(?:gap|difference)")
+_SPEC_DECLARED_COUNT_RE = re.compile(r"\((\d+)\s+(?:valeurs?|values?)\)")
+_SPEC_DECLARED_LINES_RE = re.compile(r"(?:une\s+seule|(\d+))\s+lignes?\s+concerne")
+# A value a mask row tolerates: a number, and nothing else.
+_MASK_NUMBER_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
+# Its wildcard in a measure's pattern. NON-capturing on purpose: the checker
+# (and `_extract`) read group 1, the first literal run of the cell.
+_WILD_NUMBER = r"[0-9]+(?:[.,][0-9]+)?"
+_BACKTICKED_RE = re.compile(r"`([^`\n]+)`")
+_REGEX_META = set("\\[]{}+*?|^$")
+_MASK_KINDS = ("non_comparable", "form", "declared_gap")
+
+
+def parse_spec_tolerance_rows(spec_body: str | None) -> dict[int, list[dict]]:
+    """`{cell_index: [row, ...]}` -- EVERY row of a lot spec's `## Tolerances`
+    table (`| Cellule (source) | Grandeur comparee | Tolerance | Compare a |`),
+    in table order. The first column may list several cells (`9, 16, 32, 39,
+    41, 43`) and carry bold markup; a cell may own several rows. The table is
+    read from its heading to the next heading; prose in between is skipped.
+    No table -> `{}`: today's strict behaviour, unchanged."""
+    rows: dict[int, list[dict]] = {}
     if not spec_body:
-        return {}
-    rows: dict[int, dict] = {}
+        return rows
     in_section = False
     header_seen = False
     for line in spec_body.splitlines():
@@ -1305,15 +1356,35 @@ def parse_spec_tolerances(spec_body: str | None) -> dict[int, dict]:
         if set(_flat("".join(cells))) <= set("-: "):
             continue                        # the `|---|---|` separator row
         idxs = [int(x) for x in re.findall(r"\d+", cells[0].replace("**", ""))]
-        if not idxs:
-            continue
         for i in idxs:
-            rows[i] = {"quantity": cells[1], "tolerance": cells[2], "compare": cells[3]}
+            rows.setdefault(i, []).append(
+                {"quantity": cells[1], "tolerance": cells[2], "compare": cells[3]})
     return rows
 
 
-def spec_row_kind(row: dict | None) -> str:
-    """Classify one `## Tolerances` row.
+def parse_spec_tolerances(spec_body: str | None) -> dict[int, dict]:
+    """`{cell_index: {"quantity", "tolerance", "compare"}}` from a lot spec's
+    `## Tolerances` table, one entry per cell.
+
+    A cell with SEVERAL rows (CoursIA#28944 cell 33: `Assigns`/`Backtracks`/
+    `Succes` exacte, then `Temps(ms)` non comparée) keeps them ALL: its row
+    carries them in `rows`, and its own fields join theirs with « ; ». Until
+    28/11 the last row overwrote the others, so a strict row vanished under
+    the tolerant one below it (and the reverse)."""
+    out: dict[int, dict] = {}
+    for i, rs in parse_spec_tolerance_rows(spec_body).items():
+        if len(rs) == 1:
+            out[i] = rs[0]
+        else:
+            out[i] = {"quantity": " ; ".join(r["quantity"] for r in rs),
+                      "tolerance": " ; ".join(r["tolerance"] for r in rs),
+                      "compare": " ; ".join(r["compare"] for r in rs),
+                      "rows": rs}
+    return out
+
+
+def _spec_one_row_kind(row: dict | None) -> str:
+    """Classify ONE `## Tolerances` row.
 
     - `invariants`: the `Compare a` column judges by invariants and never the
       Python output (« invariants, pas le committe ») -- the strict measure is
@@ -1322,11 +1393,13 @@ def spec_row_kind(row: dict | None) -> str:
       N + invariants »);
     - `duration`: the row grants wall-clock durations in presence only
       (« durees : presence seule »);
+    - `non_comparable` / `form` / `declared_gap`: a MASK row (see the block
+      comment above) -- the rest of the cell stays exactly compared;
     - `strict` (or no row at all): today's exact-text rule."""
     if not row:
         return "strict"
     blob = _flat(" ".join((row.get("compare") or "", row.get("tolerance") or "",
-                           row.get("quantity") or "")))
+                           (row.get("quantity") or ""))))
     has_invariants = "invariant" in blob
     has_python = bool(_SPEC_PY_OUTPUT_RE.search(blob))
     if has_invariants and not has_python:
@@ -1335,7 +1408,42 @@ def spec_row_kind(row: dict | None) -> str:
         return "mixed"
     if _SPEC_DUREE_RE.search(blob) and "presence seule" in blob:
         return "duration"
+    if _SPEC_FORM_ONLY_RE.search(blob):
+        return "form"
+    if _SPEC_DECLARED_GAP_RE.search(blob):
+        return "declared_gap"
+    if _SPEC_NON_COMPARABLE_RE.search(blob):
+        return "non_comparable"
     return "strict"
+
+
+def spec_rows_kind(rows: list[dict]) -> str:
+    """The CELL's kind from ALL of its rows. Fail-closed: a row that asks for an
+    exact comparison is never dropped by another.
+
+    - only `invariants`/`mixed` rows: the first of them (the whole cell is
+      declared by the spec);
+    - an `invariants`/`mixed` row BESIDE an exact row: `strict` -- the two
+      quantities cannot be told apart without a mask, so the exact one holds
+      and the core names the row it could not apply;
+    - a `duration` row, alone or beside exact rows: `duration` (it already
+      tolerates the decimals only, the integers stay compared);
+    - otherwise `strict`: exact rows, mask rows or both -- the masks are
+      applied by the core, per quantity, and never un-strict the rest."""
+    kinds = [_spec_one_row_kind(r) for r in rows]
+    declared = [k for k in kinds if k in ("invariants", "mixed")]
+    if declared:
+        return declared[0] if all(k in ("invariants", "mixed") for k in kinds) else "strict"
+    return "duration" if "duration" in kinds else "strict"
+
+
+def spec_row_kind(row: dict | None) -> str:
+    """The kind of one row as `parse_spec_tolerances` returns it: a single row
+    is classified alone, the merged row of a multi-row cell by ALL its rows
+    (`spec_rows_kind`)."""
+    if row and row.get("rows"):
+        return spec_rows_kind(row["rows"])
+    return _spec_one_row_kind(row)
 
 
 def _durations_only_diff(ref: str, other: str) -> bool:
@@ -1362,6 +1470,432 @@ def _spec_absent_reason(kind: str, cell: int, row: dict, spec_ref: str | None) -
             f"{row.get('compare') or ''}".rstrip(" :"))
 
 
+# --- MASQUE : une ligne de tolérance n'est jamais une absence ------------------
+#
+# Le vocabulaire du coordinateur CoursIA (CoursIA#28944, 28/11) dit « CETTE
+# valeur-là n'est pas comparée » ; il ne dit jamais « cette cellule n'est pas
+# comparée ». Un MASQUE remplace la valeur tolérée, dans le motif lu sur les
+# deux côtés, par une classe non capturante qui n'accepte qu'elle (un nombre,
+# ou l'une des deux formes déclarées) ; tout autre morceau du segment devient
+# SA PROPRE mesure. Pourquoi une mesure par morceau : le contrôle
+# (`check_measure` de `check_rust_conformance.py`) ne compare que le groupe 1
+# d'une mesure, et un groupe est contigu -- une valeur tolérée au milieu d'une
+# ligne interdit de capturer « tout sauf elle » en un seul groupe.
+#
+# Fail-closed, dans l'ordre : une ligne de masque dont le contrat ne tient pas
+# (compteur déclaré non retrouvé, structure différente, regex non satisfaite)
+# ne masque RIEN et NOMME pourquoi à côté de la divergence ; un masque qui
+# tient est écrit seulement si chaque morceau se relit des deux côtés.
+
+
+_MASK_NUMBER_CLASS = r"[0-9]+(?:[.,][0-9]+)?"
+
+
+def _col_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", _flat(text))
+
+
+def _mask_non_comparable(py: str, rs: str, row: dict) -> tuple[
+        list[tuple[int, int, str]], list[tuple[int, int, str]], str | None]:
+    """`non comparée` -- the row names a COLUMN and, when it says so, how many
+    values it holds (`Temps(ms)`, `(6 valeurs)`). The values of that column
+    are the mask; the count and the position are the contract, never « whatever
+    differs ». The column is located from the END of its line: a label counts
+    several words (`BACKTRACKING MRV LCV`) where the header counts one.
+    Returns `(spans, rust_spans, None)` when the row holds -- the first on the
+    Python text, the second on the Rust one -- and `([], [], reason)` when it
+    does not."""
+    quantity = row.get("quantity") or ""
+    lit = _BACKTICKED_RE.search(quantity)
+    label = lit.group(1) if lit else re.split(r"\s*\(", quantity, 1)[0].strip(" *")
+    key = _col_key(label)
+    if not key:
+        return [], [], "la ligne ne nomme pas la grandeur non comparée"
+    pl, rl = py.split("\n"), rs.split("\n")
+    if len(pl) != len(rl):
+        return [], [], f"{len(pl)} lignes côté Python, {len(rl)} côté Rust"
+    off = first = None
+    for n, line in enumerate(pl):
+        keys = [_col_key(t) for t in line.split()]
+        if key in keys:
+            off, first = len(keys) - 1 - keys.index(key), n
+            break
+    if off is None:
+        return [], [], f"aucune ligne de la sortie Python ne porte l'en-tête « {label} »"
+    spans: list[tuple[int, int, str]] = []
+    rust: list[tuple[int, int, str]] = []
+    base = sum(len(pl[k]) + 1 for k in range(first + 1))   # offset of the line after the header
+    rbase = sum(len(rl[k]) + 1 for k in range(first + 1))
+    for n in range(first + 1, len(pl)):
+        if n > first + 1:
+            base += len(pl[n - 1]) + 1
+            rbase += len(rl[n - 1]) + 1
+        pt, rt = pl[n].split(), rl[n].split()
+        if not pt:
+            continue
+        if len(pt) != len(rt):
+            return [], [], f"ligne {n + 1} : {len(pt)} jetons côté Python, {len(rt)} côté Rust"
+        if len(pt) <= off:
+            continue                        # too short to hold the column
+        j = len(pt) - 1 - off
+        if not _MASK_NUMBER_RE.fullmatch(pt[j]):
+            continue                        # a repeated header, a rule, a note
+        if not _MASK_NUMBER_RE.fullmatch(rt[j]):
+            return [], [], f"ligne {n + 1} : « {rt[j]} » côté Rust, un nombre est attendu"
+        tok = list(re.finditer(r"\S+", pl[n]))[j]
+        spans.append((base + tok.start(), base + tok.end(), _MASK_NUMBER_CLASS))
+        rtok = list(re.finditer(r"\S+", rl[n]))[j]
+        rust.append((rbase + rtok.start(), rbase + rtok.end(), _MASK_NUMBER_CLASS))
+    m = _SPEC_DECLARED_COUNT_RE.search(quantity)
+    if m and len(spans) != int(m.group(1)):
+        return [], [], (f"la ligne déclare {m.group(1)} valeur(s), {len(spans)} lue(s) "
+                        f"dans la colonne « {label} »")
+    if not spans:
+        return [], [], f"aucune valeur lue dans la colonne « {label} »"
+    return spans, rust, None
+
+
+def _mask_form(py: str, rs: str, row: dict) -> tuple[
+        list[tuple[int, int, str]], list[tuple[int, int, str]], str | None]:
+    """`forme seulement` -- `Compare a` holds a REGEX the output satisfies on
+    its own (`Solution \\(MAC\\): [0-9.]+ms, 81 assignations, 0 backtracks`: the
+    counters are pinned BY the regex, the milliseconds float is not). Both
+    sides must satisfy it; what differs between the two matches is the mask,
+    and it must be a number on both sides."""
+    rx = None
+    for lit in _BACKTICKED_RE.findall(row.get("compare") or ""):
+        if not any(ch in _REGEX_META for ch in lit):
+            continue
+        try:
+            rx = re.compile(lit)
+        except re.error as exc:
+            return [], [], f"la regex de la ligne est illisible ({exc})"
+        break
+    if rx is None:
+        return [], [], "la ligne dit « forme seulement » sans donner de regex"
+    mp, mr = rx.search(py), rx.search(rs)
+    if not mp:
+        return [], [], "la sortie Python ne satisfait pas la regex déclarée"
+    if not mr:
+        return [], [], "la sortie Rust ne satisfait pas la regex déclarée"
+    a, b = mp.group(0), mr.group(0)
+    p = 0
+    while p < min(len(a), len(b)) and a[p] == b[p]:
+        p += 1
+    s = 0
+    while s < min(len(a), len(b)) - p and a[len(a) - 1 - s] == b[len(b) - 1 - s]:
+        s += 1
+    mid_a, mid_b = a[p:len(a) - s], b[p:len(b) - s]
+    if not (_MASK_NUMBER_RE.fullmatch(mid_a) and _MASK_NUMBER_RE.fullmatch(mid_b)):
+        return [], [], ("la partie variable de « forme seulement » n'est pas un nombre : "
+                        f"« {mid_a} » côté Python, « {mid_b} » côté Rust")
+    return ([(mp.start() + p, mp.start() + len(a) - s, _MASK_NUMBER_CLASS)],
+            [(mr.start() + p, mr.start() + len(b) - s, _MASK_NUMBER_CLASS)], None)
+
+
+def _mask_declared_gap(py: str, rs: str, row: dict) -> tuple[
+        list[tuple[int, int, str]], list[tuple[int, int, str]], str | None]:
+    """`écart déclaré` -- a NAMED difference (« `/` au lieu de `\\`, une seule
+    ligne concernée »). The form the Python twin shows is the reference and the
+    other the declared one; the two texts must differ by that substitution
+    ALONE, on the number of lines the row declares."""
+    blob = " ".join((row.get("compare") or "", row.get("tolerance") or ""))
+    lits = _BACKTICKED_RE.findall(blob)
+    if len(lits) != 2 or lits[0] == lits[1]:
+        return [], [], "la ligne doit nommer les deux formes, chacune entre backticks"
+    a, b = lits
+    if a in py and b not in py:
+        ref, dec = a, b
+    elif b in py and a not in py:
+        ref, dec = b, a
+    else:
+        return [], [], "une seule des deux formes doit être lisible côté Python"
+    if py.replace(ref, dec) != rs:
+        return [], [], f"l'écart « {dec} » au lieu de « {ref} » n'est pas la seule différence"
+    lines = sum(1 for line in py.split("\n") if ref in line)
+    m = _SPEC_DECLARED_LINES_RE.search(_flat(blob))
+    if m:
+        want = 1 if m.group(1) is None else int(m.group(1))
+        if lines != want:
+            return [], [], f"la ligne déclare {want} ligne(s) concernée(s), {lines} lue(s)"
+    cls = f"(?:{re.escape(dec)}|{re.escape(ref)})"
+    return ([(mm.start(), mm.end(), cls) for mm in re.finditer(re.escape(ref), py)],
+            [(mm.start(), mm.end(), cls) for mm in re.finditer(re.escape(dec), rs)], None)
+
+
+_MASK_FNS = {"non_comparable": _mask_non_comparable, "form": _mask_form,
+             "declared_gap": _mask_declared_gap}
+
+
+def _spec_mask(py: str, rs: str, rows: list[dict]) -> tuple[
+        list[tuple[int, int, str]], list[tuple[int, int, str]], list[str]]:
+    """The union of the mask rows a segment HOLDS, and the reasons of those it
+    does not: spans only when every mask row holds -- on the Python text and on
+    the Rust one (the Rust spans serve the diagnosis of a failing piece)."""
+    spans: list[tuple[int, int, str]] = []
+    rust: list[tuple[int, int, str]] = []
+    broken: list[str] = []
+    for row in rows:
+        kind = _spec_one_row_kind(row)
+        if kind not in _MASK_FNS:
+            continue
+        got, got_rust, why = _MASK_FNS[kind](py, rs, row)
+        if why is not None:
+            broken.append(f"{kind} : {why}")
+        else:
+            spans.extend(got)
+            rust.extend(got_rust)
+    if broken:
+        return [], [], broken
+    return sorted(spans), sorted(rust), broken
+
+
+_MASK_BLANK = "\u2300"      # the glyph of a masked value, the same on both sides
+
+
+def _masked_fail_detail(p: dict, py_n: str, rs_n: str,
+                        py_spans: list[tuple[int, int, str]],
+                        rs_spans: list[tuple[int, int, str]]) -> str:
+    """The first failing measure in words a producer can act on: the COMPARED
+    text that differs, never the masked value. The masked values are blanked on
+    both sides first -- a message that leads with the tolerated difference (the
+    durations) sends the producer to copy the Python constants, the very
+    defect the mask exists to end."""
+    def blanked(text: str, spans: list[tuple[int, int, str]]) -> str:
+        out, pos = [], 0
+        for span in sorted(spans):
+            s, e = span[0], span[1]
+            if s < pos:
+                continue
+            out.append(text[pos:s])
+            out.append(_MASK_BLANK)
+            pos = e
+        out.append(text[pos:])
+        return "".join(out)
+
+    n = p.get("line") or 0
+    if not n:
+        return _first_diff(blanked(py_n, py_spans), blanked(rs_n, rs_spans))
+    pl, rl = py_n.split("\n"), rs_n.split("\n")
+    if n > len(rl):
+        return f"la ligne {n} manque côté Rust"
+    base = sum(len(pl[k]) + 1 for k in range(n - 1))
+    rbase = sum(len(rl[k]) + 1 for k in range(n - 1))
+
+    def cut(spans: list[tuple[int, int, str]], b: int, ln: str) -> list[tuple[int, int, str]]:
+        return [(max(s, b) - b, min(e, b + len(ln)) - b) for s, e, _c in spans
+                if s < b + len(ln) and e > b]
+
+    a = blanked(pl[n - 1], cut(py_spans, base, pl[n - 1])).split()
+    b = blanked(rl[n - 1], cut(rs_spans, rbase, rl[n - 1])).split()
+    ops = difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes()
+    for tag, i1, i2, j1, j2 in ops:
+        if tag != "equal":
+            return (f"ligne {n} : « {' '.join(b[j1:j2]) or '∅'} » côté Rust contre "
+                    f"« {' '.join(a[i1:i2]) or '∅'} » côté Python")
+    return f"ligne {n} : {p['id']}"
+
+
+def _mask_pieces(text: str, spans: list[tuple[int, int, str]]) -> list[dict]:
+    """The segment as an ordered list of pieces: `lit` (a run of non-whitespace,
+    compared), `wild` (a tolerated span, masked), `ws` (a run of whitespace,
+    read with padding free). Overlapping spans: the first holds."""
+    out: list[dict] = []
+
+    def emit(chunk: str, base: int) -> None:
+        for m in re.finditer(r"\s+|\S+", chunk):
+            if m.group(0)[0].isspace():
+                out.append({"kind": "ws", "text": m.group(0)})
+            else:
+                out.append({"kind": "lit", "text": m.group(0)})
+
+    pos = 0
+    for s, e, cls in sorted(spans):
+        if s < pos:
+            continue
+        emit(text[pos:s], pos)
+        out.append({"kind": "wild", "cls": cls})
+        pos = e
+    emit(text[pos:], pos)
+    return out
+
+
+def _ws_pattern(ws: str) -> str:
+    """A run of whitespace as a pattern: a line break stays a line break (the
+    structure of the output is compared) with its padding free; a run of
+    spaces stays at least one. A table's column padding follows the widths of
+    the numbers -- the very thing the row does not compare."""
+    if "\n" in ws:
+        return r"[ \t]*\r?\n[ \t]*" * ws.count("\n")
+    return r"[ \t\f\v]+" if ws[0] in " \t\f\v" else r"\s+"
+
+
+def _line_runs(line: str, spans: list[tuple[int, int, str]]) -> list[dict]:
+    """One reference line cut by its tolerated spans: an ordered list of runs
+    -- `lit` (text that stays compared, spaces included), `ws` (a run of
+    whitespace that TOUCHES a masked value: its width follows the value's, so
+    it is read « at least one »), `wild` (the masked value). The whitespace
+    away from a masked value is part of a `lit` run: compared exactly, as the
+    strict rule does. A span may cut a word (`33.7` + `ms,`)."""
+    units: list[dict] = []
+
+    def emit(chunk: str) -> None:
+        for m in re.finditer(r"\s+|\S+", chunk):
+            units.append({"kind": "ws" if m.group(0)[0].isspace() else "lit",
+                          "text": m.group(0)})
+
+    pos = 0
+    for s, e, cls in sorted(spans):
+        if s < pos:
+            continue                            # overlapping spans: the first holds
+        emit(line[pos:s])
+        units.append({"kind": "wild", "cls": cls})
+        pos = e
+    emit(line[pos:])
+    runs: list[dict] = []
+    for n, u in enumerate(units):
+        touches = u["kind"] == "ws" and any(
+            0 <= j < len(units) and units[j]["kind"] == "wild" for j in (n - 1, n + 1))
+        if u["kind"] == "wild" or touches:
+            runs.append(u)
+        elif runs and runs[-1]["kind"] == "lit":
+            runs[-1]["text"] += u["text"]
+        else:
+            runs.append({"kind": "lit", "text": u["text"]})
+    return runs
+
+
+def _runs_pattern(runs: list[dict], captured: int = -1, line: bool = True) -> str:
+    """The regex of a run sequence: every `lit` escaped exactly (the captured
+    one in group 1), `ws` at least one space, `wild` a non-capturing class.
+    A line pattern is anchored on its own line (`(?m:^…$)`, CRLF tolerated)."""
+    parts = []
+    for n, r in enumerate(runs):
+        if r["kind"] == "wild":
+            parts.append("(?:" + r["cls"] + ")")
+        elif r["kind"] == "ws":
+            parts.append(r"[ \t\f\v]+" if r["text"][0] in " \t\f\v" else r"\s+")
+        elif n == captured:
+            parts.append("(" + re.escape(r["text"]) + ")")
+        else:
+            parts.append(re.escape(r["text"]))
+    if line:
+        return r"(?m:^" + "".join(parts) + r"[ \t]*\r?$)"
+    return "".join(parts)
+
+
+def _mask_patterns(mid: str, seg_pattern: str, text: str,
+                   spans: list[tuple[int, int, str]]) -> list[dict] | None:
+    """The measures of a masked segment, `[{"id", "piece", "pattern", "kind",
+    "line"}]`: one per LINE of the reference that keeps compared text (a line
+    cut by a masked value gives one per compared run), plus one for the whole
+    segment -- its order of lines and tokens, the first compared text captured
+    (a line more, a line less, a moved token: none of them is a tolerated
+    value)."""
+    if seg_pattern.count("(.*?)") != 1:
+        return None
+    left, right = seg_pattern.split("(.*?)")
+    out: list[dict] = []
+    base = 0
+    for n, line in enumerate(text.split("\n"), 1):
+        ls, le = base, base + len(line)
+        base = le + 1
+        if not line.strip():
+            continue
+        mine = [(max(s, ls) - ls, min(e, le) - ls, cls)
+                for s, e, cls in spans if s < le and e > ls]
+        runs = _line_runs(line, mine)
+        lits = [k for k, r in enumerate(runs) if r["kind"] == "lit" and r["text"].strip()]
+        for q, k in enumerate(lits, 1):
+            one = len(lits) == 1
+            out.append({"id": f"{mid}_l{n}" if one else f"{mid}_l{n}p{q}",
+                        "kind": "ligne" if one else "partie", "line": n,
+                        "piece": runs[k]["text"].strip(),
+                        "pattern": _runs_pattern(runs, k)})
+    pieces = _mask_pieces(text, spans)
+    lits = [p for p in pieces if p["kind"] == "lit"]
+    if not lits:
+        return None                        # nothing left to compare: never a mask
+    parts = []
+    for p in pieces:
+        if p is lits[0]:
+            parts.append("(" + re.escape(p["text"]) + ")")
+        elif p["kind"] == "lit":
+            parts.append(re.escape(p["text"]))
+        elif p["kind"] == "wild":
+            parts.append("(?:" + p["cls"] + ")")
+        else:
+            parts.append(_ws_pattern(p["text"]))
+    out.append({"id": f"{mid}_structure", "kind": "structure", "line": 0,
+                "piece": lits[0]["text"],
+                "pattern": left + r"\s*" + "".join(parts) + r"\s*" + right})
+    return out
+
+
+def _masked_segment(mid: str, cell: int, seg: dict, got: str, rs_txt: str, py_txt: str,
+                    mask_rows: list[dict], spec_ref: str | None, cs_out: dict | None,
+                    cs_code: set[int]) -> dict | None:
+    """The strict measure of a segment replaced by the masked measures under
+    the cell's mask rows: `{"measures", "divergence", "masked"}`, or `None`
+    when the organ cannot model the segment (the caller keeps today's path).
+    `divergence` is None only when every measure reads back on the Rust side."""
+    py_n = seg["text"].replace("\r\n", "\n")
+    rs_n = got.replace("\r\n", "\n")
+    at = f" ({spec_ref}, Tolerances, cellule {cell})" if spec_ref else ""
+    tol = " ; ".join(" ".join(str(r.get("tolerance") or r.get("compare") or "").split())
+                     for r in mask_rows)
+    spans, rs_spans, broken = _spec_mask(py_n, rs_n, mask_rows)
+    if broken:
+        # The reason leads: the row that does not apply IS the cause, and a
+        # message that opens on the tolerated difference hides it.
+        return {"measures": [], "masked": None,
+                "divergence": {"id": mid, "cell": cell, "text": (
+                    f"ligne de tolérance non applicable{at} : {' ; '.join(broken)}"
+                    f" -- la cellule reste comparée strictement ; premier écart : "
+                    f"{_first_diff(seg['text'], got)}")}}
+    pats = _mask_patterns(mid, seg["pattern"], py_n, spans)
+    if pats is None or any(_extract(py_txt, p["pattern"]) != p["piece"] for p in pats):
+        return None                    # generator limit: the strict measure stays
+    failing = [p["id"] for p in pats if _extract(rs_txt, p["pattern"]) != p["piece"]]
+    measures: list[dict] = []
+    for p in pats:
+        head = f"Sortie de la cellule {cell}"
+        if p["kind"] == "structure":
+            desc = (f"{head} : ordre des lignes et des jetons identique au jumeau Python"
+                    f" (tolérance « {tol} »{at} : la valeur qu'elle nomme est masquée, "
+                    "jamais comparée)")
+        else:
+            where = (f", ligne {p['line']}" if p["kind"] == "ligne"
+                     else f", ligne {p['line']}, partie {p['id'].rsplit('p', 1)[1]}")
+            desc = (f"{head}{where} : texte identique au jumeau Python hors de la valeur"
+                    f" masquée (tolérance « {tol} »{at})")
+        sides: dict = {"python": {"cell": cell, "pattern": p["pattern"], "transform": "text"},
+                       "rust": {"cell": cell, "pattern": p["pattern"], "transform": "text"}}
+        if cs_out is not None:
+            cs_txt = cs_out.get(cell)
+            cs_got = _extract(cs_txt, p["pattern"]) if cs_txt else None
+            if cs_got == p["piece"]:
+                sides["csharp"] = {"cell": cell, "pattern": p["pattern"], "transform": "text"}
+            else:
+                gap = _csharp_gap(cell, cs_txt, cs_got, p["piece"], cs_code)
+                sides["csharp"] = {"absent": (
+                    f"{gap} : côté déclaré absent, mesuré à la génération ; "
+                    "la comparaison stricte porte sur Python et Rust.")}
+        measures.append({"id": p["id"], "description": desc, "tolerance": 0,
+                         "reference": "python", "sides": sides})
+    divergence = None
+    if failing:
+        shown = ", ".join(failing[:4]) + (" …" if len(failing) > 4 else "")
+        first = next(p for p in pats if p["id"] == failing[0])
+        divergence = {"id": mid, "cell": cell, "text": (
+            f"la tolérance{at} ne couvre que la valeur qu'elle nomme, le reste est "
+            f"comparé : {len(failing)} mesure(s) en échec ({shown}) ; la première : "
+            f"{_masked_fail_detail(first, py_n, rs_n, spans, rs_spans)}")}
+    return {"measures": measures, "masked": {"id": mid, "cell": cell,
+            "reason": f"valeur non comparée, déclarée par la spec{at} : {tol}"},
+            "divergence": divergence}
+
+
 def _conformance_core(py_path: Path, rs_path: Path, cs_path: Path | None,
                       spec_body: str | None = None,
                       spec_ref: str | None = None) -> dict:
@@ -1375,16 +1909,24 @@ def _conformance_core(py_path: Path, rs_path: Path, cs_path: Path | None,
     numeric-only gaps. A spec-declared side is written `absent:` with the spec
     row quoted (reported by the checker, never a failure) and named in
     `spec_absent`/`skipped` so the PR body says it. `spec_ref` (e.g. `#28072`)
-    anchors the motif back to the issue."""
+    anchors the motif back to the issue.
+
+    A mask row (`non comparée`, `forme seulement`, `écart déclaré`) works the
+    other way round: the cell STAYS measured, under one pattern per piece that
+    masks the value the row names and compares everything else
+    (`_masked_segment`); the replaced measure is named in `spec_masked`."""
     py_out = notebook_outputs(py_path)
     rs_out = notebook_outputs(rs_path)
     cs_out = notebook_outputs(cs_path) if cs_path is not None and Path(cs_path).is_file() else None
     rich = rich_output_cells(py_path)
     tolerances = parse_spec_tolerances(spec_body)
+    all_rows = parse_spec_tolerance_rows(spec_body)
     measures: list[dict] = []
     divergences: list[dict] = []
     skipped: list[str] = []
     spec_absent: list[dict] = []
+    spec_masked: list[dict] = []
+    cs_code = set(cs_out) if cs_out is not None else set()
     for i in sorted(py_out):
         if not py_out[i].strip():
             continue
@@ -1423,7 +1965,24 @@ def _conformance_core(py_path: Path, rs_path: Path, cs_path: Path | None,
             elif (kind == "duration" and not strict_ok and got is not None
                   and _durations_only_diff(seg["text"], got)):
                 absent_reason = _spec_absent_reason(kind, i, row, spec_ref)
-            if absent_reason is not None:
+            masked = None
+            mask_rows = [r for r in all_rows.get(i, []) if _spec_one_row_kind(r) in _MASK_KINDS]
+            if not strict_ok and got is not None and absent_reason is None and mask_rows:
+                masked = _masked_segment(mid, i, seg, got, rs_txt, py_out[i], mask_rows,
+                                         spec_ref, cs_out, cs_code)
+            if masked is not None and masked["masked"] is not None:
+                # The mask holds and every piece is written: the cell stays
+                # measured, only the named value is never compared.
+                measures.extend(masked["measures"])
+                if masked["divergence"] is not None:
+                    divergences.append(masked["divergence"])
+                spec_masked.append(masked["masked"])
+                skipped.append(f"{mid}: {masked['masked']['reason']} -- "
+                               f"{len(masked['measures'])} morceaux mesurés")
+                continue
+            if masked is not None and masked["divergence"] is not None:
+                divergences.append(masked["divergence"])
+            elif absent_reason is not None:
                 # Fail-closed stays readable: the spec's own contract replaces
                 # the strict measure, the motif quotes the row, the checker
                 # reports the absent side without failing on it.
@@ -1432,18 +1991,31 @@ def _conformance_core(py_path: Path, rs_path: Path, cs_path: Path | None,
                 skipped.append(f"{mid}: côté Rust déclaré absent -- {absent_reason}")
                 spec_absent.append({"id": mid, "cell": i, "reason": absent_reason})
             elif not strict_ok:
-                divergences.append({
-                    "id": mid, "cell": i,
-                    "text": ("la cellule Rust n'imprime rien" if not rs_txt
-                             else "les lignes-ancres de durée du segment Python manquent"
-                             if got is None else _first_diff(seg["text"], got))})
+                text = ("la cellule Rust n'imprime rien" if not rs_txt
+                        else "les lignes-ancres de durée du segment Python manquent"
+                        if got is None else _first_diff(seg["text"], got))
+                held = [r for r in all_rows.get(i, [])
+                        if _spec_one_row_kind(r) in ("invariants", "mixed")]
+                if held:
+                    # `spec_rows_kind` kept the cell strict: an exact row of the
+                    # same cell holds these rows to strict too. Named, with the
+                    # way out -- a tolerated quantity is WRITTEN as a mask.
+                    where = f" ({spec_ref}, Tolerances, cellule {i})" if spec_ref else ""
+                    quoted = " ; ".join("« " + " ".join(str(
+                        r.get("tolerance") or r.get("compare") or "").split())[:90] + " »"
+                        for r in held)
+                    text += (f" ; tenues pour strictes{where}, une ligne exacte de la même"
+                             f" cellule : {quoted} -- une grandeur tolérée à côté de compteurs"
+                             " exacts s'écrit « non comparée », « forme seulement » ou"
+                             " « écart déclaré »")
+                divergences.append({"id": mid, "cell": i, "text": text})
             if cs_out is not None:
                 cs_txt = cs_out.get(i)
                 cs_got = _extract(cs_txt, seg["pattern"]) if cs_txt else None
                 if cs_got == seg["text"]:
                     sides["csharp"] = {"cell": i, "pattern": seg["pattern"], "transform": "text"}
                 else:
-                    gap = _csharp_gap(i, cs_txt, cs_got, seg["text"], set(cs_out))
+                    gap = _csharp_gap(i, cs_txt, cs_got, seg["text"], cs_code)
                     sides["csharp"] = {"absent": (
                         f"{gap} : côté déclaré absent, mesuré à la génération ; "
                         "la comparaison stricte porte sur Python et Rust.")}
@@ -1473,7 +2045,8 @@ def _conformance_core(py_path: Path, rs_path: Path, cs_path: Path | None,
                     "sides": {s: {"cell": i, "pattern": pat, "transform": "text"}
                               for s in ("python", "csharp", "rust")}})
     return {"measures": measures, "divergences": divergences, "skipped": skipped,
-            "spec_absent": spec_absent, "has_csharp": cs_out is not None}
+            "spec_absent": spec_absent, "spec_masked": spec_masked,
+            "has_csharp": cs_out is not None}
 
 
 def conformance_divergences(py_path: Path, rs_path: Path,
@@ -1534,7 +2107,7 @@ def build_conformance_entry(worktree: Path, nb_rel: str, source_rel: str,
             "measures": len(measures), "three_sided": three,
             "csharp": cs_rel if core["has_csharp"] else None,
             "divergences": core["divergences"], "skipped": core["skipped"],
-            "spec_absent": core["spec_absent"]}
+            "spec_absent": core["spec_absent"], "spec_masked": core["spec_masked"]}
 
 
 def _yq(s) -> str:
@@ -1569,6 +2142,12 @@ def render_conformance_yaml(built: dict) -> str:
     if skipped:
         head += ["#", "# Cellules non mesurées (motif relevé à la génération) :"]
         head += [f"#   - {s}" for s in skipped]
+    masked = [" ".join(str(m.get("reason") or "").split()) for m in built.get("spec_masked") or []]
+    if masked:
+        head += ["#", "# Valeurs non comparées (lignes de tolérance de la spec, appliquées",
+                 "# comme un MASQUE : la mesure reste écrite, un morceau par jeton, la valeur",
+                 "# nommée seule est masquée) :"]
+        head += [f"#   - {m.get('id')} : {why}" for m, why in zip(built["spec_masked"], masked)]
     lines = head + [f"- name: {_yq(e['name'])}", f"  family: {_yq(e['family'])}",
                     f"  python: {e['python']}"]
     if e.get("csharp"):

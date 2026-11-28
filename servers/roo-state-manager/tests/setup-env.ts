@@ -78,10 +78,13 @@ if (!process.env.ROOSYNC_SCAN_LOCK_DIR) {
 // every cold scan. One mkdtemp per worker process; the suites that test the
 // cache itself (tool-usage-cache.test.ts, tool-usage-stats-window-consistency
 // .test.ts) already override with their own dir.
-if (!process.env.ROOSYNC_TOOL_USAGE_CACHE_DIR) {
-  process.env.ROOSYNC_TOOL_USAGE_CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-tus-cache-'));
-  registerRsmTestTempDir(process.env.ROOSYNC_TOOL_USAGE_CACHE_DIR);
-}
+// #4884 — set UNCONDITIONALLY, like the ledger dir below. A value inherited
+// from the shell or .env used to be kept, so a seat exporting this variable —
+// the production default included — ran every suite against the real cache
+// while the isolation guard stayed green. The suites that test the cache set
+// their own dir in beforeEach, i.e. after this file: they still override.
+process.env.ROOSYNC_TOOL_USAGE_CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-tus-cache-'));
+registerRsmTestTempDir(process.env.ROOSYNC_TOOL_USAGE_CACHE_DIR);
 
 // #4861 v1.2 — per-WORKER contentHash ledger dir, and unlike the three above it
 // is set UNCONDITIONALLY. The ledger defaults to

@@ -10,8 +10,8 @@
 import { getMessageManager } from '../../services/MessageManager.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { createLogger, Logger } from '../../utils/logger.js';
-import { StateManagerError } from '../../types/errors.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
+import { StateManagerError } from '@vibesync/core/types/errors';
 import { getLocalFullId, getLocalMachineId } from '../../utils/message-helpers.js';
 
 // Logger instance for amend_message tool

@@ -15,7 +15,7 @@
 import { z } from 'zod';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { createLogger, type Logger } from '../../utils/logger.js';
+import { createLogger, type Logger } from '@vibesync/core/utils/logger';
 import { getLocalMachineId } from '../../utils/message-helpers.js';
 import { getSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { recordRooSyncActivityAsync } from '../roosync/heartbeat-activity.js';

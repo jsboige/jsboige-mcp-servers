@@ -30,14 +30,14 @@ import type { Message, MessageListItem } from '../MessageManager.js';
 import type { RooSyncMessageRow, RooSyncMessageUpdate } from './types.js';
 import type { IUnifiedStoreReader, RooSyncMailboxReadOptions } from './UnifiedStoreReader.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
-import { isChannelReadPgEnabled } from './pg-read-gates.js';
-import { ensureBackfillMarkersFresh } from './pg-backfill-marker.js';
+import { isChannelReadPgEnabled } from '@vibesync/core/services/unified-store/pg-read-gates';
+import { ensureBackfillMarkersFresh } from '@vibesync/core/services/unified-store/pg-backfill-marker';
 import { withColdPoolResume } from './pg-cold-pool-resume.js';
 import { parseMachineWorkspace, matchesRecipient, perReaderStatus, isMachineWideTarget } from '../../utils/message-helpers.js';
 import { applyReadTracking } from '../../utils/read-tracking.js';
 import { updateRooSyncMessagePrimary } from './roosync-channel-write.js';
 import { mapMessageToRow } from './roosync-channel-dual-write.js';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('roosync-channel-read');
 

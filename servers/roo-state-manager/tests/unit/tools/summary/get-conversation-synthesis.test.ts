@@ -18,7 +18,7 @@ import {
     GetConversationSynthesisArgs
 } from '../../../../src/tools/summary/get-conversation-synthesis.tool.js';
 import { StoredConversation } from '../../../../src/services/unified-store/types.js';
-import { StateManagerError } from '../../../../src/types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 import fs from 'fs/promises';
 import path from 'path';
 

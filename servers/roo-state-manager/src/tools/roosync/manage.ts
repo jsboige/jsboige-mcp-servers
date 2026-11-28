@@ -8,8 +8,8 @@
  */
 
 import { MessageManager, getMessageManager } from '../../services/MessageManager.js';
-import { createLogger, Logger } from '../../utils/logger.js';
-import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
+import { MessageManagerError, MessageManagerErrorCode } from '@vibesync/core/types/errors';
 import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 // #4731 W3 — the cleanup action must not render a degraded "0" as a result:
 // the breaker state deltas tell deferred (nothing scanned) from a real 0.
@@ -24,7 +24,7 @@ import {
   perReaderStatus
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
-import { isPgFlagOn } from '../../services/unified-store/pg-flags.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
 
 // Logger instance for manage tool
 const logger: Logger = createLogger('RooSyncManageTool');

@@ -58,7 +58,7 @@
  */
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { execFile } from 'child_process';
-import { sanitizeInt } from '../utils/int-validator.js';
+import { sanitizeInt } from '@vibesync/core/utils/int-validator';
 
 // #3391: docker logs maxBuffer. Node default is 1 MB; the hub emits 5-6k
 // lines/h (~14 MB for --since 12h). 128 MB keeps --since 12h+ safe.

@@ -16,8 +16,8 @@ import {
   BaselineDifference,
   BaselineComparisonReport
 } from '../types/baseline.js';
-import { createLogger, Logger } from '../utils/logger.js';
-import { BaselineServiceError, BaselineServiceErrorCode } from '../types/errors.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
+import { BaselineServiceError, BaselineServiceErrorCode } from '@vibesync/core/types/errors';
 
 /**
  * Safe property accessor with default value

@@ -15,7 +15,7 @@
  * reader has seen it.
  */
 
-import { createLogger, Logger } from './logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import {
   parseMachineWorkspace,
   matchesRecipient,

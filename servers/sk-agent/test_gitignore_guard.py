@@ -16,7 +16,7 @@ def _check_ignore(relpath):
         ["git", "check-ignore", relpath],
         cwd=SK_AGENT_DIR,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
     )
 
 

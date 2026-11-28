@@ -11,7 +11,7 @@
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { readJSONFileSyncWithoutBOM, parseJSONWithoutBOM } from './encoding-helpers.js';
-import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 
 /**
  * Interface pour une décision RooSync

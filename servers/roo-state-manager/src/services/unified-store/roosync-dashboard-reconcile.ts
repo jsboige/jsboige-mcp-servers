@@ -78,6 +78,21 @@
  * (`ROOSYNC_DASHBOARD_MIRROR_REPAIR=0`). Scoped to keys that still have a file:
  * a key present in PG with NO file at all is not materialised here.
  *
+ * ONE WRITER (#4596). The fleet lock above serialises the repair in TIME; it
+ * does not designate a publisher, so every seat still wrote the same Drive
+ * item in turn — the condition that produced the ` (N)` conflict copies
+ * (07/11 23:50Z, whole-file batch rewrites by two accounts). The mirror is an
+ * EXPORT, so it takes ONE publisher: `ROOSYNC_DASHBOARD_MIRROR_WRITER`
+ * (`dashboard-mirror-writer.ts`, default `myia-ai-01`, `*` hands it back to
+ * every seat). Both PG→file writers honour it — the repair and the
+ * materialization — and a non-designated seat returns
+ * `mirrorRepairSkipped: 'not-designated-writer'` BEFORE asking for the fleet
+ * lock (a seat that will not write has no business holding it either). The
+ * pg-flags / writer seams keep their own reasons first: an explicit kill-switch
+ * or a non-PG-primary seat is reported as such. The two paths where the file is
+ * the only surface stay unguarded, on purpose: the PG-failure fallback and the
+ * file→PG import pass.
+ *
  * MAIN-pass lock (#4850). The pass itself — one `dashboards` readdir then a
  * read+parse per keyed file — ran unlocked in every dual-write RSM process on
  * a host: 32 identical passes on ai-01, all started in the same reboot hour
@@ -86,6 +101,15 @@
  * row with TTL, same contract as MIRROR_REPAIR_LOCK_KEY); the others return
  * `mainPassSkipped: 'lock-held'` without reading a single file.
  * `ROOSYNC_DASHBOARD_RECONCILE_MAIN_PASS_LOCK=0` restores the old behaviour.
+ *
+ * The lock serialises; the cadence STAMP paces. Each host keeps its own clock
+ * (first pass 90 s after start, then every interval), so with the lock alone
+ * every new host still ran a full pass of its own (13 per 24 h on po-204,
+ * 5 inside one 6 h window). A pass that runs to its end with NOTHING left to
+ * redo — no counted error, no failed mirror write (ms#1926 review) — stamps a
+ * second per-machine row (`dashboard-reconcile-main-pass-cadence:<machine>`) and
+ * a tick that finds it returns `mainPassSkipped: 'cadence'`.
+ * `ROOSYNC_DASHBOARD_RECONCILE_MAIN_PASS_CADENCE=0` restores the lock alone.
  *
  * Env-gate: same flags as the dual-write (UNIFIED_STORE_DUAL_WRITE=1 +
  * UNIFIED_STORE_PG_URL) — reconciling into a Null writer is pure GDrive IO.
@@ -110,8 +134,9 @@ import type { IUnifiedStoreWriter, RooSyncLockAcquireStatus } from './UnifiedSto
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
-import { isPgFlagOn } from './pg-flags.js';
-import { createLogger } from '../../utils/logger.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
+import { isDesignatedMirrorWriter, reconcileLockMachineId } from './dashboard-mirror-writer.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import { isGdriveConflictCopyFile } from '../roosync/DashboardMirrorService.js';
 
 const logger = createLogger('roosync-dashboard-reconcile');
@@ -217,18 +242,23 @@ export interface DashboardReconcileResult {
   archiveScanSkipped?: 'disabled' | 'lock-held';
   /**
    * Why the MAIN pass did not run this pass (#4850). `'lock-held'` = another
-   * RSM process of THIS machine holds the main-pass lock — one complete pass
-   * per machine and per window, not one per process (32 measured on ai-01);
-   * `'disabled'` = ROOSYNC_DASHBOARD_RECONCILE_MAIN_PASS_LOCK=0. Absent = the
-   * pass ran, or the lock backend was unavailable and the pass ran unlocked
-   * (old behaviour — reported by its own WARN, never silent).
+   * RSM process of THIS machine holds the main-pass lock (a pass is in
+   * flight); `'cadence'` = this machine already ran a pass to its end inside
+   * the window (`mainPassCadenceMs`) — one complete pass per machine and per
+   * window, not one per process (32 measured on ai-01) nor one per process
+   * start; `'disabled'` = ROOSYNC_DASHBOARD_RECONCILE_MAIN_PASS_LOCK=0.
+   * Absent = the pass ran, or the lock backend was unavailable and the pass
+   * ran unlocked (old behaviour — reported by its own WARN, never silent).
    */
-  mainPassSkipped?: 'disabled' | 'lock-held';
+  mainPassSkipped?: 'disabled' | 'lock-held' | 'cadence';
   // ─── Mirror repair (PG → file, #4131 demande 2) ────────────────────────
   /**
    * Why the mirror repair did not run this pass. `'not-pg-primary'` = the file
    * is still the truth on this seat (repairing it from PG would be backwards);
-   * `'no-writer'` = no `writeMirror` seam was injected; `'disabled'` = the
+   * `'not-designated-writer'` = this seat is not the one
+   * ROOSYNC_DASHBOARD_MIRROR_WRITER names (#4596) — decided BEFORE the fleet
+   * lock, so a non-designated seat never asks for it; `'no-writer'` = no
+   * `writeMirror` seam was injected; `'disabled'` = the
    * ROOSYNC_DASHBOARD_MIRROR_REPAIR=0 kill-switch; `'lock-held'` = another
    * process of the fleet holds the repair lock; `'lock-degraded'` = the lock
    * acquire THREW and the repair (a write) refuses to run unlocked. Absent =
@@ -236,6 +266,7 @@ export interface DashboardReconcileResult {
    */
   mirrorRepairSkipped?:
     | 'not-pg-primary'
+    | 'not-designated-writer'
     | 'no-writer'
     | 'disabled'
     | 'lock-held'
@@ -307,6 +338,12 @@ export interface DashboardReconcileOptions {
    * with `mirrorRepairSkipped: 'no-writer'`.
    */
   writeMirror?: (key: string, dashboard: Dashboard) => Promise<void>;
+  /**
+   * #4850 — the per-machine window, in ms (the daemon passes its interval).
+   * A tick is refused while a pass of this machine completed less than 90 %
+   * of it ago. Absent or ≤ 0 = no cadence stamp, the lock alone serialises.
+   */
+  mainPassCadenceMs?: number;
 }
 
 /** Same gate as the channel reconcile — mirrors writer-factory's arming. */
@@ -418,9 +455,18 @@ export function isMainPassLockEnabled(): boolean {
   return process.env.ROOSYNC_DASHBOARD_RECONCILE_MAIN_PASS_LOCK !== '0';
 }
 
-/** Machine identity — same spelling as the holder payloads of the other locks. */
+/**
+ * Machine identity of the LOCK ROWS — the historical hostname spelling,
+ * deliberately frozen. The #4596 election may follow the operator's
+ * declaration (`ROOSYNC_MACHINE_ID`, the stamps' vocabulary); these keys may
+ * not: a host without `.env`, an older-vintage host or a host reading another
+ * `.env` would otherwise stop contending on the same `…:<machine>` row and
+ * stop sharing the #4850 cadence stamp with its own machine's other hosts.
+ * Election ≠ serialisation — the verdict elects a publisher, the key
+ * serialises the pass.
+ */
 function reconcileMachineId(): string {
-  return process.env.COMPUTERNAME ?? process.env.HOSTNAME ?? 'unknown';
+  return reconcileLockMachineId();
 }
 
 /**
@@ -436,6 +482,38 @@ export function mainPassLockKey(machine: string = reconcileMachineId()): string 
  * a crashed holder, so a dead process cannot wedge the next pass.
  */
 export const MAIN_PASS_LOCK_TTL_MS = 30 * 60_000;
+
+// ─── Cadence stamp — one COMPLETE pass per machine per window (#4850) ──────
+// The stamp is taken when a pass ENDS, never when it starts: a process killed
+// mid-pass leaves none, so the lock's 30 min TTL above stays the only
+// dead-holder backstop. The tick's check takes the stamp row and drops it at
+// once, and the pass re-takes it at its end.
+
+/** Kill-switch — '0' restores the lock alone (one pass per process tick). */
+export function isMainPassCadenceEnabled(): boolean {
+  return process.env.ROOSYNC_DASHBOARD_RECONCILE_MAIN_PASS_CADENCE !== '0';
+}
+
+/**
+ * Stamp row, one per machine. Distinct from the lock row: the two never share
+ * a timestamp, so the lock keeps its own TTL.
+ */
+export function mainPassCadenceKey(machine: string = reconcileMachineId()): string {
+  return `dashboard-reconcile-main-pass-cadence:${machine}`;
+}
+
+/**
+ * The stamp lives 90 % of the window. A host's next tick comes one window
+ * after its previous TICK — less than one window after the previous STAMP,
+ * which the pass takes at its end. A full-window stamp would refuse that
+ * tick and double the cadence on a single-host machine.
+ */
+export const MAIN_PASS_CADENCE_STAMP_RATIO = 0.9;
+
+/** TTL of the stamp for a `windowMs` window. */
+export function mainPassCadenceTtlMs(windowMs: number): number {
+  return Math.max(1, Math.round(windowMs * MAIN_PASS_CADENCE_STAMP_RATIO));
+}
 
 /**
  * Condensation archive name shapes:
@@ -740,6 +818,72 @@ export async function reconcileDashboardsFromGDrive(
     if (lockStatus === 'acquired') mainPassLockHolder = holderJson;
   }
 
+  const releaseMainPassLock = async (): Promise<void> => {
+    if (mainPassLockHolder === null) return;
+    try {
+      await writer.releaseRooSyncDashboardLock?.(mainPassLockKey(), mainPassLockHolder);
+    } catch (error) {
+      // Same TTL backstop as the other pass locks: the next window steals an
+      // unreleased row, so a failed release only delays the next holder.
+      logger.warn(
+        `[dashboard-reconcile] Main-pass lock release failed (${String(error)}) — the TTL will reap it`
+      );
+    }
+  };
+
+  // ─── Cadence stamp — a pass already completed on this machine (#4850) ───
+  // The lock above serialises only: it is released at the end of a pass and
+  // every host keeps its own clock, so a tick that finds the stamp row skips.
+  // The check takes the row and drops it at once — the stamp itself is taken
+  // by the pass's END (see the close of this function), so an interrupted
+  // pass leaves no stamp behind.
+  const cadenceWindowMs = options.mainPassCadenceMs ?? 0;
+  const tryAcquireStamp = writer.tryAcquireRooSyncDashboardLock?.bind(writer);
+  let cadenceStampTtlMs = 0;
+  if (
+    mainPassLockHolder !== null &&
+    cadenceWindowMs > 0 &&
+    isMainPassCadenceEnabled() &&
+    tryAcquireStamp
+  ) {
+    cadenceStampTtlMs = mainPassCadenceTtlMs(cadenceWindowMs);
+    let cadenceStatus: RooSyncLockAcquireStatus = 'unavailable';
+    try {
+      cadenceStatus = await tryAcquireStamp(
+        mainPassCadenceKey(),
+        mainPassLockHolder,
+        cadenceStampTtlMs
+      );
+    } catch (error) {
+      cadenceStampTtlMs = 0;
+      logger.warn(
+        `[dashboard-reconcile] Main-pass cadence check failed (${String(error)}) — pass runs on the lock alone`
+      );
+    }
+    if (cadenceStatus === 'acquired') {
+      try {
+        await writer.releaseRooSyncDashboardLock?.(mainPassCadenceKey(), mainPassLockHolder);
+      } catch (error) {
+        // ms#1926 review — NOT a check failure: the row taken above stays for
+        // its TTL, i.e. it IS the window's stamp from now on. Disarming the end
+        // stamp here would leave a machine silenced by a row no complete pass
+        // put there; the pass must still stamp (it will find the row 'held').
+        logger.warn(
+          `[dashboard-reconcile] Main-pass cadence check row release failed (${String(error)}) — the TTL will reap it`
+        );
+      }
+    }
+    if (cadenceStatus === 'held') {
+      result.mainPassSkipped = 'cadence';
+      result.durationMs = Date.now() - startedAt;
+      logger.info(
+        '[dashboard-reconcile] pass skipped: a main pass already completed on this machine inside the window (#4850)'
+      );
+      await releaseMainPassLock();
+      return result;
+    }
+  }
+
   // ─── Mirror-repair arming (PG → file, #4131 demande 2) ──────────────────
   // Only on a PG-primary seat: elsewhere the FILE is the truth and rewriting it
   // from PG would invert the direction this whole module protects.
@@ -749,6 +893,14 @@ export async function reconcileDashboardsFromGDrive(
     result.mirrorRepairSkipped = 'disabled';
   } else if (!isDashboardPgPrimary()) {
     result.mirrorRepairSkipped = 'not-pg-primary';
+  } else if (!isDesignatedMirrorWriter()) {
+    // #4596 — ONE publisher for the mirror. Decided here, ahead of the lock
+    // take and ahead of the `no-writer` wiring reason: every non-designated
+    // seat of the fleet must report the same word, or the 24 h measurement
+    // (criterion 2 of the issue) cannot tell a guarded seat from a miswired
+    // one. `mirrorArmed` stays false, so the repair above AND the
+    // materialization pass below are both held by this single branch.
+    result.mirrorRepairSkipped = 'not-designated-writer';
   } else if (typeof options.writeMirror !== 'function') {
     result.mirrorRepairSkipped = 'no-writer';
   } else {
@@ -1381,17 +1533,52 @@ export async function reconcileDashboardsFromGDrive(
       );
     }
   }
-  if (mainPassLockHolder !== null) {
-    try {
-      await writer.releaseRooSyncDashboardLock?.(mainPassLockKey(), mainPassLockHolder);
-    } catch (error) {
-      // Same TTL backstop as the other pass locks: the next window steals an
-      // unreleased row, so a failed release only delays the next holder.
-      logger.warn(
-        `[dashboard-reconcile] Main-pass lock release failed (${String(error)}) — the TTL will reap it`
+  // #4850 — stamp the window BEFORE the lock goes: a tick landing in between
+  // must find one of the two rows, never a free machine.
+  //
+  // ms#1926 review — only a pass that left NOTHING to redo may stamp. Per-file
+  // errors and failed mirror writes are counted, never thrown, and the reader's
+  // own words on the PG-read branch are "Next pass retries": with a stamp that
+  // retry lands one window later, on work already known to be undone. The two
+  // `Deferred` counters are deliberately NOT part of the test: they are the
+  // per-pass budget doing its job, and a seat whose backlog outlives one pass
+  // would otherwise never pace — the cadence would switch itself off exactly
+  // where passes are heaviest.
+  const leftNothingToRedo =
+    result.errors === 0 &&
+    result.failures.length === 0 &&
+    result.mirrorRepairFailed === 0 &&
+    result.mirrorMaterializeFailed === 0;
+  if (cadenceStampTtlMs > 0 && tryAcquireStamp) {
+    if (!leftNothingToRedo) {
+      logger.info(
+        `[dashboard-reconcile] Main pass left work to redo (${result.errors} error(s), ` +
+          `${result.failures.length} file failure(s), ${result.mirrorRepairFailed} mirror repair(s) and ` +
+          `${result.mirrorMaterializeFailed} materialization(s) failed) — no cadence stamp, the next tick ` +
+          `re-runs (#4850, ms#1926 review)`
       );
+    } else {
+      try {
+        // 'held' = another pass of this machine stamped while this one ran (the
+        // lock's 30 min TTL was stolen under a long pass): the window is marked
+        // either way, nothing to redo.
+        await tryAcquireStamp(
+          mainPassCadenceKey(),
+          JSON.stringify({
+            machine: reconcileMachineId(),
+            pid: process.pid,
+            at: new Date().toISOString(),
+          }),
+          cadenceStampTtlMs
+        );
+      } catch (error) {
+        logger.warn(
+          `[dashboard-reconcile] Main-pass cadence stamp failed (${String(error)}) — the next tick will run again`
+        );
+      }
     }
   }
+  await releaseMainPassLock();
   return result;
 }
 
@@ -1430,6 +1617,9 @@ export function startDashboardReconcileDaemon(opts: {
       const result = await reconcileDashboardsFromGDrive({
         dashboardsDir: opts.dashboardsDir,
         writeMirror: opts.writeMirror,
+        // #4850 — the daemon's interval IS the per-machine window: every host
+        // ticks on its own phase, the stamp is what paces the machine.
+        mainPassCadenceMs: intervalHours * 3600_000,
       });
       dashboardReconcileLastRun = { at, result };
     } catch (error) {

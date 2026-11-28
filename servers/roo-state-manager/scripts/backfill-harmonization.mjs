@@ -119,7 +119,9 @@ const [
   import(buildUrl('utils/shared-state-path.js')),
   import(buildUrl('services/unified-store/roosync-harmonization-store.js')),
   import(buildUrl('services/unified-store/writer-factory.js')),
-  import(buildUrl('services/unified-store/pg-backfill-marker.js')),
+  // The vintage's bundled copy of @vibesync/core (#4918) — where the runtime
+  // resolves it from, so one source for the meta key.
+  import(buildUrl('node_modules/@vibesync/core/dist/services/unified-store/pg-backfill-marker.js')),
   import(buildUrl('services/unified-store/backfill-scope.js')),
 ]);
 

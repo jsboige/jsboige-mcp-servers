@@ -11,10 +11,10 @@
  * @version 4.0.0 (ADR 008 Phase 2)
  */
 
-import { createLogger } from '../../utils/logger.js';
-import { HeartbeatServiceError } from '../../types/errors.js';
+import { createLogger } from '@vibesync/core/utils/logger';
+import { HeartbeatServiceError } from '@vibesync/core/types/errors';
 
-export { HeartbeatServiceError } from '../../types/errors.js';
+export { HeartbeatServiceError } from '@vibesync/core/types/errors';
 
 const logger = createLogger('HeartbeatService');
 

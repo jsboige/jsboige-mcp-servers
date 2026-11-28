@@ -41,9 +41,9 @@ import * as os from 'os';
 import { spawnSync } from 'child_process';
 import * as yaml from 'js-yaml';
 import { getSharedStatePath, assertSharedStoreAccessible, ensureStoreSubdir, isSharedPathAccessible } from '../../utils/shared-state-path.js';
-import { createKnownValueMasker, maskSecretTextForPublication, FORM_LAYER_MARKER, redactSecrets } from '../../utils/secret-redaction.js';
+import { createKnownValueMasker, maskSecretTextForPublication, FORM_LAYER_MARKER, redactSecrets } from '@vibesync/core/utils/secret-redaction';
 import { getLocalMachineId, getLocalWorkspaceId, assertStampsMachine } from '../../utils/message-helpers.js';
-import { createLogger, Logger } from '../../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import { getChatOpenAIClient, getLLMModelId, getFallbackChatOpenAIClient, getFallbackLLMModelId } from '../../services/openai.js';
 import {
   sendMentionNotificationsAsync,
@@ -66,6 +66,8 @@ import {
   dualWriteDashboardSyncChecked,
   probeDashboardJournalForHydration,
   fetchArchivedDashboardMessageIds,
+  fetchArchivedDashboardBatches,
+  fetchArchivedDashboardBatch,
   getDashboardRetirement,
   listRetiredDashboardKeys,
   listRooSyncDashboardKeysFromPg,
@@ -75,8 +77,20 @@ import {
   readDashboardSharedLock,
   isDashboardPgPrimary,
 } from '../../services/unified-store/roosync-dashboard-store.js';
-import { isPgFlagOn, pgFlagState } from '../../services/unified-store/pg-flags.js';
-import { isDashboardReadPgEnabled } from '../../services/unified-store/pg-read-gates.js';
+import type { ArchivePgGap } from '../../services/unified-store/types.js';
+import { isPgFlagOn, pgFlagState } from '@vibesync/core/services/unified-store/pg-flags';
+import {
+  dashboardMirrorWriter,
+  isDesignatedMirrorWriter,
+  mirrorWriterDivergence,
+  mirrorWriterMachineId,
+  reconcileLockMachineId,
+  MIRROR_WRITER_ALL,
+  MIRROR_WRITER_ENV,
+  MIRROR_SKIP_REASON_NOT_DESIGNATED,
+  MIRROR_SKIP_REASON_APPEND_MIRROR_OFF,
+} from '../../services/unified-store/dashboard-mirror-writer.js';
+import { isDashboardReadPgEnabled } from '@vibesync/core/services/unified-store/pg-read-gates';
 // #4608 — état de condensation durable par clé (roosync_store_meta) : passe
 // morte, issue de passe, horloge de station au-dessus du seuil et contrôle
 // d'atterrissage (verdict ok vs moitié fichier qui n'a pas suivi).
@@ -3023,6 +3037,13 @@ export interface WriteVerifyResult {
    * kill-switch `UNIFIED_STORE_DASHBOARD_APPEND_MIRROR` rétablit l'écriture.
    */
   gdriveSkipped?: true;
+  /**
+   * #4596 — pourquoi le miroir a été sauté, en une valeur stable
+   * (`not-designated-writer` / `append-mirror-off`). Posé par les mêmes sites
+   * que `gdriveSkipped`, et remonté tel quel dans `writeVerification` : un
+   * refus ne se déduit pas de l'état ambiant, il se lit dans le résultat.
+   */
+  gdriveSkippedReason?: string;
 }
 
 /**
@@ -3252,6 +3273,35 @@ function logForkSuspicion(key: string, filePath: string, wv: WriteVerifyResult):
     detail: wv.forkDetail,
     forkPath: wv.forkPath,
     remediation: 'DriveFS local probablement wedgé — relire le canonique, redémarrer DriveFS/VS Code de la machine, puis re-poster si absent (intercom-protocol §append expiré)'
+  });
+}
+
+/**
+ * #4596 — review round 3 (ai-01, 27/11). Les chemins de REFUS nomment déjà
+ * `seat` et `host` ; le chemin qui ÉCRIT ne disait rien quand les deux noms du
+ * siège divergent. Un siège désigné dont la déclaration et le hostname ne
+ * disent pas la même machine le dit ici, à CHAQUE écriture du miroir — le
+ * journal tourne (10 Mo par fichier, 7 jours de rétention), une seule ligne au
+ * démarrage de l'hôte repartirait au silence dès la rotation. Rien à dire sur
+ * un siège dont les deux noms s'accordent : la ligne n'existe que sur un siège
+ * qui a quelque chose à expliquer. `declared` : cas nominal d'un conteneur de
+ * la machine désignée, et aussi le cas d'un hôte étranger dont le `.env` a
+ * recopié la ligne — le coût écrit dans l'en-tête de `dashboard-mirror-writer`.
+ * `hostname` : la machine désignée par son nom, avec une déclaration fausse
+ * qui estampille aussi ses messages.
+ */
+function logMirrorWriterDivergence(key: string): void {
+  const divergence = mirrorWriterDivergence();
+  if (divergence === undefined) return;
+  logger.info('[MIRROR-WRITER #4596] ce siège écrit le miroir sous un nom que son hostname ne confirme pas', {
+    key,
+    writer: divergence.writer,
+    electedBy: divergence.electedBy,
+    seat: divergence.seat,
+    host: divergence.host,
+    note: divergence.electedBy === 'declared'
+      ? 'nominal pour un conteneur de la machine désignée ; sinon la ligne ROOSYNC_MACHINE_ID de ce siège a été recopiée — la corriger'
+      : 'la déclaration ROOSYNC_MACHINE_ID de ce siège est fausse : le hostname l’a élu, et la déclaration estampille ses messages — la corriger'
   });
 }
 
@@ -3530,6 +3580,28 @@ async function runGdriveFullWriteHalf(
   }, writeStartedAtMs, landedIds);
 }
 
+// #4596 — review round 3 (mineur, ai-01 27/11) : `mirrorRepairExport` était un
+// booléen — tout appelant TypeScript pouvait lever la désignation en posant
+// `true` « pour réparer ». L'habilitation est un type à marque : `true` ne
+// compile plus, et la seule porte est `mirrorRepairExportGrant()`.
+const mirrorRepairExportBrand: unique symbol = Symbol('dashboard.mirrorRepairExport');
+
+/** #4596 — « la désignation a été décidée plus haut » : cf. `writeDashboardFile`. */
+export interface MirrorRepairExportGrant {
+  readonly [mirrorRepairExportBrand]: true;
+}
+
+/**
+ * #4596 — the capability carried by the reconcile's repair export
+ * (`repairDashboardMirrorFromPg`, the only production holder): its seat was
+ * decided by the `mirrorArmed` branch BEFORE the fleet lock was asked, and
+ * this export's file is its deliverable. Not a flag any caller may raise.
+ */
+export function mirrorRepairExportGrant(): MirrorRepairExportGrant {
+  const grant: MirrorRepairExportGrant = { [mirrorRepairExportBrand]: true };
+  return grant;
+}
+
 /**
  * Écrit un dashboard dans le stockage au format Markdown avec frontmatter YAML
  */
@@ -3543,7 +3615,21 @@ export async function writeDashboardFile(
   // idempotent, mais surtout : si PG flanche entre les deux, le fallback
   // GDrive-first de CETTE fonction throwrait « aucune surface » alors que le
   // message est déjà publié côté PG — le throw serait mensonger).
-  internal?: { pgPrimaryPreWritten?: boolean; mirrorExportAt?: string }
+  // #4596 — `mirrorRepairExport` : cet appel EST l'export de réparation du
+  // reconcile (`repairDashboardMirrorFromPg`), dont le siège a déjà été décidé
+  // par la branche `mirrorArmed`/`isDesignatedMirrorWriter()` du module de
+  // réconciliation, AVANT l'acquisition du verrou de flotte. Re-tester la
+  // désignation ici ne renforcerait rien : cela rendrait injoignable le contrat
+  // de cette fonction, dont le FICHIER est le livrable (une moitié GDrive
+  // dégradée doit thrower, cf. `dashboard-mirror-repair.test.ts`) — un siège non
+  // désigné rendrait « réparé » sans avoir rien écrit. L'habilitation dit que
+  // la décision a eu lieu plus haut, elle ne dispense de rien — et le type
+  // l'empêche d'être posée par un booléen (review round 3).
+  internal?: {
+    pgPrimaryPreWritten?: boolean;
+    mirrorExportAt?: string;
+    mirrorRepairExport?: MirrorRepairExportGrant;
+  }
 ): Promise<WriteVerifyResult> {
   // #3584 — masquer AVANT toute persistance : ce choke point alimente à la fois le
   // fichier partagé et le miroir PostgreSQL (`dualWriteDashboardSync` ci-dessous), et
@@ -3636,6 +3722,43 @@ export async function writeDashboardFile(
       }
     }
     if (pgMirrorMode) {
+      // #4596 — 5ᵉ point gardé (review ai-01 du 27/11 05:11Z). Cette branche
+      // est la surface NON-append : la passe de condensation détachée, write,
+      // merge, archive, retire, cross-post et l'alerte de troncature y écrivent
+      // le fichier, depuis n'importe quel siège. Le verrou de flotte sérialise
+      // dans le temps, il n'élit personne — c'est le même défaut que les quatre
+      // autres points. PG tient déjà l'écriture vérifiée : le fichier n'est
+      // qu'un export, il appartient à l'écrivain désigné. Décidé AVANT tout
+      // travail Drive. Non gardé : le repli sur échec PG ci-dessus, où le
+      // fichier est la seule surface — et l'export de réparation du reconcile
+      // (`mirrorRepairExport`), dont la désignation est tenue par sa branche
+      // `mirrorArmed` : re-tester ici rendrait son contrat de throw injoignable.
+      if (!isDesignatedMirrorWriter() && internal?.mirrorRepairExport === undefined) {
+        logger.info('[MIRROR-EXPORT #4596] miroir fichier non écrit — ce siège n’est pas l’écrivain désigné du miroir', {
+          key,
+          writer: dashboardMirrorWriter(),
+          // Review 27/11 — the seat as THIS guard reads it, under both of its
+          // names: a seat neither of which is the writer must be able to see
+          // why in its own journal, not only in a result field.
+          seat: mirrorWriterMachineId(),
+          host: reconcileLockMachineId(),
+          restoreWith: `${MIRROR_WRITER_ENV}=${MIRROR_WRITER_ALL}`
+        });
+        wv = {
+          forkSuspected: false,
+          gdriveSkipped: true,
+          gdriveSkippedReason: MIRROR_SKIP_REASON_NOT_DESIGNATED,
+        };
+        // #3774 critère 2 — même verdict que les autres chemins : la relecture
+        // du store (primaire) qualifie l'atterrissage de l'écriture.
+        wv = mergeStoreVerification(wv, await verifyWriteVisibleInStore(key, landedIds));
+        if (wv.forkSuspected) logForkSuspicion(key, filePath, wv);
+        return wv;
+      }
+      // #4596 — review round 3 : le siège écrit. Si ses deux noms divergent
+      // (dont via l'habilitation de réparation, qui passe la garde ci-dessus),
+      // c'est dit ici, à chaque écriture du miroir — pas seulement au refus.
+      logMirrorWriterDivergence(key);
       // #4131 G-MES — ici seulement, le fichier est le miroir d'une écriture PG
       // déjà tenue : le marqueur est posé à l'instant du write (la fenêtre PG
       // peut avoir duré — l'écart mtime↔stamp doit rester celui de l'export).
@@ -3869,7 +3992,15 @@ async function appendDashboardIncremental(
   // (écriture en arrière-plan) reste atteignable par le kill-switch ; il ne
   // peut être choisi que là où le miroir était déjà différé, jamais ailleurs.
   const appendMirrorEnabled = isDashboardAppendMirrorEnabled();
-  const deferFileMirror = fileMirrorDeferrable && appendMirrorEnabled;
+  // #4596 — ONE publisher for the mirror. An operator who turned the per-append
+  // mirror back on asked for a mirror, not for a second writer on the same
+  // Drive item: on a seat that is not the designated one the request is
+  // honoured the same way the default is — the file is left to the publisher.
+  // Never acts alone: it folds into `skipFileMirror`, which already requires
+  // that PG took THIS append and that no reader depends on the file; a PG
+  // failure still falls back to the file-first path below, unguarded.
+  const mirrorWriterDesignated = isDesignatedMirrorWriter();
+  const deferFileMirror = fileMirrorDeferrable && appendMirrorEnabled && mirrorWriterDesignated;
   // #4131 G-B lot 2 — PG-PREMIER SOUS VERROU append : le verrou existe pour
   // sérialiser la course read→write last-writer-wins ; la surface primaire
   // doit donc être sérialisée comme l'était le fichier (le journal PG est
@@ -3923,8 +4054,27 @@ async function appendDashboardIncremental(
   // autoritaire de CET append. Si PG n'a pas pris (store en échec, siège sans
   // store), le fichier redevient la surface et il est écrit comme avant —
   // jamais de message perdu au nom d'un défaut.
-  const skipFileMirror = fileMirrorDeferrable && !appendMirrorEnabled && pgPrimaryOk;
-  if (skipFileMirror) {
+  const skipFileMirror =
+    fileMirrorDeferrable && (!appendMirrorEnabled || !mirrorWriterDesignated) && pgPrimaryOk;
+  // #4596 — review round 3 : quand cet append ÉCRIT réellement le miroir (le
+  // mode rallumé par un opérateur, sur le siège désigné, PG tenant l'append),
+  // la divergence des deux noms du siège est dite — à chaque miroir écrit,
+  // comme sur le chemin non-append. Un append dont le fichier est la seule
+  // surface (PG en échec) n'écrit pas un miroir et ne dit rien.
+  if (fileMirrorDeferrable && appendMirrorEnabled && mirrorWriterDesignated && pgPrimaryOk) {
+    logMirrorWriterDivergence(key);
+  }
+  if (skipFileMirror && appendMirrorEnabled) {
+    // #4596 — only the explicit request reaches this line: the default path
+    // keeps its own #4131 log below, unchanged on every seat.
+    logger.info('[GDRIVE-EXPORT #4596] miroir fichier non écrit à cet append — ce siège n’est pas l’écrivain désigné du miroir', {
+      key,
+      writer: dashboardMirrorWriter(),
+      seat: mirrorWriterMachineId(),
+      host: reconcileLockMachineId(),
+      restoreWith: `${MIRROR_WRITER_ENV}=${MIRROR_WRITER_ALL}`
+    });
+  } else if (skipFileMirror) {
     logger.info('[GDRIVE-EXPORT #4131] miroir fichier non écrit à cet append — G: est un export périodique, réparé depuis PG (#3230)', {
       key,
       restoreWith: `${DASHBOARD_APPEND_MIRROR_ENV}=0`
@@ -4297,7 +4447,16 @@ async function appendDashboardIncremental(
     // #4131 G-DASH — état NOMINAL du nouveau défaut, pas une panne : le
     // fichier suivra au prochain tick d'export. L'appelant le voit pour ne pas
     // conclure « fichier à jour » d'un succès.
-    wv = { ...wv, gdriveSkipped: true };
+    // #4596 — la raison suit le verdict jusque dans le résultat MCP (review
+    // ai-01 : le CLI la portait déjà, le résultat MCP non) : un miroir rallumé
+    // par l'opérateur mais refusé faute d'élection n'est pas le défaut #4131.
+    wv = {
+      ...wv,
+      gdriveSkipped: true,
+      gdriveSkippedReason: appendMirrorEnabled && !mirrorWriterDesignated
+        ? MIRROR_SKIP_REASON_NOT_DESIGNATED
+        : MIRROR_SKIP_REASON_APPEND_MIRROR_OFF,
+    };
   }
 
   if (pgPrimaryOk) {
@@ -8387,6 +8546,20 @@ export interface DashboardResult {
   forks?: DashboardForkGroup[];
   archives?: string[];
   archiveData?: { key: string; archivedAt: string; messageCount: number; messages: IntercomMessage[] };
+  /**
+   * #4131 residual (review ms#1934) — how complete the PG half of a
+   * `read_archive` answer is. `'complete'` = PG answered for the whole key;
+   * any other value is the reason the window may be this seat's mirror alone
+   * (the same reason `message` spells out). Present only when PG was actually
+   * consulted, so a fork-family name that PG cannot serve carries no field.
+   */
+  pgArchiveWindow?: 'complete' | Exclude<ArchivePgGap, null>;
+  /**
+   * Listing only (review ms#1934, po-2023 finding 1) — which identity budget
+   * stopped the file↔batch comparisons: `'comparisons'` = the 64-pair cap,
+   * `'time'` = the 1 500 ms clock, `null` = neither ran out.
+   */
+  identityBudgetStop?: 'comparisons' | 'time' | null;
   overview?: Record<string, {
     key: string;
     status: string;
@@ -12139,6 +12312,394 @@ async function handleDelete(key: string, args: DashboardArgs, requestEcho: Dashb
   }
 }
 
+// ─── #4131 residual — PG fallback of read_archive ──────────────────────────
+//
+// `handleReadArchive` lists and reads this seat's G: mirror only. Condensation
+// writes its `.md` on the seat that performs it (`writeArchiveAtomically`), and
+// the PG-primary gate no longer maintains the G: dashboard copy (Phase D): the
+// mirror is one seat's archive window, not the fleet's. Measured po-2024
+// 26/11 on `workspace-roo-extensions`: 9 condensation batches in PG over 30 h,
+// 2 files on disk. `check-degraded-escalations` reads that listing, so a
+// `[REPAIRED]` or a `[DEGRADED]` archived by another seat was invisible here —
+// a confident verdict over a blind window.
+//
+// The store of record is `roosync_dashboard_messages` (`archived_at IS NOT
+// NULL`). The listing gains the batches PG holds and no local file names; a
+// name this seat cannot read (file absent, or a DriveFS placeholder that reads
+// as a frontmatter-less husk — the exit-1 class of #4796) is served from its
+// PG batch in the SAME `archiveData` envelope a file read returns. A readable
+// file keeps precedence; no PG story = today's behaviour, never less.
+
+/** A listed archive whose content carries no frontmatter (husk / placeholder). */
+class ArchiveHuskError extends Error {}
+
+/**
+ * The writer's two name families: the canonical
+ * `<key>-YYYY-MM-DDTHH-MM-SS.md` (dashboard.ts:8029) and the truncation
+ * fallback `<key>-YYYY-MM-DDTHH-MM-SS-fallback.md` (#7088). Both carry the
+ * same stamp, so both must reach the PG fallback — a fallback husk is served
+ * like any other, and a fallback file is its batch's twin (review ms#1934,
+ * finding 1).
+ */
+const ARCHIVE_NAME_PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})(?:-fallback)?$/;
+
+/**
+ * Name-stamp ↔ batch-stamp relation. The writer computes the file name BEFORE
+ * it writes the archive, and `archived_at` is stamped by the dashboard write
+ * that follows (merge, DriveFS lock, dual-write) — so the PG stamp lands AFTER
+ * the name stamp: 0-1 s measured, up to the G: write path's lock waits (~68 s,
+ * #3205). Six minutes one-sided covers it with margin. It is NOT below every
+ * inter-batch interval: two batches of `workspace-roo-extensions` were stamped
+ * 00:27:13 and 00:33:08 on 26/11 (5 min 55 s, #4947), so a name can sit in the
+ * window of two batches. The window only serves a FILE name; a name the listing
+ * derived from a batch (`archiveNameForBatch`) is matched exactly first, in
+ * `readArchiveFromPg`. The other direction is clock skew only.
+ */
+const ARCHIVE_BATCH_AFTER_NAME_MS = 6 * 60_000;
+const ARCHIVE_NAME_AFTER_BATCH_MS = 2_000;
+
+/** Epoch ms of the stamp `<key>-YYYY-MM-DDTHH-MM-SS.md` carries, else null. */
+function archiveNameStampMs(key: string, name: string): number | null {
+  if (!name.startsWith(`${key}-`) || !name.endsWith('.md')) return null;
+  const match = name.slice(key.length + 1, -3).match(ARCHIVE_NAME_PATTERN);
+  if (!match) return null;
+  const ms = Date.parse(`${match[1]}T${match[2]}:${match[3]}:${match[4]}Z`);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/** The archive name PG derives for a batch — the writer's own naming rule. */
+function archiveNameForBatch(key: string, archivedAtIso: string): string | null {
+  const ms = Date.parse(archivedAtIso);
+  if (Number.isNaN(ms)) return null;
+  return `${key}-${new Date(ms).toISOString().replace(/[:.]/g, '-').substring(0, 19)}.md`;
+}
+
+/** True when a PG batch and an archive name stamp tell the same condensation. */
+function batchMatchesNameStamp(batchMs: number, nameStampMs: number): boolean {
+  const delta = batchMs - nameStampMs;
+  return delta >= -ARCHIVE_NAME_AFTER_BATCH_MS && delta <= ARCHIVE_BATCH_AFTER_NAME_MS;
+}
+
+/** A PG batch PG holds that a local file's stamp may or may not be about. */
+type ArchiveListing = {
+  archives: string[];
+  /** Batches PG named that no local file names. */
+  pgOnly: number;
+  /** Batches whose identity with a local file is PROVEN by message ids — listed once. */
+  mergedByIdentity: number;
+  /**
+   * Batches near a local file whose identity could NOT be proven. They are
+   * listed IN ADDITION to the file, never dropped: a stamp inside the window is
+   * a candidate, not a twin (coordinator pre-review 26/11 — « le listing écarte
+   * un lot PG si un fichier est proche de ≤6 min, sans identité commune »).
+   */
+  unprovenTwins: number;
+  /**
+   * Batches near a local file that the identity budget never got to COMPARE
+   * (or compared only in part). Said apart from `unprovenTwins`: a pair nobody
+   * looked at is not a pair refused — counted with the first, 70 pairs whose
+   * last 60 are true twins read as « 70 without proof » (review ms#1934, the
+   * cap limit). Listed in addition exactly like an unproven one.
+   */
+  uncheckedTwins: number;
+  /**
+   * Unproven pairs whose synthetic name already exists locally, so the listing
+   * cannot make the batch reachable (the read path serves the file for that
+   * name). Counted and said — never silently doubled, never silently dropped.
+   * Zero on `workspace-roo-extensions` at the 26/11 measurement: the 6 pairs
+   * whose stamps fell in the same second were all PROVEN twins.
+   */
+  shadowedTwins: number;
+  /** Why the PG half may be narrower than the key's history. */
+  gap: ArchivePgGap;
+  /**
+   * Which identity budget ran out first — `null` when neither did. The
+   * unchecked pairs do not all come from the same bound: 64 quick comparisons
+   * exhaust the count, a few slow PG answers exhaust the clock.
+   */
+  identityBudgetStop: 'comparisons' | 'time' | null;
+};
+
+/**
+ * A stamp inside the window makes a batch a CANDIDATE twin, not a twin:
+ * `archived_at` is stamped by three writers (the condensation, the reconcile
+ * archival pass #3151-D and the archive-scan heal) and no column records which
+ * one wrote it. Measured po-2024 26/11 on `workspace-roo-extensions`: 40
+ * candidate pairs, and one local file had TWO candidate batches — 11 rows and 21
+ * rows for a file carrying 21 ids — i.e. proximity alone would have swallowed a
+ * batch that is a different event. Identity is proven the only way it can be:
+ * every message id of the local file is a row of the batch.
+ *
+ * Cost, measured on the same seat: one file read 7 ms p50 / 23 ms max, one batch
+ * read 7 ms p50 / 12 ms max — 40 pairs cost 0.6 s. The cap only bounds a
+ * pathological key; past it a pair stays UNCHECKED and both are listed, so the
+ * budget never buys a lost batch. One counter for the whole listing, spent on
+ * every pair it examines — proven or not — so a run of unprovable pairs eats
+ * the budget of the true twins behind them; the listing says the unchecked
+ * ones apart from the ones checked and found without proof.
+ */
+const ARCHIVE_IDENTITY_CHECK_MAX = 64;
+
+/**
+ * Wall-clock bound on the identity phase, beside the count. The count alone
+ * bounds the NUMBER of comparisons, not the time they take: each one reads a
+ * file and asks PG, and a cold or degraded store answers a batch in up to
+ * 3 s (the client race in `fetchArchivedDashboardBatch`) — 64 of those is
+ * 3+ minutes inside a listing the escalation organ calls every cycle. The
+ * clock bounds when a comparison may START; one already started runs to the
+ * race, so the phase ends at the deadline plus at most one batch read.
+ * Past the deadline the pair stays UNCHECKED (counted with `uncheckedTwins`,
+ * listed in addition) — the time budget never buys a lost batch either.
+ */
+const ARCHIVE_IDENTITY_CHECK_BUDGET_MS = 1500;
+
+/** Says out loud that the PG half did not answer — a partial window, never a silent one. */
+function archiveGapNote(gap: ArchivePgGap): string {
+  switch (gap) {
+    case 'timeout':
+      return " [FENÊTRE PARTIELLE : le store PG n'a pas répondu à temps — seuls les fichiers locaux sont listés]";
+    case 'error':
+      return ' [FENÊTRE PARTIELLE : lecture PG en échec — seuls les fichiers locaux sont listés]';
+    case 'no-url':
+      return ' [FENÊTRE LOCALE : ce siège n\'a pas de capacité PG — seuls ses fichiers locaux sont listés]';
+    default:
+      return '';
+  }
+}
+
+/** Says out loud that the name's stamp lands on several batches — no identity to pick by. */
+function archiveAmbiguousNote(ambiguous: number): string {
+  return ambiguous > 0
+    ? ` [${ambiguous} lots PG tombent dans la fenêtre de cet horodatage — aucun ne peut être identifié sans le contenu du fichier]`
+    : '';
+}
+
+/**
+ * Says the unchecked pairs apart from the refused ones — and which budget
+ * stopped the check. Naming the bound matters: 64 comparisons is the plan
+ * holding up, 1 500 ms is the store being slow, and an operator reading the
+ * listing acts differently on each.
+ */
+function archiveUncheckedNote(count: number, stop: ArchiveListing['identityBudgetStop']): string {
+  const budget = stop === 'time'
+    ? `budget de temps d'identité épuisé (${ARCHIVE_IDENTITY_CHECK_BUDGET_MS} ms par listing)`
+    : `budget d'identité épuisé (${ARCHIVE_IDENTITY_CHECK_MAX} comparaisons par listing)`;
+  return ` [${count} lot(s) PG proche(s) d'un fichier local NON CONTRÔLÉS — ${budget} : identité ni prouvée ni réfutée, listés en plus]`;
+}
+
+/**
+ * The message ids a LOCAL archive carries, or null when identity cannot be
+ * proven from it: no id at all (a format older than the `[msg:]` emission), a
+ * header-shaped block without one (a mix cannot be shown to be only the batch's
+ * rows), or an unreadable file (a DriveFS husk, a file gone between readdir and
+ * read). Same block split and `[msg:]` anchor as the archive reader below.
+ */
+async function localArchiveMessageIds(archiveDir: string, name: string): Promise<Set<string> | null> {
+  let content: string;
+  try {
+    content = (await fs.readFile(path.join(archiveDir, name), 'utf8')).replace(/\r\n/g, '\n');
+  } catch {
+    return null;
+  }
+  const ids = new Set<string>();
+  let idless = 0;
+  const blocks = content.split(/(?=^### \[)/m).filter(b => b.trim());
+  for (const raw of blocks) {
+    const block = raw.replace(/\n---\s*$/, '').trim();
+    if (!block.startsWith('### [')) continue;
+    const header = block.match(/^### \[[^\]]+\]\s+[^|\n]+\|[^|\s\n]+(?: \[[^\]]+\])?\n([\s\S]+)/);
+    const id = header?.[1].match(/^\[msg: ([^\]]+)\]/);
+    if (id) ids.add(id[1]);
+    else idless++;
+  }
+  return ids.size === 0 || idless > 0 ? null : ids;
+}
+
+/**
+ * True when a PG batch and a local archive name are proven to tell the same
+ * condensation: the file and the batch carry the SAME message ids — every id
+ * of the file is a row of the batch, and the batch holds no row the file does
+ * not cite. A subset was not enough: a batch that also archives OTHER
+ * messages would have been taken for this file's twin and dropped from the
+ * listing, losing the rows only it carries (review ms#1934, finding 2).
+ * Equal counts are a NECESSARY part of that proof, not a proxy: a batch read
+ * truncated by the store's own bound would otherwise pass by subset and lose
+ * the tail it never handed over. Measured po-2024 26/11 with this rule in
+ * place (real handler, real store, this seat's mirror — 2 454 names, 1 289 ms):
+ * 41 candidate pairs, 40 PROVEN, 1 unproven, no budget spent — equality
+ * refused none of the twins the subset rule proved. A stamp inside the window
+ * is only what makes the pair worth checking; a file without ids, an
+ * unreadable file or a batch PG does not hand over prove nothing — the caller
+ * then lists both.
+ */
+async function batchIsProvenTwin(
+  key: string,
+  batch: { archivedAt: string },
+  candidate: string,
+  archiveDir: string
+): Promise<boolean> {
+  const fileIds = await localArchiveMessageIds(archiveDir, candidate);
+  if (!fileIds) return false;
+  const read = await fetchArchivedDashboardBatch(key, batch.archivedAt);
+  if (read.gap !== null || !read.messages || read.messages.length === 0) return false;
+  if (read.messages.length !== fileIds.size) return false;
+  const batchIds = new Set(read.messages.map(m => m.id));
+  return [...fileIds].every(id => batchIds.has(id));
+}
+
+/**
+ * Listing = this seat's files + the PG batches no local file names. Fail-open:
+ * no PG story returns the file listing unchanged — never a smaller window.
+ * Synthetic names use the writer's naming rule, so a consumer that dates an
+ * archive by its name (check-degraded-escalations) windows them like the rest.
+ *
+ * A batch is listed under its own name UNLESS a local file is proven to be its
+ * twin (the file and the batch carry the same message ids). A batch merely
+ * NEAR a file is listed in addition — `archived_at` is stamped by three passes
+ * and no column says which, so near is not same (review ms#1934, finding 2, and
+ * the coordinator's pre-review: a batch dropped on proximity is a completeness
+ * defect). The count of unproven pairs is reported, never hidden, and the
+ * pairs no budget ever compared are counted apart from them.
+ */
+async function listArchivesWithPgBatches(
+  key: string,
+  localArchives: string[],
+  archiveDir: string
+): Promise<ArchiveListing> {
+  const stampedLocal = localArchives
+    .map(name => ({ name, ms: archiveNameStampMs(key, name) }))
+    .filter((f): f is { name: string; ms: number } => f.ms !== null);
+  const { batches, gap } = await fetchArchivedDashboardBatches(key);
+  if (batches.length === 0) {
+    return { archives: localArchives, pgOnly: 0, mergedByIdentity: 0, unprovenTwins: 0, uncheckedTwins: 0, shadowedTwins: 0, gap, identityBudgetStop: null };
+  }
+  const extra: string[] = [];
+  const localNames = new Set(localArchives);
+  let mergedByIdentity = 0;
+  let unprovenTwins = 0;
+  let uncheckedTwins = 0;
+  let shadowedTwins = 0;
+  let checks = 0;
+  // The clock bounds when a comparison may START; one already started runs to
+  // the client race, so the phase ends at the deadline plus at most one read.
+  const deadline = Date.now() + ARCHIVE_IDENTITY_CHECK_BUDGET_MS;
+  // First budget that ran out wins: once the clock has passed, every pair
+  // behind it is unchecked for the same reason, and the count never gets to
+  // speak again. Reported so the listing says which bound held.
+  let identityBudgetStop: ArchiveListing['identityBudgetStop'] = null;
+  for (const batch of batches) {
+    const batchMs = Date.parse(batch.archivedAt);
+    if (Number.isNaN(batchMs)) continue;
+    const candidates = stampedLocal.filter(f => batchMatchesNameStamp(batchMs, f.ms));
+    let proven = false;
+    let compared = true;
+    for (const candidate of candidates) {
+      // Past a budget the pair stays UNCHECKED: listed twice, not lost. Not the
+      // same thing as checked-and-refused — a batch compared only in part has
+      // an identity nobody settled, and is counted with the unchecked.
+      if (identityBudgetStop === null) {
+        if (Date.now() >= deadline) identityBudgetStop = 'time';
+        else if (checks >= ARCHIVE_IDENTITY_CHECK_MAX) identityBudgetStop = 'comparisons';
+      }
+      if (identityBudgetStop !== null) {
+        compared = false;
+        break;
+      }
+      checks += 1;
+      if (await batchIsProvenTwin(key, batch, candidate.name, archiveDir)) {
+        proven = true;
+        break;
+      }
+    }
+    if (proven) {
+      mergedByIdentity += 1;
+      continue;
+    }
+    const name = archiveNameForBatch(key, batch.archivedAt);
+    if (candidates.length > 0) {
+      // Near but not proven: listed IN ADDITION — unless the name it would take
+      // already exists locally. The read path serves a readable file for that
+      // name, so the batch's rows would be unreachable under it; counted and
+      // said, rather than a duplicate name pretending to be a second archive.
+      if (name && localNames.has(name)) {
+        shadowedTwins += 1;
+        continue;
+      }
+      if (compared) unprovenTwins += 1;
+      else uncheckedTwins += 1;
+    }
+    if (name) extra.push(name);
+  }
+  if (extra.length === 0) {
+    return { archives: localArchives, pgOnly: 0, mergedByIdentity, unprovenTwins, uncheckedTwins, shadowedTwins, gap, identityBudgetStop };
+  }
+  // Same order rule as the file listing: the stamp sorts chronologically.
+  return {
+    archives: [...localArchives, ...extra].sort().reverse(),
+    // The unchecked are near a file too, so they are not « without a local file ».
+    pgOnly: extra.length - unprovenTwins - uncheckedTwins,
+    mergedByIdentity,
+    unprovenTwins,
+    uncheckedTwins,
+    shadowedTwins,
+    gap,
+    identityBudgetStop,
+  };
+}
+
+/**
+ * A name this seat cannot read, served from its PG batch. `data` null → the
+ * caller keeps today's answer (the file-only behaviour); `gap` says whether PG
+ * was even asked and answered; `ambiguous` counts the batches the name's stamp
+ * cannot choose between.
+ */
+async function readArchiveFromPg(
+  key: string,
+  archiveFile: string
+): Promise<{
+  data: { key: string; archivedAt: string; messageCount: number; messages: IntercomMessage[] } | null;
+  gap: ArchivePgGap;
+  ambiguous: number;
+}> {
+  const nameStampMs = archiveNameStampMs(key, archiveFile);
+  // Not a name the writer produces (fork copies, `-wt-cleanup-…`, `pre-merge`):
+  // PG has nothing to say about it, and neither did the code before this grain.
+  if (nameStampMs === null) return { data: null, gap: null, ambiguous: 0 };
+  const { batches, gap } = await fetchArchivedDashboardBatches(key);
+  if (gap !== null) return { data: null, gap, ambiguous: 0 };
+  const stamped = batches
+    .map(b => ({ batch: b, ms: Date.parse(b.archivedAt) }))
+    .filter(({ ms }) => !Number.isNaN(ms));
+  // #4947: the listing names a batch no local file names by the writer's rule
+  // (`archiveNameForBatch`), so such a name must read back to THAT batch, however
+  // many others its window holds — refusing it made a listed name unreadable and
+  // held the escalation organ at exit 1 on every seat. Only a unique exact match
+  // counts; two batches in the same second fall through to the window and refuse.
+  const named = stamped.filter(({ batch }) => archiveNameForBatch(key, batch.archivedAt) === archiveFile);
+  const candidates = named.length === 1
+    ? named
+    : stamped
+      .filter(({ ms }) => batchMatchesNameStamp(ms, nameStampMs))
+      .sort((a, b) => Math.abs(a.ms - nameStampMs) - Math.abs(b.ms - nameStampMs));
+  // Measured po-2024 26/11: a name CAN sit inside the window of two batches — a
+  // reconcile archival pass stamps `archived_at` minutes after the condensation
+  // (11 rows beside a 21-id file). With no content here there is no id to choose
+  // by, and serving the nearest would hand another event's messages under this
+  // name: refuse, and say how many candidates there were.
+  if (candidates.length === 0) return { data: null, gap: null, ambiguous: 0 };
+  if (candidates.length > 1) return { data: null, gap: null, ambiguous: candidates.length };
+  const batch = candidates[0].batch;
+  const read = await fetchArchivedDashboardBatch(key, batch.archivedAt);
+  if (read.gap !== null || !read.messages || read.messages.length === 0) {
+    return { data: null, gap: read.gap, ambiguous: 0 };
+  }
+  return {
+    data: { key, archivedAt: batch.archivedAt, messageCount: read.messages.length, messages: read.messages },
+    gap: null,
+    ambiguous: 0,
+  };
+}
+
 async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: DashboardRequestEcho): Promise<DashboardResult> {
   // #3459: fail-closed. Le mkdir récursif ci-dessous recréerait la racine du store
   // et rendrait `existsSync(sharedPath)` vrai pour toutes les autres gardes.
@@ -12164,10 +12725,17 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
     try {
       const files = await fs.readdir(archiveDir);
       const keyPrefix = key + '-';
-      const archives = files
+      const localArchives = files
         .filter(f => f.startsWith(keyPrefix) && f.endsWith('.md'))
         .sort()
         .reverse(); // Plus récents en premier
+      // #4131 residual : un lot archivé par un AUTRE siège n'a pas de .md ici
+      // — le listing le nomme quand même (listArchivesWithPgBatches), et dit
+      // quand PG n'a pas répondu au lieu de laisser croire à une fenêtre pleine.
+      // Un lot n'est retiré que si un fichier local est PROUVÉ son jumeau (ids) ;
+      // proche mais non prouvé, il est listé EN PLUS et compté.
+      const { archives, pgOnly, mergedByIdentity, unprovenTwins, uncheckedTwins, shadowedTwins, gap, identityBudgetStop } =
+        await listArchivesWithPgBatches(key, localArchives, archiveDir);
       return {
         success: true,
         action: 'read_archive',
@@ -12175,7 +12743,23 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
         type: args.type ?? '',
         request: requestEcho,
         archives,
+        pgArchiveWindow: gap ?? 'complete',
+        // Which identity budget ran out (null = none did) — the witness that
+        // the listing bounded itself, without reading 64 log lines to find out.
+        identityBudgetStop,
         message: `${archives.length} archive(s) trouvée(s) pour '${key}'`
+          + (pgOnly > 0 ? ` (dont ${pgOnly} sans fichier local, servies par PG)` : '')
+          + (mergedByIdentity > 0
+            ? ` [${mergedByIdentity} lot(s) PG jumeaux d'un fichier local (identité prouvée par les ids de message), listés une seule fois]`
+            : '')
+          + (unprovenTwins > 0
+            ? ` [${unprovenTwins} lot(s) PG proche(s) d'un fichier local sans preuve d'identité — listés en plus, jamais écartés]`
+            : '')
+          + (uncheckedTwins > 0 ? archiveUncheckedNote(uncheckedTwins, identityBudgetStop) : '')
+          + (shadowedTwins > 0
+            ? ` [${shadowedTwins} lot(s) PG proche(s) d'un fichier local portent son nom sans preuve d'identité — non atteignables par ce nom]`
+            : '')
+          + archiveGapNote(gap)
       };
     } catch (error) {
       // #4643 : un readdir en échec n'est PAS « aucune archive » — la liste
@@ -12202,7 +12786,7 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
     // Parser le frontmatter
     const frontmatterMatch = content.match(/^---\n([\s\S]+?)\n---/);
     if (!frontmatterMatch) {
-      throw new Error(`Format archive invalide: frontmatter manquant dans ${archivePath}`);
+      throw new ArchiveHuskError(`Format archive invalide: frontmatter manquant dans ${archivePath}`);
     }
 
     const archiveFrontmatter = yaml.load(frontmatterMatch[1]) as {
@@ -12282,15 +12866,49 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
       message: `Archive '${args.archiveFile}' lue (${archiveFrontmatter.messageCount} messages)`
     };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    const enoent = (error as NodeJS.ErrnoException).code === 'ENOENT';
+    // #4131 residual : un nom que ce siège ne peut pas lire — fichier absent,
+    // ou coque sans frontmatter (placeholder DriveFS non hydraté, la classe
+    // exit 1 de #4796) — peut nommer un lot que PG tient. Même enveloppe
+    // `archiveData` qu'une lecture fichier ; pas de lot → la réponse
+    // d'aujourd'hui, plus la raison quand la fenêtre PG était partielle.
+    let gap: ArchivePgGap = null;
+    let ambiguous = 0;
+    if (enoent || error instanceof ArchiveHuskError) {
+      const fromPg = await readArchiveFromPg(key, args.archiveFile);
+      gap = fromPg.gap;
+      ambiguous = fromPg.ambiguous;
+      if (fromPg.data) {
+        return {
+          success: true,
+          action: 'read_archive',
+          key,
+          type: args.type ?? '',
+          request: requestEcho,
+          archiveData: fromPg.data,
+          pgArchiveWindow: 'complete',
+          message: `Archive '${args.archiveFile}' lue depuis PG (${fromPg.data.messageCount} messages)`
+        };
+      }
+    }
+    if (enoent) {
       return {
         success: false,
         action: 'read_archive',
         key,
         type: args.type ?? '',
         request: requestEcho,
-        message: `Archive '${args.archiveFile}' introuvable`
+        // Absent de la poche PG : le motif de fenêtre partielle dit que
+        // « introuvable » vaut pour ce que PG a pu montrer, pas pour la flotte.
+        ...(gap !== null ? { pgArchiveWindow: gap } : {}),
+        message: `Archive '${args.archiveFile}' introuvable${archiveAmbiguousNote(ambiguous)}${archiveGapNote(gap)}`
       };
+    }
+    if (error instanceof ArchiveHuskError && (gap !== null || ambiguous > 0)) {
+      // Illisible ET PG muet (ou plusieurs lots candidats) : la cause n'est pas
+      // « archive vide » seule, et un consommateur qui ne voit que « frontmatter
+      // manquant » conclurait à un transport sain (classe exit 1 de #4796).
+      throw new ArchiveHuskError(`${(error as Error).message}${archiveAmbiguousNote(ambiguous)}${archiveGapNote(gap)}`);
     }
     throw error;
   }

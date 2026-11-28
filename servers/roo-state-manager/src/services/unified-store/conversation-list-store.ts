@@ -42,8 +42,8 @@ import type {
 } from './UnifiedStoreReader.js';
 import type { MessageRow, StoredConversation } from './types.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
-import { isPgFlagOn } from './pg-flags.js';
-import { createLogger } from '../../utils/logger.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 /**
  * Lazy logger.

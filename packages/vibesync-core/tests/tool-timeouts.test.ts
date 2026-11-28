@@ -18,7 +18,7 @@ import {
     DEFAULT_TOOL_TIMEOUT_MS,
     getToolTimeoutMs,
     getMcpToolTimeoutMs,
-} from '../tool-timeouts.js';
+} from '../src/config/tool-timeouts.js';
 
 describe('#3205: the outer guard never preempts the inner budget', () => {
     const everyConfiguredTool = [

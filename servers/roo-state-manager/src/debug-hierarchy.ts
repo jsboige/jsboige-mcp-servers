@@ -3,7 +3,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { RooStorageDetector } from './utils/roo-storage-detector.js';
-import { GenericError, GenericErrorCode } from './types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 
 async function debugHierarchy() {
     console.log("🔍 DEBUG: Analyse de la hiérarchie...\n");

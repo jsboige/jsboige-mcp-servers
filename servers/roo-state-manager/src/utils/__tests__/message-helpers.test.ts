@@ -27,7 +27,7 @@ import {
   resolveWorkspaceIdentity,
   getLocalIdentityDiagnostic
 } from '../message-helpers.js';
-import { StateManagerError } from '../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 
 describe('message-helpers', () => {
   describe('getLocalMachineId', () => {

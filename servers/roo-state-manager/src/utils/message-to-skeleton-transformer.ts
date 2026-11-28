@@ -12,7 +12,7 @@ import { UIMessagesDeserializer } from './ui-messages-deserializer.js';
 import type { StoredConversation } from '../services/unified-store/types.js';
 import { computeInstructionPrefix } from './task-instruction-index.js';
 import { WorkspaceDetector } from './workspace-detector.js';
-import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 
 /**
  * Options de configuration du transformer

@@ -8,8 +8,8 @@
  */
 
 import { getMessageManager } from '../../services/MessageManager.js';
-import { createLogger, Logger } from '../../utils/logger.js';
-import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
+import { MessageManagerError, MessageManagerErrorCode } from '@vibesync/core/types/errors';
 import { getLocalMachineId, getLocalFullId } from '../../utils/message-helpers.js';
 
 // Logger instance for mark_message_read tool

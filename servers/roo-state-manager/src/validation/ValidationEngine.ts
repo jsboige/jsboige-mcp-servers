@@ -26,7 +26,7 @@ import {
   ToolCategory,
   ValidationResult
 } from '../interfaces/UnifiedToolInterface.js';
-import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 
 /**
  * Schémas de validation pour chaque catégorie d'outils

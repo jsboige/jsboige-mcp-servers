@@ -21,7 +21,7 @@ import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { getToolUsageSnapshot, type ToolUsageSnapshot } from '../../utils/tool-call-metrics.js';
 import { join } from 'path';
 import { readdirSync, readFileSync, statSync } from 'fs';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('GetStatus');
 

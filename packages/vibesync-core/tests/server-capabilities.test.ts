@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   ServerCapabilities,
   getServerCapabilities,
-} from '../../../src/utils/server-capabilities';
-import type { Capability } from '../../../src/utils/server-capabilities';
+} from '../src/utils/server-capabilities.js';
+import type { Capability } from '../src/utils/server-capabilities.js';
 
 describe('ServerCapabilities', () => {
   let instance: ServerCapabilities;

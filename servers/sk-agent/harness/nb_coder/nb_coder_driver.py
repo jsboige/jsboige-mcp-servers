@@ -449,7 +449,10 @@ def check_claim(repo: Path, n: int, lane: str, notebook: str,
     if p is None:
         return {"ok": None, "rc": None, "timed_out": True,
                 "error": f"claim guard timed out after {CLAIM_GUARD_TIMEOUT_S}s"}
-    return {"ok": p.returncode == 0, **_guard_result(p, notebook)}
+    res = {"ok": p.returncode == 0, **_guard_result(p, notebook)}
+    if res["rc"] == 3 and not from_json:
+        feed_occupation(repo, n, lane, notebook, res)
+    return res
 
 
 # The guard reads GitHub (issue thread, open PRs, their diffs): 44 s for one scoped check
@@ -535,20 +538,202 @@ def _guard_result(p, notebook: str) -> dict:
         }
     if p.returncode == 3:
         target = _norm_rel(notebook)
-        implicit = []
-        for pr in doc.get("implicit_occupation") or []:
-            if not isinstance(pr, dict):
-                continue
-            files = [_norm_rel(f) for f in (pr.get("files") or []) if isinstance(f, str)]
-            implicit.append({
-                "number": pr.get("number"), "lane": pr.get("lane"),
-                "files": files[:5], "file_count": len(files),
-                "touches_notebook": (target in files
-                                     or not files
-                                     or len(files) >= _PR_FILES_PREVIEW_CAP),
-            })
-        res["implicit"] = implicit
+        res["implicit"] = [
+            _implicit_entry(pr.get("number"), pr.get("lane"), [
+                _norm_rel(f) for f in (pr.get("files") or []) if isinstance(f, str)], target)
+            for pr in (doc.get("implicit_occupation") or []) if isinstance(pr, dict)]
     return res
+
+
+def _implicit_entry(number, lane, files: list[str], target: str) -> dict:
+    """One occupying PR as implicit_verdict reads it. `files` are repo-relative.
+
+    The file list is READ when it names this notebook, and not trusted when it is empty
+    or as long as GitHub's 100-path preview (which may hide ours)."""
+    return {
+        "number": number, "lane": lane,
+        "files": files[:5], "file_count": len(files),
+        "touches_notebook": (target in files
+                             or not files
+                             or len(files) >= _PR_FILES_PREVIEW_CAP),
+    }
+
+
+# 25/11 -- the occupation BELT on the guard's rc=3 -----------------------------------------------
+# The guard's IMPLICIT leg keeps, for a lane that already holds its claim, only the open
+# PRs of other lanes ANTERIOR to that claim (CoursIA scripts/check_lane_claim.py 6076-6099,
+# #26751: a PR opened later "reste subsumee par le claim"). A third-party PR opened AFTER
+# the lane's marker therefore never reaches `implicit_occupation`, although it may hold
+# the notebook. One cause, two answers: with an anterior PR left the guard answers rc=3
+# and names the wrong PR; with none left it answers rc=0, CLEAR. CoursIA#27130 got the
+# SECOND on 25/11 14:42Z -- with PR #28250 (opened 23/11, after the claim of 20/11)
+# carrying the five targets of lot 2. Called WITHOUT the date filter, the guard's own
+# reader names it.
+#
+# This is NOT a second guard. On rc=3 only -- where implicit_verdict is consulted -- it
+# hands that one decision point the open PRs of other lanes that occupy the issue, with NO
+# date filter, and refuses nothing itself. WHICH PRs occupy is read by the guard's OWN
+# reader (`_find_open_prs_referencing_issue`, through its documented `prs` injection
+# seam): the reference predicate, the enumeration guard (#24788) and the own-lane
+# exclusion are not duplicated here. The files come from `pulls/N/files` -- never from a
+# title or a branch (#28250's branch carries no notebook name).
+#
+# Bounded, and fail-soft. At most OCCUPATION_PR_CAP PRs' files per pass, one deadline for
+# the pass. A PR whose files were not read is not added; a failed leg voids the pass: it
+# adds nothing and records `occupation_check: unavailable` -- no refusal on a broken
+# instrument, no silent green either (the trace names the leg that died).
+#
+# Out of reach, on purpose: the rc=0 CLEAR the guard gives when NO anterior PR is left
+# never passes here -- and that is the answer #27130 got. This belt does not cover the
+# measured incident; that class stays with the preflight bar and the organ's own fix.
+#
+# REMOVAL CONDITION: delete this block once the guard itself reports, in
+# `implicit_occupation`, the PR posterior to the claim (posed to the CoursIA coordinator
+# 25/11). harness/README.md, Requirements, carries the same sentence.
+OCCUPATION_PR_CAP = 20
+OCCUPATION_PAGE_CAP = 5      # 100 open PRs per REST page
+OCCUPATION_CALL_S = 45       # one REST call
+OCCUPATION_BUDGET_S = 120    # the whole pass
+
+
+def occupation_reader(repo: Path):
+    """The guard's module, loaded from the run's checkout (`<repo>/scripts/check_lane_claim.py`).
+
+    The checkout is an INPUT of the run, like the guard call itself: this is the reader the
+    guard answers with, so the two cannot drift apart. Loaded by path, never from the import
+    cache. Raises when the checkout carries no importable guard, or no reader."""
+    import importlib.util
+    import warnings
+    path = repo / "scripts" / "check_lane_claim.py"
+    if not path.is_file():
+        raise ImportError("check_lane_claim.py absent")
+    spec = importlib.util.spec_from_file_location("check_lane_claim", path)
+    if spec is None or spec.loader is None:
+        raise ImportError("check_lane_claim.py has no import spec")
+    scripts = str(path.parent)
+    saved = sys.modules.get("check_lane_claim")
+    sys.path.append(scripts)      # the guard's `from grain_tag import ...` and siblings
+    try:
+        reader = importlib.util.module_from_spec(spec)
+        sys.modules["check_lane_claim"] = reader
+        with warnings.catch_warnings():
+            # The guard's own compile-time warnings are not this run's (a SyntaxWarning
+            # in a docstring must neither reach the run's log nor fail the load).
+            warnings.simplefilter("ignore")
+            try:
+                spec.loader.exec_module(reader)
+            except SystemExit as e:   # a guard without a __main__ guard runs at import
+                raise ImportError(
+                    f"check_lane_claim.py exited at import (code {e.code})") from None
+    finally:
+        if sys.path[-1:] == [scripts]:
+            sys.path.pop()
+        if saved is None:
+            sys.modules.pop("check_lane_claim", None)
+        else:
+            sys.modules["check_lane_claim"] = saved
+    if not callable(getattr(reader, "_find_open_prs_referencing_issue", None)):
+        raise AttributeError("check_lane_claim.py carries no _find_open_prs_referencing_issue")
+    return reader
+
+
+def _occupation_call(argv: list[str], deadline: float):
+    """One REST leg of the belt: the decoded document, or an exception -- rc != 0, a call
+    that outlives its timeout, an unparsable body, an exhausted budget."""
+    left = deadline - time.monotonic()
+    if left < 2:
+        raise TimeoutError(f"occupation belt out of budget ({OCCUPATION_BUDGET_S}s)")
+    rc, out = gh(argv, timeout=max(2, min(OCCUPATION_CALL_S, int(left))))
+    if rc != 0:
+        raise OSError(f"gh {argv[-1]} rc={rc}: {(out or '')[-160:]}")
+    return json.loads(out)
+
+
+def _occupation_open_prs(slug: str, deadline: float) -> tuple[list[dict], bool]:
+    """Every open PR as the guard's reader takes it -- number, title, body, created_at --
+    and whether the listing stopped at OCCUPATION_PAGE_CAP. No head is carried: provenance
+    stays unestablished for the reader, which then keeps the REST paths it is handed."""
+    prs: list[dict] = []
+    for page in range(1, OCCUPATION_PAGE_CAP + 1):
+        items = _occupation_call(
+            ["api", f"repos/{slug}/pulls?state=open&per_page=100&page={page}"], deadline)
+        if not isinstance(items, list):
+            raise ValueError("open PR listing is not a list")
+        for it in items:
+            if isinstance(it, dict) and isinstance(it.get("number"), int):
+                prs.append({"number": it["number"], "title": it.get("title") or "",
+                            "body": it.get("body") or "",
+                            "created_at": it.get("created_at")})
+        if len(items) < 100:
+            return prs, False
+    return prs, True
+
+
+def occupation_belt(repo: Path, n: int, lane: str, notebook: str,
+                    slug: str = _GH_PIN_REPO) -> dict:
+    """Open PRs of other lanes that occupy issue `n`, each with the files READ for it, plus
+    the pass's trace -- or `status: unavailable` with the leg that died.
+
+    Findings carry no PR whose files were not read: over the cap, or no diff at all. The
+    reader is loaded FIRST, so no REST call leaves without a reader to answer it."""
+    deadline = time.monotonic() + OCCUPATION_BUDGET_S
+    trace: dict = {"status": "ok"}
+    try:
+        reader = occupation_reader(repo)
+        prs, trace["listing_truncated"] = _occupation_open_prs(slug, deadline)
+        trace["listed"] = len(prs)
+        citing = reader._find_open_prs_referencing_issue(n, lane, prs=prs)
+        numbers = sorted(c["number"] for c in citing
+                         if isinstance(c, dict) and isinstance(c.get("number"), int))
+        trace["citing"] = len(numbers)
+        by_number = {pr["number"]: pr for pr in prs}
+        for number in numbers[:OCCUPATION_PR_CAP]:
+            files = _occupation_call(
+                ["api", f"repos/{slug}/pulls/{number}/files?per_page=100"], deadline)
+            if not isinstance(files, list):
+                raise ValueError(f"files of #{number} are not a list")
+            by_number[number]["files"] = [{"path": f["filename"]} for f in files
+                                          if isinstance(f, dict) and f.get("filename")]
+        trace["read"] = min(len(numbers), OCCUPATION_PR_CAP)
+        target = _norm_rel(notebook)
+        findings = []
+        for c in reader._find_open_prs_referencing_issue(n, lane, prs=prs):
+            if not isinstance(c, dict) or not isinstance(c.get("number"), int):
+                continue
+            files = [x for x in (c.get("files") or []) if isinstance(x, str)]
+            if not files:
+                continue          # not read (over the cap), or no diff: nothing to say
+            entry = _implicit_entry(c["number"], c.get("lane"),
+                                    [_norm_rel(x) for x in files], target)
+            entry["source"] = "belt"
+            findings.append(entry)
+        trace["unread"] = len(numbers) - len(findings)
+        return {**trace, "findings": findings}
+    except (OSError, ValueError, TypeError, AttributeError, KeyError, IndexError,
+            ImportError, SyntaxError, subprocess.SubprocessError, RuntimeError) as e:
+        return {**trace, "status": "unavailable",
+                "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+def feed_occupation(repo: Path, n: int, lane: str, notebook: str, res: dict) -> None:
+    """rc=3 only: complete the guard's implicit list with the belt's findings.
+
+    Entries are ADDED, deduped by number; the guard's own entries are never rewritten, so
+    a verdict can only tighten (defer -> refuse on a read collision) or name more PRs."""
+    try:
+        belt = occupation_belt(repo, n, lane, notebook)
+        added = [f for f in belt.pop("findings", None) or []
+                 if f["number"] not in {i.get("number") for i in res.get("implicit") or []}]
+        res["implicit"] = list(res.get("implicit") or []) + added
+        res["occupation_check"] = {**belt, "added": [f["number"] for f in added]}
+        note = (f"error: {belt['error']}" if belt["status"] != "ok"
+                else f"added={[f['number'] for f in added]}")
+    except Exception as e:  # noqa: BLE001 -- the belt never decides: its own crash adds nothing
+        res["occupation_check"] = {"status": "unavailable", "added": [],
+                                   "error": f"{type(e).__name__}: {str(e)[:200]}"}
+        note = f"error: {res['occupation_check']['error']}"
+    print(f"[claim] occupation_check: {res['occupation_check']['status']} ({note})",
+          file=sys.stderr)
 
 
 def implicit_verdict(cc: dict) -> str:
@@ -626,7 +811,10 @@ def post_claim(repo: Path, n: int, lane: str, intention: str,
     if p is None:
         return {"rc": None, "timed_out": True,
                 "out": f"claim guard timed out after {CLAIM_GUARD_TIMEOUT_S}s"}
-    return _guard_result(p, notebook)
+    res = _guard_result(p, notebook)
+    if res["rc"] == 3 and not from_json:
+        feed_occupation(repo, n, lane, notebook, res)
+    return res
 
 
 def claim_reservation_verdict(post: dict, verify: dict) -> str | None:
@@ -930,13 +1118,19 @@ def last_foreign_marker(issue_n: int, lane: str, slug: str = _GH_PIN_REPO) -> st
     return None
 
 
+def midrun_armed(rec: dict) -> bool:
+    """True when the claim was DEFERRED (--claim-late): the only state in which a mid-run
+    probe has anything to guard."""
+    cr = (rec.get("stages") or {}).get("claim_reservation") or {}
+    return cr.get("deferred") == "late"
+
+
 def midrun_claim_abort(args, rec: dict, stage: str) -> bool:
     """True when the run must stop now: the claim was deferred (--claim-late), another
     lane's marker is the issue's last word, and the scoped guard sees a COLLISION on this
     notebook (held by another lane, or an occupying PR that may touch it). A guard that
     times out, is broken, or answers a disjoint occupation never stops the run."""
-    cr = (rec.get("stages") or {}).get("claim_reservation") or {}
-    if cr.get("deferred") != "late":
+    if not midrun_armed(rec):
         return False
     holder = last_foreign_marker(args.issue, args.lane)
     probe: dict = {"stage": stage, "at": utcnow(), "holder": holder}
@@ -964,14 +1158,14 @@ def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
     in the repo — only the scratch checkout is discarded); dirty is REFUSED,
     because rebuilding would discard uncommitted work."""
     subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"],
-                   capture_output=True, text=True, timeout=300)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     origin_main = subprocess.run(["git", "-C", str(repo), "rev-parse", "origin/main"],
-                                 capture_output=True, text=True).stdout.strip()
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     if dest.exists() and (dest / ".git").exists() and not fresh:
         head_full = subprocess.run(["git", "-C", str(dest), "rev-parse", "HEAD"],
-                                   capture_output=True, text=True).stdout.strip()
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
         dirty = subprocess.run(["git", "-C", str(dest), "status", "--porcelain"],
-                               capture_output=True, text=True).stdout.strip()
+                               capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
         if head_full == origin_main and not dirty:
             return {"path": str(dest), "reused": True, "head": head_full[:9], "ok": True}
         if dirty:
@@ -983,11 +1177,11 @@ def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
         # clean but not at origin/main: previous run's branch or stale base -> rebuild
     if dest.exists():
         subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(dest)],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     p = subprocess.run(["git", "-C", str(repo), "worktree", "add", str(dest), "--detach", "origin/main"],
                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     head = subprocess.run(["git", "-C", str(dest), "rev-parse", "--short", "HEAD"],
-                          capture_output=True, text=True).stdout.strip()
+                          capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     return {"path": str(dest), "reused": False, "head": head,
             "ok": p.returncode == 0, "err": (p.stderr or "").strip()[:500]}
 
@@ -1004,7 +1198,7 @@ def restore_worktree(repo: Path, dest: Path, head: str | None) -> dict:
     if not head:
         return {"ok": False, "err": "no worktree head in the trace"}
     subprocess.run(["git", "-C", str(repo), "worktree", "prune"],
-                   capture_output=True, text=True, timeout=120)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     p = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(dest), head],
                        capture_output=True, text=True, encoding="utf-8", errors="replace",
                        timeout=600)
@@ -1017,7 +1211,7 @@ def engine_tokens() -> dict:
     """Engine-side prompt/generation counters, for a per-pass token delta (CR CoursIA#26534)."""
     try:
         p = subprocess.run(["curl", "-s", "--max-time", "5", ENGINE_METRICS],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         vals = {}
         for ln in (p.stdout or "").splitlines():
             for key in ("prompt_tokens_total", "generation_tokens_total"):
@@ -2191,9 +2385,13 @@ PORT_CONTENT_RULES = (
     "- ALÉA NUMPY : si le jumeau tire ses DONNÉES d'un générateur numpy (`default_rng`, "
     "PCG64, SeedSequence, `normal`), deux cas :\n"
     "  · tirage PETIT et VISIBLE dans les sorties du jumeau → reprends les données "
-    "d'ENTRÉE tirées sous forme de tableau littéral, dis-le en prose (« données tirées "
-    "par le jumeau, reprises telles quelles »), puis CALCULE tous les résultats à partir "
-    "d'elles. Ne recopie jamais une SORTIE du jumeau à la place d'un calcul.\n"
+    "d'ENTRÉE tirées par le jumeau sous forme de tableau littéral COMPLET — jamais "
+    "tronqué, jamais laissé vide (26/11, o41 : un carnet a rejeté « les flux uniformes "
+    "NumPy cités ne sont pas renseignés »). Dis-le en prose (« données tirées par le "
+    "jumeau, reprises telles quelles »), puis CALCULE tous les résultats à partir d'elles "
+    "ET COMPARE ces résultats recalculés à ceux que le jumeau affiche, sous une "
+    "tolérance déclarée. Ne recopie jamais une SORTIE du jumeau à la place d'un calcul, "
+    "et ne garde jamais la comparaison derrière un test que le tableau vide rend faux.\n"
     "  · protocole MONTE-CARLO (trajectoires, milliers de tirages, seuls des agrégats "
     "sont visibles) → PORTE LE PROTOCOLE : même graine déclarée, même loi, même taille "
     "d'échantillon, mêmes seuils, avec un RNG cible seedé (convention des jumeaux "
@@ -2685,8 +2883,28 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             return "truncated"
         return "timeout" if call_timed_out(env) else ""
 
+    # 26/11 (myia-po-2028:claudish, CoursIA#28707): the mid-run probe ran only at the
+    # stage boundaries, and the creation build is ONE stage of 5+ model calls over ~8
+    # min. The foreign [CLAIMED] landed at 04:02:13Z, between tranche 1 and tranche 2;
+    # the "build" probe fired at 04:08:05Z, after four more calls -- 347 201 prompt
+    # tokens spent building a notebook another lane already held. A probe before every
+    # build call but the FIRST (the "plan" probe covers that one) bounds the exposure
+    # to the call in flight. Inert unless --claim-late deferred the claim.
+    # The one skip is RUN-scoped, not invocation-scoped (review ai-01, 26/11): the stage it
+    # covered is named in the record the one time it is skipped, so an entry into this
+    # function that did not pass the "plan" probe (a second call site added later, a resume
+    # that does not replay plan) finds the name and probes its own first tranche.
+    def claim_stop(stage: str) -> bool:
+        if rec.get("midrun_claim_plan_covered"):
+            return midrun_claim_abort(args, rec, stage)
+        if midrun_armed(rec):
+            rec["midrun_claim_plan_covered"] = stage
+        return False
+
     for si in range(0, len(plan_cells), CREATE_SEGMENT):
         seg = plan_cells[si:si + CREATE_SEGMENT]
+        if claim_stop(f"build+{si}"):
+            return {}
         kept, missing, part, env = await ask_tranche(seg, f"2-build+{si}")
         conv = env.get("conversation_id") or conv
         chars_first = len(env.get("response") or "")
@@ -2703,6 +2921,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             halves = [seg[:max(1, len(seg) // 2)], seg[max(1, len(seg) // 2):]]
             kept, missing, chars_first = [], [], 0
             for hi, half in enumerate(h for h in halves if h):
+                if claim_stop(f"build+{si}+h{hi}"):
+                    return {}
                 hkept, hmiss, hpart, henv = await ask_tranche(half, f"2-build+{si}+h{hi}")
                 conv = henv.get("conversation_id") or conv
                 chars_first += len(henv.get("response") or "")
@@ -2714,9 +2934,9 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
                     elif call_timed_out(henv):
                         rec["verdict"] = f"stage2-timeout:{si}+h{hi}"
                     else:
-                        # scheduler defer contract: a provider 429 stays unprefixed
+                        # scheduler defer contract: a 429 or a cut transport stays unprefixed
                         rec["verdict"] = (
-                            provider_rate_refusal(henv)
+                            defer_refusal(henv)
                             or f"stage2-{call_failure(henv) or 'unparsed'}:{si}+h{hi}")
                     rec["stage2_raw_tail"] = (henv.get("response") or "")[-3000:]
                     return {}
@@ -2730,10 +2950,11 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             if gate_refusal(env):
                 rec["verdict"] = gate_refusal(env)   # scheduler defer contract
             elif not part:
-                # scheduler defer contract: a provider 429 stays unprefixed (23/11: four
-                # builds walled mid-flight were failed and released as stage2-call-failed)
+                # scheduler defer contract: a 429 or a cut transport stays unprefixed
+                # (23/11: four builds walled mid-flight were failed and released as
+                # stage2-call-failed; 26/11: a Docker restart cut #28664 the same way)
                 rec["verdict"] = (
-                    provider_rate_refusal(env)
+                    defer_refusal(env)
                     or f"stage2-{call_failure(env) or 'unparsed'}:{si}")
             else:
                 rec["verdict"] = f"stage2-empty-segment:{si}"
@@ -2741,6 +2962,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             return {}
         repair = None
         if missing:
+            if claim_stop(f"build+{si}+repair"):
+                return {}
             # one repair round for EXACTLY the omitted cells — same prompt shape,
             # smaller tranche, so the omissions cannot hide in a long answer again
             env = await sk_call_retry(session, args, rec, f"2-build+{si}+repair",
@@ -4648,26 +4871,90 @@ REVISION_OUT_CAP = 1_500
 REVISION_VIEW_CAP = 90_000
 
 
+def _revision_block(i: int, cell: dict, out_cap: int) -> str:
+    """One cell as the reviser reads it: its whole source and, for code cells, the execution
+    count and the text really displayed (a per-cell output cut is declared)."""
+    ct = cell.get("cell_type")
+    block = f"=== cellule {i} | {ct} ===\n{_text(cell.get('source'))}"
+    if ct == "code":
+        out = _outputs_text(cell)
+        shown = out[:out_cap]
+        if len(out) > out_cap:
+            shown += f"\n…[sortie tronquée : {len(out) - out_cap} caractères non affichés]"
+        witness = nontext_witness(cell)   # outside the cut: a figure is never starved
+        block += (f"\n--- sortie réelle (execution_count={cell.get('execution_count')}) ---\n"
+                  f"{shown if (shown or witness) else '(aucune sortie)'}"
+                  + "".join(f"\n{line}" for line in witness))
+    return block
+
+
+def cited_cells(findings) -> list[int]:
+    """Every cell a finding names, ascending, without duplicates. The verifier and the gates
+    both write `cell`; a gate detail also carries `cells` (its own list is capped at 10, the
+    `findings` list is not). Anything that is not a non-negative integer is ignored, never
+    guessed."""
+    found: set[int] = set()
+    for f in findings or []:
+        if not isinstance(f, dict):
+            continue
+        raw = [f.get("cell")]
+        extra = f.get("cells")
+        if isinstance(extra, (list, tuple)):
+            raw.extend(extra)
+        for v in raw:
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, str) and v.strip().isdigit():
+                v = int(v.strip())
+            if isinstance(v, int) and v >= 0:
+                found.add(v)
+    return sorted(found)
+
+
 def revision_view(nb_path: Path, out_cap: int = REVISION_OUT_CAP,
-                  max_chars: int = REVISION_VIEW_CAP) -> str:
+                  max_chars: int = REVISION_VIEW_CAP, cited=()) -> str:
     """The notebook as the REVISER must see it: every cell's source AND, for code cells, the
     execution count and the text really displayed. build_view shows sources only — enough to
-    plan a build, not to answer a reviewer who judges displayed values. Cuts are declared."""
-    parts = []
-    for i, c in enumerate(_cells(nb_path)):
-        ct = c.get("cell_type")
-        block = f"=== cellule {i} | {ct} ===\n{_text(c.get('source'))}"
-        if ct == "code":
-            out = _outputs_text(c)
-            shown = out[:out_cap]
-            if len(out) > out_cap:
-                shown += f"\n…[sortie tronquée : {len(out) - out_cap} caractères non affichés]"
-            witness = nontext_witness(c)      # outside the cut: a figure is never starved
-            block += (f"\n--- sortie réelle (execution_count={c.get('execution_count')}) ---\n"
-                      f"{shown if (shown or witness) else '(aucune sortie)'}"
-                      + "".join(f"\n{line}" for line in witness))
-        parts.append(block)
-    return _cut("\n\n".join(parts), max_chars, "vue du carnet")
+    plan a build, not to answer a reviewer who judges displayed values. Cuts are declared.
+
+    `cited` — the cells the findings name — come FIRST, whole, and are never cut, because the
+    reviser must return each one's COMPLETE replacement source. The other cells fill what is
+    left of `max_chars`, in notebook order; the ones that do not fit are NAMED, never
+    silently dropped. Measured on CoursIA#28880 (27/11, 75 cells): the plain view made
+    199 554 characters, was cut at 90 000, showed 28 cells, the cut falling inside cell 27's
+    source; the reviser answered « la source actuelle de cette cellule est tronquée dans le
+    message », rewrote nothing, and the grain was released after a second content failure.
+    Without `cited` the output is exactly the old one."""
+    blocks = [_revision_block(i, c, out_cap) for i, c in enumerate(_cells(nb_path))]
+    first: list[int] = []
+    for i in cited:
+        if (isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(blocks)
+                and i not in first):
+            first.append(i)
+    if not first:
+        return _cut("\n\n".join(blocks), max_chars, "vue du carnet")
+    head = [blocks[i] for i in first]
+    rest_ids = [i for i in range(len(blocks)) if i not in set(first)]
+    lead = "\n\n".join(head)
+    shown_ids: list[int] = []
+    used = len(lead)
+    for i in rest_ids:
+        if used + 2 + len(blocks[i]) > max_chars:
+            break
+        used += 2 + len(blocks[i])
+        shown_ids.append(i)
+    hidden = rest_ids[len(shown_ids):]
+    listed = ", ".join(str(i) for i in first)
+    note = (f"[Ordre de lecture — les cellules citées par les constats ({listed}) sont "
+            f"affichées EN TÊTE et EN ENTIER : ce sont leurs sources complètes qu'il faut "
+            f"renvoyer. Les autres suivent dans l'ordre du carnet.")
+    if hidden:
+        named = ", ".join(str(i) for i in hidden[:30]) + (", …" if len(hidden) > 30 else "")
+        note += (f" Budget de {max_chars} caractères épuisé : NON affichées ({len(hidden)}) — "
+                 f"{named}.]")
+    else:
+        note += "]"
+    return note + "\n\n" + "\n\n".join(head + [blocks[i] for i in shown_ids])
 
 
 # 22/11 (w3w+w3x, 105 verify-reject findings read): the FIRST reject cause (25/105) was a
@@ -4725,7 +5012,26 @@ TWIN_VALUES_RULE = (
     "aléatoire n'est pas reproductible à l'identique : porte le protocole (même graine "
     "déclarée, RNG cible seedé) et affiche TON résultat réel, l'écart nommé en prose. "
     "Un écart sur une valeur déterministe est un rejet garanti ; une cellule "
-    "« indisponible » à la place d'un calcul l'est tout autant.\n")
+    "« indisponible » à la place d'un calcul l'est tout autant.\n"
+    # 26/11, CoursIA batch o41: the former tail (« si la bibliothèque cible ne peut pas
+    # reproduire une valeur, dis-le en prose et affiche l'écart mesuré ») is where the
+    # dormant branch was born — the producer "said it in prose" from an `else` that printed
+    # « non mesuré », with the comparison never run; 3 of 4 grains lost. A draw is not a
+    # cited datum, and the comparison is EXECUTED on either route.
+    "- TIRAGES : une valeur que la source obtient par un tirage (`random.seed`, "
+    "`random.Random(graine)`, `random.choice`, `np.random.default_rng`) n'est pas une donnée "
+    "à recopier, et son absence ne dispense d'AUCUNE comparaison. Deux voies, et la "
+    "comparaison est EXÉCUTÉE dans les deux : (a) RECONSTRUIS le générateur de la source "
+    "dans le langage cible (`random.Random(graine)` se rejoue : MT19937, `getrandbits`, "
+    "rejet jusqu'à un indice valide) puis compare à tolérance déclarée ; (b) générateur non "
+    "reconstructible à coût raisonnable (PCG64 de NumPy, module local) : compare les valeurs "
+    "que tu recalculeras à celles que la source AFFICHE, citées comme telles et NON VIDES, "
+    "sous tolérance déclarée, ou asserte un invariant (régime, ordre, signe). INTERDIT : "
+    "garder la comparaison derrière un test qui n'est jamais pris parce que la collection "
+    "de valeurs citées est VIDE, et afficher sinon « non mesuré » / « non attesté » — la "
+    "cellule tourne, la comparaison n'a jamais eu lieu, le vérificateur rejette à chaque "
+    "tour. Un fait réellement hors de portée du jumeau (HTTP réel, tokens Python, durée) se "
+    "dit dans une cellule MARKDOWN, jamais dans la sortie d'une cellule de code.\n")
 
 
 def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: str = "",
@@ -4776,7 +5082,10 @@ def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: s
         '{"cells":[{"idx":<index inchangé>,"cell_type":"code|markdown",'
         '"source":"<source COMPLET>"}],"addressed":[{"cell":<index>,"how":"..."}],'
         '"contested":[{"cell":<index>,"why":"..."}]}\n'
-        "Seules les cellules que tu modifies figurent dans `cells`, chacune avec son source COMPLET."
+        "Seules les cellules que tu modifies figurent dans `cells`, chacune avec son source "
+        "COMPLET. Une cellule citée par un constat garde le numéro EXACT de son en-tête "
+        "« === cellule N === » : `cells` et `addressed` nomment ce numéro-là, jamais un "
+        "autre — une réponse portant sur une cellule non citée ne corrige aucun constat."
     )
 
 
@@ -5055,7 +5364,7 @@ async def spec_stage(sk, args, rec: dict, issue: dict, kernel: dict, ctx: str, v
                    "chars": len(spec_text), "elapsed_s": round(time.time() - tspec, 1)}
     if not spec_text:
         rec["spec"]["failed"] = True
-        rec["verdict"] = (provider_rate_refusal(env_s)   # scheduler defer contract
+        rec["verdict"] = (defer_refusal(env_s)   # scheduler defer contract
                           or f"spec-{call_failure(env_s) or 'no-answer'}")
         return None
     spec_body = _cut(spec_text, SPEC_BODY_CAP, "spec")
@@ -5174,9 +5483,22 @@ def gate_refusal(env: dict) -> str:
 # 'code': '1302', 'message': 'Rate limit reached for requests'}}') is measured in this
 # fleet's notebook outputs, not yet in a harness verdict: the same markers name it, and it
 # takes the ordinary backoff — only the wall waits.
+#
+# The same class wears a 403 when what ran dry is a KEY's credit rather than a usage window.
+# Measured 27/11 on po-2028:claudish, two grains of one batch: `Error code: 403 - {'error':
+# {'message': 'Key limit exceeded (total limit). … $20.58 of $20.00 used; does not reset.',
+# 'type': 'permission_error', 'code': None}}` — a cascade step served by OpenRouter, hit at
+# 15:26:11Z (CoursIA#28880) then 16:09:59Z (MGS-27). Nothing in it says 429 and nothing says
+# "will reset at", so both launches were classed run failures and [RELEASED]; the grain had
+# done nothing. "does not reset" must NOT take the wall marker: a dead leg is not a clock to
+# wait on, and the ordinary backoff is what the grain needs.
 _PROVIDER_RATE_LIMIT_MARKERS = ("rate_limit_error", "ratelimiterror", "error code: 429",
-                                "rate limit reached", "too many requests")
+                                "rate limit reached", "too many requests",
+                                "key limit exceeded")
 _PROVIDER_WALL_RE = re.compile(r"usage limit reached|will reset at", re.I)
+# This class's message carries the provider's key URL. A verdict is copied into run records,
+# dashboards and reports: the identifier must not travel with it (never propagate a key id).
+_PROVIDER_KEY_ID_RE = re.compile(r"keys/[0-9a-f]{16,}", re.I)
 PROVIDER_RATE_LIMIT_VERDICT = "deferred-by-provider-rate-limit"
 
 
@@ -5191,7 +5513,10 @@ def provider_rate_refusal(env: dict) -> str:
     `:wall` marks a window wall. Its announced clock is NOT waited on: read as UTC, the
     measured sample (reset at 08:48:53 for a wall hit at 00:09Z) outlasts the five-hour
     window the same message names, so its offset is unknown. The scheduler probes hourly
-    instead (PROVIDER_WALL_WAIT_S, there); the other form takes the ordinary backoff."""
+    instead (PROVIDER_WALL_WAIT_S, there); the other form takes the ordinary backoff.
+
+    A KEY's credit wall arrives as a 403 rather than a 429 and is named by its own marker;
+    its message carries the provider's key URL, which the verdict masks before it travels."""
     err = (env.get("error") or "").strip()
     if not err:
         return ""
@@ -5200,7 +5525,69 @@ def provider_rate_refusal(env: dict) -> str:
     if not hit:
         return ""
     wall = ":wall" if _PROVIDER_WALL_RE.search(err) else ""
-    return f"{PROVIDER_RATE_LIMIT_VERDICT}{wall}: {_excerpt(err, hit)}"
+    excerpt = _PROVIDER_KEY_ID_RE.sub("keys/<masque>", _excerpt(err, hit))
+    return f"{PROVIDER_RATE_LIMIT_VERDICT}{wall}: {excerpt}"
+
+
+# A TRANSPORT CUT says as little about the grain as the refusal above: measured 26/11 01:27Z
+# (po-2028:claudish, batch o42, CoursIA#28664 ANALYSE-09-Tuilage-Aperiodique). The Docker
+# engine of that host restarted (not by the lane: the daemon's event log BEGINS at
+# 01:28:11Z with both containers starting; `claudish-proxy` finishedAt 01:28:09Z, startedAt
+# 01:28:11Z, restartCount 0, created 11/16 — no earlier event survives); the cut itself was
+# observed from 01:27:06Z (the openai client's own retry) to 01:27:33Z, and the build call
+# "2-build+0" died after 63.8 s with 0 char:
+#   ("<class 'semantic_kernel.connectors.ai.open_ai.services.open_ai_chat_completion.
+#    OpenAIChatCompletion'> service failed to complete the prompt",
+#    APIConnectionError('Connection error.'))
+# chained httpcore2.ReadError -> httpx2.ReadError -> openai.APIConnectionError. The
+# scheduler classed it a run failure and spent the grain's first launch — but the endpoint
+# was the thing that was down, not the grain. The client's exception CLASS NAMES are the
+# markers (they name the transport, whatever the wire); a client-side TIME BUDGET keeps its
+# own cure and is excluded even when wrapped in a connection error; a 401/403/404 stays a
+# wiring failure — that endpoint answered. The bare words 'connection error' are NOT a
+# marker: a dead kernel or MCP server reports itself that way, and that one IS the harness's
+# to repair.
+_ENDPOINT_UNREACHABLE_MARKERS = ("apiconnectionerror", "error code: 502", "error code: 503",
+                                 "error code: 504", "bad gateway", "service unavailable",
+                                 "gateway timeout")
+# The httpx class names are generic: `tarfile.ReadError` is not a cut transport. They count
+# only when the transport MODULE names them (`httpcore2.ReadError`, `httpx2.WriteError`),
+# which is how Python reprs them in a chained cause (review ai-01, 26/11 — the measured
+# chain httpcore2.ReadError -> httpx2.ReadError -> APIConnectionError keeps matching on the
+# qualified form or on `apiconnectionerror` alone).
+_QUALIFIED_TRANSPORT_RE = re.compile(
+    r"\b(?:httpx|httpcore)\w*\.(?:readerror|writeerror|connecterror|remoteprotocolerror)\b",
+    re.I)
+ENDPOINT_UNREACHABLE_VERDICT = "deferred-by-endpoint-unreachable"
+
+
+def endpoint_unreachable(env: dict) -> str:
+    """The bare scheduler deferral for a call that died on a CUT transport, or "".
+
+    Read at every site that assembles a verdict from a call that never answered, through
+    `defer_refusal`, exactly where the provider 429 is read. The verdict must stay
+    unprefixed like every other deferral: the scheduler matches its prefixes from the first
+    character."""
+    err = (env.get("error") or "").strip()
+    if not err:
+        return ""
+    low = err.lower()
+    hit = next((m for m in _ENDPOINT_UNREACHABLE_MARKERS if m in low), "")
+    if not hit:
+        q = _QUALIFIED_TRANSPORT_RE.search(err)
+        # the excerpt is centred on the CLASS name, as it is for the bare markers
+        hit = q.group(0).rsplit(".", 1)[-1].lower() if q else ""
+    if not hit or _TIMEOUT_RE.search(err):
+        return ""
+    return f"{ENDPOINT_UNREACHABLE_VERDICT}: {_excerpt(err, hit)}"
+
+
+def defer_refusal(env: dict) -> str:
+    """Every refusal that says RETRY rather than FAIL, read once: gate, provider 429, cut
+    transport. The verdict sites call this single helper so a new deferrable class is wired
+    everywhere at once, not into six of the seven places a verdict is minted."""
+    return (gate_refusal(env) or provider_rate_refusal(env)
+            or endpoint_unreachable(env))
 
 
 def looks_truncated(env: dict) -> bool:
@@ -5243,11 +5630,11 @@ async def parse_or_repair(session: ClientSession, args, rec: dict, stage: str, e
         {"stage": stage, "error": err[:400], "ok": obj2 is not None,
          "error_after": err2[:400] if obj2 is None else "",
          "failure": call_failure(env2) or gate_refusal(env2)})
-    # A gate refusal or a provider 429 on the repair call is a deferral, and the caller
-    # reads it from env: handing back the ORIGINAL (unparsed, error-less) answer would name
-    # the grain `unparsed` — a failure — for a refusal that says retry.
-    return ((obj2, env2) if obj2 is not None or gate_refusal(env2)
-            or provider_rate_refusal(env2) else (None, env))
+    # A gate refusal, a provider 429 or a cut transport on the repair call is a deferral,
+    # and the caller reads it from env: handing back the ORIGINAL (unparsed, error-less)
+    # answer would name the grain `unparsed` — a failure — for a refusal that says retry.
+    return ((obj2, env2) if obj2 is not None or defer_refusal(env2)
+            else (None, env))
 
 
 PM_READ_TIMEOUT_S = 300
@@ -5388,7 +5775,28 @@ async def start_kernel(pm: ClientSession, kernel_name: str, working_dir: Path) -
     return None
 
 
-KERNEL_START_ATTEMPTS = 3
+def _kernel_start_attempts_from_env(default: int = 3) -> int:
+    """The kernel-start retry count (#1913): ``NBCODER_KERNEL_START_ATTEMPTS`` overrides it, so
+    a seat whose evcxr kernel start is slower than ai-01's can raise it without editing the
+    shared harness. Unset keeps the historical 3. A non-integer or a value < 1 is refused
+    loud — the driver must not start with a retry bound it cannot honour. The refusal fires
+    when the driver module is imported, so it blocks every entry point that imports it
+    (kernel start included), not only the kernel start. It is an env var,
+    not a driver CLI flag, because a new driver option would first have to be threaded
+    through nb_coder_invoke.py's closed parameter set (INVOCATION.md §5)."""
+    raw = os.environ.get("NBCODER_KERNEL_START_ATTEMPTS", "").strip()
+    if not raw:
+        return default
+    try:
+        n = int(raw)
+    except ValueError:
+        raise ValueError(f"NBCODER_KERNEL_START_ATTEMPTS must be an integer, got {raw!r}") from None
+    if n < 1:
+        raise ValueError(f"NBCODER_KERNEL_START_ATTEMPTS must be >= 1, got {n}")
+    return n
+
+
+KERNEL_START_ATTEMPTS = _kernel_start_attempts_from_env()
 KERNEL_START_BACKOFF_S = 5.0
 _kernel_retry_sleep = asyncio.sleep
 
@@ -5768,6 +6176,15 @@ def _repo_guard_tool(repo: Path, name: str) -> Path:
     return repo / "scripts" / "notebook_tools" / name
 
 
+def _guard_env() -> dict[str, str]:
+    """UTF-8 mode for a repo-guard subprocess. The guards print a French report holding
+    glyphs outside cp1252 (U+2192 in the exemption rationales): on a Windows seat without
+    UTF-8 mode ``print`` raises UnicodeEncodeError, the process exits 1 with its stdout cut
+    mid-report, and rc 1 reads as « counter found » (measured 26/11, batch o40: #28644 and
+    #28645 were rejected on the tail of an audit their notebooks never entered)."""
+    return {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
+
 def _unmeasured(gate: str, **why) -> dict:
     """A repo guard that could not run is DECLARED (measured: false), never a silent pass
     and never a build failure: the PR's CI stays the judge of what the harness missed."""
@@ -5795,7 +6212,8 @@ def uncommented_code_gate(repo: Path, built_nb: Path) -> dict:
     try:
         pr = subprocess.run([sys.executable, str(tool), "--file", str(built_nb), "--json"],
                             cwd=str(repo), capture_output=True, text=True, encoding="utf-8",
-                            errors="replace", timeout=REPO_GUARD_TIMEOUT_S)
+                            errors="replace", timeout=REPO_GUARD_TIMEOUT_S,
+                            env=_guard_env())
         data = json.loads(pr.stdout or "{}") if pr.returncode in (0, 1) else None
     except (subprocess.TimeoutExpired, ValueError, OSError) as e:
         return _unmeasured("uncommented-code", error=f"{type(e).__name__}: {e}"[:300])
@@ -5831,7 +6249,7 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
             pr = subprocess.run([sys.executable, str(tool), "--all", "--root", root,
                                  "--strict"], cwd=str(repo), capture_output=True, text=True,
                                 encoding="utf-8", errors="replace",
-                                timeout=REPO_GUARD_TIMEOUT_S)
+                                timeout=REPO_GUARD_TIMEOUT_S, env=_guard_env())
     except (subprocess.TimeoutExpired, OSError) as e:
         return _unmeasured("prose-counts", error=f"{type(e).__name__}: {e}"[:300])
     if pr.returncode == 0:
@@ -5840,12 +6258,21 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
         return _unmeasured("prose-counts", rc=pr.returncode,
                            error=(pr.stderr or pr.stdout or "")[-300:])
     snippets: list[str] = []
+    refus_header = False
     for ln in (pr.stdout or "").splitlines():
         if ln.startswith("[ALLOWLIST"):
             break                      # the exemption audit reuses the row format
+        refus_header = refus_header or ln.startswith("[REFUS")
         m = PROSE_COUNT_ROW_RE.match(ln)
         if m:
             snippets += [x.strip() for x in m.group(3).split(", ") if x.strip()]
+    if not snippets:
+        # rc 1 names a counter ONLY through its rows. None before [ALLOWLIST] is the
+        # instrument failing (a report that crashed, a row format that moved), not a
+        # count: the reviser has nothing to act on, and the rounds it burns damage the
+        # notebook (26/11, o40 #28645: two revisions, the bibliography gone).
+        return _unmeasured("prose-counts", rc=pr.returncode, refus_header=refus_header,
+                           error=(pr.stderr or pr.stdout or "")[-300:])
     md = [(i, _text(c.get("source"))) for i, c in enumerate(_cells(built_nb))
           if c.get("cell_type") == "markdown"]
     findings = []
@@ -5854,8 +6281,6 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
         findings.append({"cell": where[0] if where else None,
                          "text": f"compteur « {sn} »"
                                  + (f" (cellule {', '.join(map(str, where))})" if where else "")})
-    if not findings:
-        findings = [{"cell": None, "text": (pr.stdout or "")[-600:]}]
     return {"gate": "prose-counts", "ok": False,
             "detail": {"measured": True,
                        "cells": [f["cell"] for f in findings if f["cell"] is not None][:10],
@@ -5871,7 +6296,8 @@ def _anchor_findings(tool: Path, repo: Path, nb: Path) -> list[dict] | None:
     organ did not answer with its JSON (rc 2, timeout, unparsable)."""
     pr = subprocess.run([sys.executable, str(tool), "--json", str(nb)], cwd=str(repo),
                         capture_output=True, text=True, encoding="utf-8",
-                        errors="replace", timeout=REPO_GUARD_TIMEOUT_S)
+                        errors="replace", timeout=REPO_GUARD_TIMEOUT_S,
+                        env=_guard_env())
     if pr.returncode not in (0, 1):
         return None
     try:
@@ -5964,6 +6390,43 @@ def unit_result_hits(built_cells: list, src_cells: list) -> list[int]:
     return [i for i, c in enumerate(built_cells)
             if _shows_unit_result(c)
             and not (i < len(src_cells) and _shows_unit_result(src_cells[i]))]
+
+
+# A twin that SAYS a comparison was not made. Measured 26/11 (CoursIA batch o41): 3 of 4
+# creation grains ended verify-reject on this one major, restated at every round — the
+# producer left its cited-data collection EMPTY and guarded the parity comparison behind
+# it, so the cell ran clean and printed « Parité … non attestée », « NON MESURÉ — aucune
+# comparaison exécutée », « Références citées, non recalculées ». Deterministic on the
+# OUTPUTS: catch it right after execution, before a verifier turn is paid.
+# Deliberately NARROW — a bare « non mesuré » is not charged: the approved twin of the same
+# batch prints « Citations seules, non mesurées ici : … HTTP réelles, tokens … » beside its
+# attestation (facts no twin can measure), and it must pass. Only a phrasing that states a
+# comparison did not happen is; the past participle carries the accent on purpose (`mesuré`
+# ≠ the noun `mesure`, and « pas de mesure » must not match).
+_UNMEASURED_RE = re.compile(
+    r"non\s+attest|aucune\s+comparaison|non\s+recalcul|non\s+ex[éÉ]cut"
+    r"|\bpas\s+(?:été\s+|encore\s+|jamais\s+)?(?:mesur|recalcul|rejou|ex[éÉ]cut|compar)[éÉ]e?s?\b"
+    r"|not\s+measured|unmeasured|not\s+replayed", re.I)
+
+
+def _unmeasured_line(cell: dict) -> str:
+    """First output line of a CODE cell that declares a comparison was not made ('' = none)."""
+    if cell.get("cell_type") != "code":
+        return ""
+    for line in _outputs_text(cell).splitlines():
+        if _UNMEASURED_RE.search(line):
+            return line.strip()[:240]
+    return ""
+
+
+def unmeasured_output_hits(built_cells: list, src_cells: list) -> list[tuple[int, str]]:
+    """(cell index, offending output line) for every built cell that declares a comparison
+    was not made while the twin at the same index does not — the twin's own declaration
+    (a genuinely out-of-scope measure it prints too) is the repo's business, not this
+    build's."""
+    return [(i, line) for i, c in enumerate(built_cells)
+            if (line := _unmeasured_line(c))
+            and not (i < len(src_cells) and _unmeasured_line(src_cells[i]))]
 
 
 def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
@@ -6063,6 +6526,15 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
                                            "text": f"cellule {i} : affiche « () », que le "
                                                    f"jumeau n'affiche pas"}
                                           for i in unit_hits][:REPO_GUARD_FINDINGS_MAX]}})
+    um_hits = unmeasured_output_hits(built_cells, src_cells)
+    # `measured: True` is explicit here: split_gates() reads an absent key as measured, but a
+    # reader that asks the detail directly would see None (review ai-01, 26/11).
+    gates.append({"gate": "unmeasured-output", "ok": not um_hits,
+                  "detail": {"measured": True, "cells": [i for i, _ in um_hits][:10],
+                             "findings": [{"cell": i,
+                                           "text": f"cellule {i} : la sortie déclare une "
+                                                   f"mesure non faite — « {line} »"}
+                                          for i, line in um_hits][:REPO_GUARD_FINDINGS_MAX]}})
     if create_mode and repo is not None and rel and scratch is not None \
             and (repo / "scripts").is_dir():
         gates += repo_guard_gates(repo, rel, built_nb, scratch)
@@ -6195,7 +6667,8 @@ def strip_dotnet_banner(tool: Path, nb_path: Path) -> dict:
     try:
         p = subprocess.run([sys.executable, str(tool), "--apply", str(nb_path),
                             "--variant", "both"],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=120, env=_guard_env())
         return {"ok": p.returncode == 0, "rc": p.returncode,
                 "out": (p.stdout or p.stderr or "")[-500:]}
     except subprocess.TimeoutExpired:
@@ -6804,6 +7277,9 @@ def integration_pr_lines(integ: dict | None) -> str:
                      f"{conf.get('three_sided', 0)} à trois côtés{cs}.")
         for d in (conf.get("spec_absent") or [])[:8]:
             lines.append(f"  - Côté Rust déclaré absent {d.get('id')} : {d.get('reason')}.")
+        for d in (conf.get("spec_masked") or [])[:8]:
+            lines.append(f"  - Valeur non comparée {d.get('id')} : {d.get('reason')} "
+                         f"(mesure écrite morceau par morceau, tout le reste comparé).")
         for d in (conf.get("divergences") or [])[:5]:
             lines.append(f"  - Divergence mesurée {d.get('id')} : {d.get('text')}.")
     elif conf.get("file") and conf.get("why"):
@@ -7645,6 +8121,26 @@ _GATE_FIX_TEXT = {
                    "bloc (`for`, `while`, `if` ou `{ … }`) sans point-virgule : termine ce "
                    "dernier bloc par `};` — sous evcxr cela supprime la sortie `()` sans "
                    "avertissement ; ne touche pas au reste de la cellule",
+    # 26/11, CoursIA batch o41: three twins printed « non attestée », « NON MESURÉ — aucune
+    # comparaison exécutée », « non recalculées »; the verifier restated the same major
+    # through seven revision rounds told only what was wrong. The remedy is the shape the
+    # approved twin of the batch used (reconstructed CPython draws, declared tolerance,
+    # « N comparaisons ; écart maximal … »).
+    "unmeasured-output": "la cellule déclare qu'une comparaison n'a pas eu lieu (« non "
+                         "attesté », « NON MESURÉ », « non recalculées ») : la collection de "
+                         "valeurs citées est vide et le test qui la garde n'est jamais pris. "
+                         "Refais la comparaison pour de vrai — (a) RECONSTRUIS le "
+                         "générateur de la source dans le langage cible "
+                         "(`random.Random(graine)` : MT19937, `getrandbits`, rejet jusqu'à un "
+                         "indice valide) et compare à tolérance déclarée ; (b) générateur "
+                         "non reconstructible à coût raisonnable (PCG64 de NumPy, module "
+                         "local) : compare les valeurs que tu recalculeras à celles que la "
+                         "source AFFICHE, citées comme telles et NON VIDES, sous tolérance "
+                         "déclarée, ou asserte un invariant (régime, ordre, signe). Supprime "
+                         "le message « non mesuré » et son garde ; n'affiche jamais une autre "
+                         "valeur comme si c'était la même. Un fait réellement hors de portée "
+                         "du jumeau (HTTP réel, tokens, durée) se dit dans une cellule "
+                         "MARKDOWN, jamais dans la sortie d'une cellule de code",
     "prose-anchor": "la prose (markdown) cite un chiffre que les sorties de CE carnet "
                     "n'affichent pas — souvent recopié du jumeau, dont les mesures "
                     "diffèrent : remplace-le par la valeur imprimée par la cellule de code "
@@ -7919,7 +8415,8 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
                                                       entry)
             env = await sk_call_retry(
                 sk, args, rec, f"6-revise+{rnd}",
-                revision_prompt(issue, revision_view(built_path), findings, conventions,
+                revision_prompt(issue, revision_view(built_path, cited=cited_cells(findings)),
+                                findings, conventions,
                                 spec=bool(getattr(args, "from_spec", False)),
                                 twin_view=(twin_reference_view(src_nb)
                                            if src_nb and Path(src_nb) != Path(built_path)
@@ -7935,7 +8432,7 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
             if not part:
                 entry["result"] = (gate_refusal(env) or call_failure(env) or "unparsed")
                 entry["raw_tail"] = (env.get("response") or "")[-1500:]
-                refusal = gate_refusal(env) or provider_rate_refusal(env)
+                refusal = defer_refusal(env)
                 if refusal:
                     # scheduler defer contract: the round was never held, so the reject it
                     # would have answered is not this run's last word either. Measured 23/11
@@ -8260,7 +8757,7 @@ async def run_revision(args, rec: dict) -> dict:
             return rec
     repo = Path(args.repo)
     origin = subprocess.run(["git", "-C", str(repo), "remote", "get-url", "origin"],
-                            capture_output=True, text=True).stdout.strip()
+                            capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     if "jsboige/CoursIA" not in origin and not args.allow_foreign_origin:
         rec["verdict"] = f"refused-foreign-origin:{origin or 'no-origin'}"
         return rec
@@ -8364,7 +8861,7 @@ async def run(args, rec: dict) -> dict:
     # jsboige/vllm#20250 — right number, wrong repo; multi-remote checkouts also hide this,
     # `git remote -v | head` shows only the alphabetically first remote).
     origin = subprocess.run(["git", "-C", str(repo), "remote", "get-url", "origin"],
-                            capture_output=True, text=True).stdout.strip()
+                            capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     rec["repo_origin"] = origin
     if "jsboige/CoursIA" not in origin and not args.allow_foreign_origin:
         rec["verdict"] = f"refused-foreign-origin:{origin or 'no-origin'}"
@@ -8605,15 +9102,15 @@ async def run(args, rec: dict) -> dict:
             rec["stage1_s"] = round(time.time() - t1, 1)
             if args.max_stage < 2:
                 rec["verdict"] = ("stage1-only" if plan
-                                  else gate_refusal(env) or provider_rate_refusal(env)
+                                  else defer_refusal(env)
                                   or f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             if not plan:
                 # a mid-flight gate refusal defers (scheduler retries with backoff),
                 # everything else that killed the plan call stays terminal — 18/11
                 # wave-1c #27103 burned terminally on exactly this distinction. A provider
-                # 429 defers for the same reason (23/11).
-                rec["verdict"] = (gate_refusal(env) or provider_rate_refusal(env)
+                # 429 defers for the same reason (23/11), and so does a cut transport (26/11).
+                rec["verdict"] = (defer_refusal(env)
                                   or f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             exec_idx = plan.get("execute_cells") or []
@@ -8686,7 +9183,7 @@ async def run(args, rec: dict) -> dict:
             if not exists:
                 rec["verdict"] = "build-no-notebook"
             elif not rec["built_notebook"]["changed"]:
-                rec["verdict"] = (provider_rate_refusal(env2)   # scheduler defer contract
+                rec["verdict"] = (defer_refusal(env2)   # scheduler defer contract
                                   or f"build-{call_failure(env2) or 'no-change'}")
             else:
                 rec["structure"] = (verify_structure_create(src_nb, scratch) if create_mode
@@ -8890,7 +9387,7 @@ def _launch_target_gap(args) -> dict | None:
             return None                # an unreadable or stale ref is never an answer
         rev = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
                               "origin/main^{commit}"], capture_output=True, text=True,
-                             timeout=60).stdout.strip()
+                             encoding="utf-8", errors="replace", timeout=60).stdout.strip()
         if not rev:
             return None
         gap = {"origin_main": rev[:10]}

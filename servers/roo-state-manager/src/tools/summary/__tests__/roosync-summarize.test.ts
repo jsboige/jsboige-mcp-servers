@@ -362,7 +362,7 @@ describe('handleRooSyncSummarize', () => {
 
   describe('propagation d\'erreurs', () => {
     test('re-throw StateManagerError depuis le handler trace', async () => {
-      const { StateManagerError } = await import('../../../types/errors.js');
+      const { StateManagerError } = await import('@vibesync/core/types/errors');
       const error = new StateManagerError('Trace failed', 'TRACE_FAILED', 'test', {});
       mockHandleGenerateTraceSummary.mockRejectedValue(error);
 

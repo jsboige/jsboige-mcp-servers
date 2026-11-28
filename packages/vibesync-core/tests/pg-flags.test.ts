@@ -1,7 +1,7 @@
 /**
  * Unit tests for the PG cutover flag resolver (#4131).
  *
- * THE CONTRACT (services/unified-store/pg-flags.ts):
+ * THE CONTRACT (packages/vibesync-core/src/services/unified-store/pg-flags.ts):
  *   - '1' / 'true'  → ON   (explicit, backward compatible)
  *   - '0' / 'false' → OFF  (EMERGENCY KILL-SWITCH)
  *   - unset / other → ON iff UNIFIED_STORE_PG_URL is set, else OFF
@@ -23,7 +23,7 @@ const logged: { message: string; meta: unknown }[] = [];
 
 // The logger is mocked so the "logged ONCE, value NEVER printed" contract of
 // the ignored-PG-URL warning can be asserted (review NanoClaw, C2).
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     warn: (message: string, meta?: unknown) => {
       logged.push({ message, meta });
@@ -41,7 +41,7 @@ import {
   isPgFlagExplicitlyOn,
   isPgFlagExplicitlyOff,
   resetIgnoredPgUrlWarning,
-} from '../pg-flags.js';
+} from '../src/services/unified-store/pg-flags.js';
 
 const FLAG = 'UNIFIED_STORE_DUAL_WRITE';
 

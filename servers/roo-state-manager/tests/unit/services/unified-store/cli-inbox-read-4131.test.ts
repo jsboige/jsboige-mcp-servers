@@ -39,7 +39,7 @@ vi.mock('../../../../src/services/unified-store/reader-factory.js', () => ({
   resetReaderInstance: mockResetReaderInstance,
 }));
 
-vi.mock('../../../../src/utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     debug: vi.fn(),
@@ -49,7 +49,7 @@ vi.mock('../../../../src/utils/logger.js', () => ({
 }));
 
 import { readCliInboxFromPg } from '../../../../src/services/unified-store/roosync-channel-read.js';
-import { setBackfillMarkerState } from '../../../../src/services/unified-store/pg-backfill-marker.js';
+import { setBackfillMarkerState } from '@vibesync/core/services/unified-store/pg-backfill-marker';
 
 const MACHINE = 'myia-po-2024';
 

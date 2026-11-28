@@ -40,7 +40,7 @@ vi.mock('fs/promises', () => ({
 	access: mockAccess
 }));
 
-vi.mock('../../types/errors.js', () => ({
+vi.mock('@vibesync/core/types/errors', () => ({
 	GenericError: class extends Error {
 		code: string;
 		constructor(message: string, code: string) {

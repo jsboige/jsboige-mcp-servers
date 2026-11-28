@@ -65,7 +65,7 @@ vi.mock('../../utils/dashboard-helpers.js', async () => {
 
 // roosync_send requires the 'sharedPath' capability; without this mock the
 // capability guard would block the tool before the marker step in tests.
-vi.mock('../../utils/server-capabilities.js', () => ({
+vi.mock('@vibesync/core/utils/server-capabilities', () => ({
   getServerCapabilities: () => ({
     isAvailable: () => true,
     getDegradedReason: () => '',
@@ -79,7 +79,7 @@ import {
   CHANNEL_BACKFILL_META_KEY,
   DASHBOARD_BACKFILL_META_KEY,
   type BackfillMarkerState,
-} from '../../services/unified-store/pg-backfill-marker.js';
+} from '@vibesync/core/services/unified-store/pg-backfill-marker';
 
 type Handler = (request: unknown) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
 

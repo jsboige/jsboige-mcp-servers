@@ -349,7 +349,7 @@ describe('roosync_config - Execution - Error Handling', () => {
 
   it('devrait propager les erreurs ConfigSharingServiceError', async () => {
     const { ConfigSharingServiceError, ConfigSharingServiceErrorCode } =
-      await import('../../../../src/types/errors.js');
+      await import('@vibesync/core/types/errors');
 
     mockCollectConfig.mockRejectedValueOnce(
       new ConfigSharingServiceError(

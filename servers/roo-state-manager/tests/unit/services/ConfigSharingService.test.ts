@@ -16,7 +16,7 @@ import type {
   ApplyConfigOptions,
   ApplyProfileOptions,
 } from '../../../src/types/config-sharing.js';
-import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../../src/types/errors.js';
+import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '@vibesync/core/types/errors';
 
 // --- Module-level mocks ---
 
@@ -112,7 +112,7 @@ vi.mock('../../../src/services/ConfigHealthCheckService.js', () => ({
   })),
 }));
 
-vi.mock('../../../src/utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: vi.fn(() => ({
     info: vi.fn(),
     warn: vi.fn(),

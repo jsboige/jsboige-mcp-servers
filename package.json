@@ -4,9 +4,15 @@
   "description": "Collection de serveurs MCP (Model Context Protocol) pour étendre les capacités des LLM",
   "main": "index.js",
   "type": "module",
+  "workspaces": [
+    "packages/*",
+    "servers/roo-state-manager"
+  ],
   "scripts": {
-    "install-all": "node scripts/install-all.js",
+    "install-all": "node scripts/install-all.cjs",
     "setup-config": "node scripts/setup-config.js",
+    "build:core": "npm run build --workspace @vibesync/core",
+    "test:core": "npm run test --workspace @vibesync/core",
     "test": "npm run test:all",
     "test:all": "npm run test:jupyter && npm run test:jinavigator && npm run test:roo",
     "test:jupyter": "cd servers/jupyter-papermill-mcp-server && python -m pytest",
@@ -35,8 +41,11 @@
     "url": "https://github.com/jsboige/jsboige-mcp-servers/issues"
   },
   "homepage": "https://github.com/jsboige/jsboige-mcp-servers#readme",
+  "overrides": {
+    "@modelcontextprotocol/sdk": "1.19.1"
+  },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.11.2",
+    "@modelcontextprotocol/sdk": "1.19.1",
     "axios": "^1.9.0",
     "chalk": "^4.1.2",
     "commander": "^11.0.0",

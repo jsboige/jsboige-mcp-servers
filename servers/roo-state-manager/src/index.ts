@@ -34,7 +34,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { createRequire } from 'module';
 import { captureHostEnvKeys, applyEnvFileForNonHostKeys } from './services/host-env-snapshot.js';
 import { recordEmbeddingFileConfig } from './services/embedding-endpoints.js';
-import { isPgFlagOn } from './services/unified-store/pg-flags.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
 // #4352 W2: static import of the participation flags ONLY (dependency-free
 // module). background-services / worker-a-lock stay dynamically imported —
 // the point of the gate is to NOT load them in processes that never entered
@@ -69,7 +69,7 @@ recordEmbeddingFileConfig(envResult.parsed);
 
 // #1635: Resilient env validation — degrade instead of crash.
 // Missing env vars are tracked as degraded capabilities; tools return errors instead.
-import { getServerCapabilities } from './utils/server-capabilities.js';
+import { getServerCapabilities } from '@vibesync/core/utils/server-capabilities';
 import { resolveChatApiKey } from './services/chat-key.js';
 
 const ENV_VAR_CAPABILITIES: Record<string, 'sharedPath' | 'qdrant' | 'embeddings'> = {
@@ -166,7 +166,7 @@ if (problems.length > 0) {
 // registry.ts (and its zod/zod-to-json-schema chain) loads dynamically in run().
 // This cuts static module evaluation from ~5s to <1s.
 import { createMcpServer, SERVER_CONFIG } from './config/server-config.js';
-import { createLogger, getDefaultLogger } from './utils/logger.js';
+import { createLogger, getDefaultLogger } from '@vibesync/core/utils/logger';
 import { recordToolCall } from './utils/tool-call-metrics.js';
 
 // #2267 / #3205: the global guard's tables moved to ./config/tool-timeouts.js,
@@ -174,7 +174,7 @@ import { recordToolCall } from './utils/tool-call-metrics.js';
 // for the #1894 startup budget: that module has ZERO imports of its own, so it
 // pulls in no dependency chain (unlike registry.ts and its zod chain, which
 // stays dynamic below).
-import { getMcpToolTimeoutMs } from './config/tool-timeouts.js';
+import { getMcpToolTimeoutMs } from '@vibesync/core/config/tool-timeouts';
 
 const logger = createLogger('RooStateManagerServer');
 const require = createRequire(import.meta.url);
@@ -691,7 +691,7 @@ class RooStateManagerServer {
     private async initializeBackfillMarkers(): Promise<void> {
         try {
             const { refreshBackfillMarkers } = await import(
-                './services/unified-store/pg-backfill-marker.js'
+                '@vibesync/core/services/unified-store/pg-backfill-marker'
             );
             await refreshBackfillMarkers();
         } catch (error) {

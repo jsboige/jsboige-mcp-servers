@@ -507,7 +507,7 @@ def test_stage5_commit_carries_its_own_identity(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     def sh(*cmd, cwd=None):
-        p = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd)
         assert p.returncode == 0, (cmd, p.stderr)
         return p.stdout
 
@@ -591,7 +591,7 @@ def test_stage5_retries_add_commit_once_when_a_prefix_hook_rewrites_the_file(tmp
     from types import SimpleNamespace
 
     def sh(*cmd, cwd=None):
-        p = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd)
         assert p.returncode == 0, (cmd, p.stderr)
         return p.stdout
 
@@ -666,7 +666,7 @@ def _push_repo(tmp_path):
     import subprocess
 
     def sh(*cmd):
-        p = subprocess.run(cmd, capture_output=True, text=True)
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
         assert p.returncode == 0, (cmd, p.stderr)
         return p.stdout
     origin = tmp_path / "origin.git"

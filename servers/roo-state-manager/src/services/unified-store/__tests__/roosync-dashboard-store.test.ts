@@ -30,6 +30,9 @@ import type {
 
 const mockGetRooSyncDashboard = vi.fn().mockResolvedValue(null);
 const mockGetArchivedIds = vi.fn().mockResolvedValue(null);
+// #4131 residual — archive surface reads (read_archive PG fallback).
+const mockGetArchivedBatches = vi.fn().mockResolvedValue(null);
+const mockGetArchivedBatch = vi.fn().mockResolvedValue(null);
 // Review #1244 : isNull pilotable — la vraie factory rend un Null reader sans
 // UNIFIED_STORE_DUAL_WRITE=1 ; le test du reader dédié exige ce comportement.
 // Invariant (#1369, arbitrage NanoClaw 05/10) : value=false ⇔ factory réelle
@@ -44,6 +47,8 @@ vi.mock('../reader-factory.js', () => ({
     getRooSyncDashboard: mockGetRooSyncDashboard,
     // #3782 tombstones : décision merge — ids archivés sur la clé.
     getArchivedRooSyncDashboardMessageIds: mockGetArchivedIds,
+    getArchivedRooSyncDashboardBatches: mockGetArchivedBatches,
+    getArchivedRooSyncDashboardBatch: mockGetArchivedBatch,
   }),
   resetReaderInstance: vi.fn(),
 }));
@@ -68,8 +73,18 @@ vi.mock('../writer-factory.js', () => ({
 const mockQuery = vi.fn().mockResolvedValue({ rows: [] });
 const mockConnect = vi.fn().mockResolvedValue({ query: mockQuery, release: vi.fn() });
 const mockPool = { on: vi.fn(), connect: mockConnect, query: mockQuery, end: vi.fn() };
+// Options reçues par CHAQUE `new Pool(...)` d'un lecteur réel (déréférencé
+// seulement à l'appel, comme mockPool — même raison de survie au hoisting).
+const mockPoolConfigs: Array<Record<string, unknown>> = [];
 
-vi.mock('pg', () => ({ default: { Pool: vi.fn(() => mockPool) } }));
+vi.mock('pg', () => ({
+  default: {
+    Pool: vi.fn((config: Record<string, unknown>) => {
+      mockPoolConfigs.push(config);
+      return mockPool;
+    }),
+  },
+}));
 
 // ─── Logger mock (dual-write failure warns must be observable) ──────
 // vi.hoisted: the store calls createLogger at module scope, so the factory
@@ -81,7 +96,7 @@ const { mockLoggerWarn, mockLoggerInfo } = vi.hoisted(() => ({
   mockLoggerInfo: vi.fn(),
 }));
 
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({ debug: vi.fn(), info: mockLoggerInfo, warn: mockLoggerWarn, error: vi.fn() }),
 }));
 
@@ -95,7 +110,11 @@ import {
   dualWriteDashboardDelete,
   backfillDashboardToStore,
   fetchArchivedDashboardMessageIds,
+  fetchArchivedDashboardBatches,
+  fetchArchivedDashboardBatch,
+  mapRowToIntercomMessage,
   resetArchivedIdsReaderForTests,
+  resetArchiveReaderForTests,
 } from '../roosync-dashboard-store.js';
 import { PgUnifiedStoreWriter } from '../PgUnifiedStoreWriter.js';
 import { PgUnifiedStoreReader } from '../PgUnifiedStoreReader.js';
@@ -709,5 +728,273 @@ describe('PgUnifiedStoreReader.getArchivedRooSyncDashboardMessageIds SQL shape',
     expect(sql).toContain('message_id = $2');
     expect(sql).toContain('LIMIT 1');
     expect(call![1]).toEqual(['workspace-roo-extensions', 'stall-x']);
+  });
+});
+
+// ─── #4131 residual — archive surface reads (read_archive PG fallback) ──
+//
+// Mesuré po-2024 26/11 : 9 lots de condensation en PG sur 30 h, 2 fichiers
+// sur le miroir du siège. `read_archive` ne lisait que le miroir — la fenêtre
+// d'un siège n'était pas celle de la flotte.
+
+describe('fetchArchivedDashboardBatches / fetchArchivedDashboardBatch (#4131 residual)', () => {
+  function withPgUrl(fn: () => void | Promise<void>): () => Promise<void> {
+    return async () => {
+      process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+      try {
+        await fn();
+      } finally {
+        delete process.env.UNIFIED_STORE_PG_URL;
+        delete process.env.UNIFIED_STORE_DUAL_WRITE;
+      }
+    };
+  }
+
+  beforeEach(() => {
+    mockLoggerWarn.mockClear();
+  });
+
+  // `primeReader` remplace le défaut de `mockQuery` : on le rend, sinon les
+  // describes suivants (lectures concrètes du reader) liraient `undefined`.
+  afterEach(() => {
+    resetArchiveReaderForTests();
+    mockQuery.mockReset().mockResolvedValue({ rows: [] });
+  });
+
+  /**
+   * Arme le lecteur d'archive DÉDIÉ (vraie classe, pool `pg` mocké) : le
+   * self-init (`SELECT 1`) puis, dans l'ordre, les réponses du test. Depuis la
+   * review ms#1934 les lectures d'archive ne passent plus par le double de
+   * factory : elles ont leur pool, donc c'est `mockQuery` qui les sert.
+   */
+  function primeReader(...responses: Array<{ rows: unknown[] } | 'hang' | Error>): void {
+    resetArchiveReaderForTests();
+    mockQuery.mockReset();
+    mockQuery.mockResolvedValueOnce({ rows: [{ '1': 1 }] });
+    for (const response of responses) {
+      if (response === 'hang') {
+        mockQuery.mockImplementationOnce(() => new Promise(() => { /* never resolves */ }));
+      } else if (response instanceof Error) {
+        mockQuery.mockRejectedValueOnce(response);
+      } else {
+        mockQuery.mockResolvedValueOnce(response);
+      }
+    }
+  }
+
+  test('la porte est la CAPACITÉ (PG_URL) : sans PG_URL → gap `no-url`, reader jamais consulté', async () => {
+    delete process.env.UNIFIED_STORE_PG_URL;
+    resetArchiveReaderForTests();
+    mockQuery.mockClear();
+    expect(await fetchArchivedDashboardBatches('workspace-x')).toEqual({ batches: [], gap: 'no-url' });
+    expect(await fetchArchivedDashboardBatch('workspace-x', '2026-11-25T17:02:29.000Z'))
+      .toEqual({ messages: null, gap: 'no-url' });
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('hit → les lots du reader, ordre conservé (plus récent d\'abord), fenêtre complète', withPgUrl(async () => {
+    primeReader({ rows: [
+      { batch_at: new Date('2026-11-26T00:07:21.000Z'), message_count: 19 },
+      { batch_at: new Date('2026-11-25T22:58:23.000Z'), message_count: 17 },
+    ] });
+    expect(await fetchArchivedDashboardBatches('workspace-roo-extensions')).toEqual({
+      batches: [
+        { archivedAt: '2026-11-26T00:07:21.000Z', messageCount: 19 },
+        { archivedAt: '2026-11-25T22:58:23.000Z', messageCount: 17 },
+      ],
+      gap: null,
+    });
+    const call = mockQuery.mock.calls.find(c => String(c[0]).includes('date_trunc'));
+    expect(call![1]).toEqual(['workspace-roo-extensions']);
+  }));
+
+  test('clé sans archive → [] : l\'histoire existe, elle est vide (≠ fenêtre partielle)', withPgUrl(async () => {
+    primeReader({ rows: [] });
+    expect(await fetchArchivedDashboardBatches('global')).toEqual({ batches: [], gap: null });
+  }));
+
+  test('hit lot → lignes du journal en IntercomMessage, le mapping de la lecture vivante', withPgUrl(async () => {
+    primeReader({ rows: [{
+      id: 7,
+      dashboard_key: 'workspace-roo-extensions',
+      message_id: 'myia-po-2024:roo-extensions:ic-1',
+      author_machine: 'myia-po-2024',
+      author_workspace: 'roo-extensions',
+      content: '[DEGRADED] lecture d\'archive aveugle',
+      tags: ['ERROR', 'claude-interactive'],
+      team_stage: null,
+      reply_to: 'ic-0',
+      acknowledged_at: null,
+      archived_at: '2026-11-25T17:02:29.100Z',
+      created_at: '2026-11-25T16:40:00.000Z',
+    }] });
+    const result = await fetchArchivedDashboardBatch('workspace-roo-extensions', '2026-11-25T17:02:29.000Z');
+    // archiveData.messages doit avoir la forme que le chemin fichier sert.
+    expect(result).toEqual({
+      messages: [{
+        id: 'myia-po-2024:roo-extensions:ic-1',
+        timestamp: '2026-11-25T16:40:00.000Z',
+        author: { machineId: 'myia-po-2024', workspace: 'roo-extensions' },
+        content: '[DEGRADED] lecture d\'archive aveugle',
+        reply_to: 'ic-0',
+        tags: ['ERROR', 'claude-interactive'],
+      }],
+      gap: null,
+    });
+    const call = mockQuery.mock.calls.find(c => String(c[0]).includes('date_trunc'));
+    expect(call![1]).toEqual(['workspace-roo-extensions', '2026-11-25T17:02:29.000Z']);
+  }));
+
+  test('lecteur en échec → gap `error` + WARN, des deux lectures (jamais de throw vers read_archive)', withPgUrl(async () => {
+    primeReader(new Error('connection refused'));
+    expect(await fetchArchivedDashboardBatches('global')).toEqual({ batches: [], gap: 'error' });
+    primeReader(new Error('connection refused'));
+    expect(await fetchArchivedDashboardBatch('global', '2026-11-25T17:02:29.000Z'))
+      .toEqual({ messages: null, gap: 'error' });
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('[archive-pg] batch listing failed'),
+      expect.objectContaining({ key: 'global' })
+    );
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('[archive-pg] batch read failed'),
+      expect.objectContaining({ key: 'global', batchSecondIso: '2026-11-25T17:02:29.000Z' })
+    );
+  }));
+
+  test('lecteur muet > 3 s → gap `timeout`, des deux lectures', withPgUrl(async () => {
+    vi.useFakeTimers();
+    try {
+      primeReader('hang');
+      const pendingBatches = fetchArchivedDashboardBatches('global');
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(await pendingBatches).toEqual({ batches: [], gap: 'timeout' });
+      primeReader('hang');
+      const pendingBatch = fetchArchivedDashboardBatch('global', '2026-11-25T17:02:29.000Z');
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(await pendingBatch).toEqual({ messages: null, gap: 'timeout' });
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.stringContaining('[archive-pg] batch listing timed out'),
+        expect.objectContaining({ key: 'global' })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  }));
+
+  test('les lectures d\'archive ont leur PROPRE pool (poolMax 1) et bornent la requête ET la connexion SOUS la course de 3 s', withPgUrl(async () => {
+    mockPoolConfigs.length = 0;
+    primeReader({ rows: [] });
+    expect(await fetchArchivedDashboardBatches('workspace-roo-extensions'))
+      .toEqual({ batches: [], gap: null });
+    // Ni le double de factory ni le pool partagé : un pool à nous, borné.
+    expect(mockGetArchivedBatches).not.toHaveBeenCalled();
+    const config = mockPoolConfigs[mockPoolConfigs.length - 1];
+    expect(config.max).toBe(1);
+    expect(config.statement_timeout as number).toBeLessThan(3000);
+    // La phase de CONNEXION aussi : sans cette borne le pool garde le défaut
+    // de 15 s, la course client rend la main à 3 s et le connect orphelin
+    // occupe l'unique slot du pool (review ms#1934, finding 3).
+    expect(config.connectionTimeoutMillis as number).toBeLessThan(3000);
+    expect(config.connectionTimeoutMillis as number).toBeLessThan(15000);
+  }));
+
+  test('timeout de CONNEXION (signature node-postgres) → gap `timeout`, pas `error` : PG n\'a pas répondu à temps', withPgUrl(async () => {
+    // Depuis la borne de connexion (2 500 ms < course 3 000 ms) c'est le POOL
+    // qui rejette le premier, avant la course : sans cette classification le
+    // listing aurait dit « lecture PG en échec » là où il disait « n'a pas
+    // répondu à temps » quand la course gagnait.
+    const connectTimeout = new Error('Connection terminated due to connection timeout');
+    primeReader(connectTimeout);
+    expect(await fetchArchivedDashboardBatches('global')).toEqual({ batches: [], gap: 'timeout' });
+    primeReader(new Error('Connection terminated due to connection timeout'));
+    expect(await fetchArchivedDashboardBatch('global', '2026-11-25T17:02:29.000Z'))
+      .toEqual({ messages: null, gap: 'timeout' });
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('[archive-pg] batch listing timed out (connection)'),
+      expect.objectContaining({ key: 'global' })
+    );
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('[archive-pg] batch read timed out (connection)'),
+      expect.objectContaining({ key: 'global', batchSecondIso: '2026-11-25T17:02:29.000Z' })
+    );
+  }));
+});
+
+describe('PgUnifiedStoreReader — SQL shape des lectures de lots (#4131 residual)', () => {
+  const reader = new PgUnifiedStoreReader({ connectionString: 'postgres://t:t@localhost:5432/x' });
+
+  test('lots : groupés par date_trunc(second, archived_at), archived_at IS NOT NULL, clé paramétrée, plus récent d\'abord', async () => {
+    mockQuery.mockClear();
+    // Premier appel = self-init SELECT 1.
+    mockQuery.mockResolvedValueOnce({ rows: [{ '1': 1 }] })
+      .mockResolvedValueOnce({
+        rows: [
+          { batch_at: new Date('2026-11-26T00:07:21.400Z'), message_count: 19 },
+          { batch_at: new Date('2026-11-25T22:58:23.900Z'), message_count: 17 },
+        ],
+      });
+    const result = await reader.getArchivedRooSyncDashboardBatches('workspace-roo-extensions');
+    expect(result).toEqual([
+      { archivedAt: '2026-11-26T00:07:21.400Z', messageCount: 19 },
+      { archivedAt: '2026-11-25T22:58:23.900Z', messageCount: 17 },
+    ]);
+
+    const call = mockQuery.mock.calls.find(c => String(c[0]).includes('date_trunc'));
+    expect(call).toBeDefined();
+    const sql = String(call![0]);
+    expect(sql).toContain("date_trunc('second', archived_at)");
+    expect(sql).toContain('FROM roosync_dashboard_messages');
+    expect(sql).toContain('dashboard_key = $1');
+    expect(sql).toContain('archived_at IS NOT NULL');
+    expect(sql).toContain('GROUP BY 1');
+    expect(sql).toContain('ORDER BY 1 DESC');
+    expect(call![1]).toEqual(['workspace-roo-extensions']);
+  });
+
+  test('un lot : date_trunc(second) = $2::timestamptz, ordre du fichier (created_at ASC, id ASC), lignes mappées', async () => {
+    mockQuery.mockClear();
+    // Reader déjà initialisé par le test précédent — pas de SELECT 1.
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        { id: 2, dashboard_key: 'workspace-roo-extensions', message_id: 'ic-b', author_machine: 'm', author_workspace: 'w', content: 'second', tags: [], team_stage: null, reply_to: null, acknowledged_at: null, archived_at: new Date('2026-11-25T17:02:29.500Z'), created_at: new Date('2026-11-25T16:41:00.000Z') },
+        { id: 1, dashboard_key: 'workspace-roo-extensions', message_id: 'ic-a', author_machine: 'm', author_workspace: 'w', content: 'first', tags: [], team_stage: null, reply_to: null, acknowledged_at: null, archived_at: new Date('2026-11-25T17:02:29.200Z'), created_at: new Date('2026-11-25T16:40:00.000Z') },
+      ],
+    });
+    const result = await reader.getArchivedRooSyncDashboardBatch('workspace-roo-extensions', '2026-11-25T17:02:29.000Z');
+    expect(result.map(m => m.message_id)).toEqual(['ic-b', 'ic-a']); // server-side ordering preserved
+    expect(result[1].archived_at).toBe('2026-11-25T17:02:29.200Z');
+
+    const sql = String(mockQuery.mock.calls[0][0]);
+    expect(sql).toContain('FROM roosync_dashboard_messages');
+    expect(sql).toContain('dashboard_key = $1');
+    expect(sql).toContain('archived_at IS NOT NULL');
+    expect(sql).toContain("date_trunc('second', archived_at) = $2::timestamptz");
+    expect(sql).toContain('ORDER BY created_at ASC, id ASC');
+    expect(mockQuery.mock.calls[0][1]).toEqual(['workspace-roo-extensions', '2026-11-25T17:02:29.000Z']);
+  });
+});
+
+describe('mapRowToIntercomMessage (#4131 residual — mapping partagé)', () => {
+  test('ligne sans message_id → id déterministe dérivé du BIGSERIAL, champs optionnels absents', () => {
+    const msg = mapRowToIntercomMessage({
+      id: 42,
+      dashboard_key: 'global',
+      message_id: null,
+      author_machine: 'm',
+      author_workspace: 'w',
+      content: 'legacy',
+      tags: [],
+      team_stage: null,
+      reply_to: null,
+      acknowledged_at: null,
+      archived_at: null,
+      created_at: '2026-11-25T16:40:00.000Z',
+    });
+    expect(msg).toEqual({
+      id: 'm:w:pg-42',
+      timestamp: '2026-11-25T16:40:00.000Z',
+      author: { machineId: 'm', workspace: 'w' },
+      content: 'legacy',
+    });
   });
 });
