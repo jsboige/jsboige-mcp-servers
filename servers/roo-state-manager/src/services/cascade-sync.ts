@@ -445,12 +445,13 @@ export function assessCascadeSource(input: CascadeSourceInput): CascadeSourceSna
 /**
  * Rend les variables d'environnement equivalents à un payload.
  *
- * Fidélité au runtime : `_RESET` est POSITIONNEL (une case vide vaut « pas de
- * reset pour CE step » — le runtime ne filtre PAS les vides sur cette variable,
- * contrairement aux labels) ; `_LABEL` / `_DIRECTION` / `_NOTE` ne sont émis
- * que s'ils portent une information (une étiquette qui retombe sur la cible,
- * une direction par défaut, une note absente ne doivent pas créer une
- * différence fictive entre deux configurations équivalentes).
+ * Fidélité au runtime : `_RESET` (`parseStepResets`) et `_NOTE`
+ * (`splitStepNotes`, claudish `34941b09` du 28/11 00:11Z) sont POSITIONNELS —
+ * une case vide vaut « rien pour CE step » et n'est PAS filtrée, contrairement
+ * à `_LABEL` / `_DIRECTION`. `_LABEL` / `_DIRECTION` / `_NOTE` ne sont émis que
+ * s'ils portent une information (une étiquette qui retombe sur la cible, une
+ * direction par défaut, une note absente ne doivent pas créer une différence
+ * fictive entre deux configurations équivalentes).
  */
 export function renderCascadeEnv(payload: CascadePayload): Record<string, string> {
     const env: Record<string, string> = {};
@@ -476,11 +477,14 @@ export function renderCascadeEnv(payload: CascadePayload): Record<string, string
             env[`${CASCADE_ENV_PREFIX}${role}_DIRECTION`] = directions.join('>');
         }
         const notes = steps.map((s) => s.note ?? '');
-        // Le runtime lit les notes avec `splitSteps` (les VIDES sont filtrés) :
-        // une note ne peut donc être représentée que comme un PRÉFIXE contigu.
-        // Un trou (note au step 2, rien au step 1) n'est pas représentable — on
-        // s'arrête au trou plutôt que de décaler silencieusement les notes. Ce
-        // qui est laissé de côté est RAPPORTÉ (`findUnrepresentableNotes`).
+        // Le runtime lit `_NOTE` POSITIONNELLEMENT (`splitStepNotes`, claudish
+        // `34941b09` : un trou est un placeholder, `a>>c` garde sa place). Une
+        // écriture positionnelle est donc possible, mais elle n'est pas faite
+        // ici — grain de suivi. L'écrivain s'arrête encore au premier trou : ce
+        // préfixe contigu se lit à l'identique sur les DEUX runtimes (l'ancien
+        // filtrait les vides, le nouveau garde les trous), rien n'est décalé en
+        // silence, et ce qui est laissé de côté est RAPPORTÉ
+        // (`findUnrepresentableNotes`).
         const notePrefix = notePrefixLength(steps);
         if (notePrefix > 0) {
             env[`${CASCADE_ENV_PREFIX}${role}_NOTE`] = notes.slice(0, notePrefix).join('>');
@@ -511,12 +515,14 @@ export function renderCascadeEnv(payload: CascadePayload): Record<string, string
 }
 
 /**
- * Longueur du préfixe contigu de notes qu'une variable `_NOTE` peut porter.
+ * Longueur du préfixe contigu de notes que l'écrivain pose aujourd'hui.
  *
- * Le runtime lit `_NOTE` avec `splitSteps` (split sur `>` puis FILTRE des
- * vides) : une note n'atteint son barreau que si tous les barreaux AVANT lui
- * en portent une. Le premier barreau sans note est un TROU — rien après lui ne
- * peut être écrit à sa place.
+ * Depuis `splitStepNotes` (claudish `34941b09`), l'écriture POSITIONNELLE (un
+ * `>` par barreau, trou compris) est représentable ; elle est traitée dans un
+ * grain de suivi, pas ici. D'ici là le préfixe contigu est le seul encodage qui
+ * se lit à l'identique sur les DEUX runtimes : une note n'est écrite que si
+ * tous les barreaux AVANT lui en portent une. Le premier barreau sans note est
+ * un TROU.
  */
 function notePrefixLength(steps: CascadeStep[]): number {
     let prefix = 0;
@@ -526,14 +532,19 @@ function notePrefixLength(steps: CascadeStep[]): number {
 
 /** Pourquoi une note ne sera pas lue comme le canon la porte. */
 export type CascadeUnrepresentableNoteReason =
-    /** Non écrite : un barreau PRÉCÉDENT n'a pas de note (le runtime filtre les vides). */
+    /**
+     * NON ÉCRITE : un barreau précédent n'a pas de note et l'écrivain s'arrête
+     * au trou (écriture positionnelle = grain de suivi). Le runtime actuel
+     * saurait la lire (`a>>c` garde le trou) — c'est l'écrivain, pas le
+     * runtime, qui la laisse de côté.
+     */
     | 'after-hole'
-    /** Écrite, mais le runtime la COUPE sur `>`. */
+    /** Écrite, mais le runtime la COUPE sur `>` : elle arrive en fragments. */
     | 'contains-separator'
     /**
-     * Écrite, mais un barreau PRÉCÉDENT porte une note BLANCHE (le runtime la
-     * lit comme absente, l'écrivain l'a comptée) ou coupée : elle atterrit sur
-     * un autre barreau, ou nulle part.
+     * Écrite, mais une note PRÉCÉDENTE contenait `>` : ses fragments poussent
+     * celle-ci sur un autre barreau (ou hors de la chaîne). Une note blanche,
+     * elle, ne décale plus rien — c'est un placeholder à sa place.
      */
     | 'shifted';
 
@@ -554,33 +565,35 @@ export interface CascadeUnrepresentableNote {
  *
  * Pur et additif : ne change ni la valeur écrite, ni un verdict. La lecture du
  * runtime est REJOUÉE ici sur ce que `renderCascadeEnv` pose réellement
- * (`splitSteps` : split sur `>`, trim, filtre des vides — `failover.ts`), puis
- * confrontée barreau par barreau à la note que le canon porte. Une note est
- * donc rapportée SI ET SEULEMENT SI le runtime ne la lira pas à sa place.
+ * (`splitStepNotes`, claudish `34941b09` : split sur `>`, trim, TROUS GARDÉS —
+ * une case vide est un placeholder, pas du bruit), puis confrontée barreau par
+ * barreau à la note que le canon porte. Une note est donc rapportée SI ET
+ * SEULEMENT SI le runtime ne la lira pas à sa place.
  *
- * Une note absente ou blanche n'est pas une note : le runtime la lit comme
- * absente, ce qu'elle dit. Elle n'est pas rapportée — mais une note BLANCHE
- * que l'écrivain a comptée décale toutes celles qui suivent (`shifted`).
+ * Une note absente ou blanche n'est pas une note : le runtime lit `notes[i] ||
+ * undefined`, donc une case blanche vaut « pas de note » à SA place. Elle ne
+ * décale plus celles qui suivent (c'était vrai de l'ancien `splitSteps`, qui
+ * filtrait les vides ; le modèle de ce fichier suit le runtime de `main`).
  *
- * Les cas `contains-separator` et `shifted` par note blanche ne viennent que
- * d'un payload JSON (le parseur du canon textuel trimme et coupe sur `>`) :
- * ils sont RAPPORTÉS ici, pas corrigés — l'écrivain pose encore leur valeur.
+ * `contains-separator` et `shifted` ne viennent que d'un payload JSON (le
+ * parseur du canon textuel trimme et coupe sur `>`) : ils sont RAPPORTÉS ici,
+ * pas corrigés — l'écrivain pose encore leur valeur.
+ *
+ * Modèle : runtime de `main` >= `34941b09`. Un siège qui tournerait sur un
+ * claudish antérieur lirait `_NOTE` en filtrant les vides — la version
+ * claudish des conteneurs des autres sièges n'est pas mesurée d'ici, et elle
+ * n'est pas modélisée : le mode de lecture est celui de `main`.
  */
 export function findUnrepresentableNotes(payload: CascadePayload): CascadeUnrepresentableNote[] {
     const env = renderCascadeEnv(payload);
     const unrepresentable: CascadeUnrepresentableNote[] = [];
     for (const role of CASCADE_ROLE_NAMES) {
         const steps = payload.roles[role]?.steps ?? [];
-        // Ce que le runtime lira, barreau par barreau.
-        const read = (env[`${CASCADE_ENV_PREFIX}${role}_NOTE`] ?? '')
-            .split('>')
-            .map((s) => s.trim())
-            .filter((s) => s !== '');
+        // Ce que le runtime lira, barreau par barreau : positionnel, trous gardés.
+        const read = (env[`${CASCADE_ENV_PREFIX}${role}_NOTE`] ?? '').split('>').map((s) => s.trim());
         const prefix = notePrefixLength(steps);
         for (const [index, step] of steps.entries()) {
-            const raw = step.note;
-            if (raw === undefined || raw === null) continue;
-            const note = (typeof raw === 'string' ? raw : String(raw)).trim();
+            const note = (step.note ?? '').trim();
             if (note === '') continue;
             if (read[index] === note) continue;
             unrepresentable.push({

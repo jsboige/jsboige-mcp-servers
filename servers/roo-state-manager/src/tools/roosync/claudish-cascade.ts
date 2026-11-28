@@ -154,18 +154,22 @@ function assessPublishedCanon(sharedStatePath: string, maxAgeMs: number, now: st
  * (un résultat sans note écartée reste exactement celui qu'il était), le
  * verdict n'est jamais déplacé, et ni le canon publié ni le `.env` écrit ne
  * changent — seule la note silencieusement perdue devient visible.
+ *
+ * La phrase explicative est TOUJOURS ajoutée : sur un résultat qui porte déjà
+ * sa propre `note` (le dry_run d'`apply`), elle y est AJOUTÉE au lieu d'être
+ * perdue — une clé déjà présente ne doit pas éteindre le diagnostic.
  */
 function withUnrepresentableNotes<T extends Record<string, unknown>>(
     result: T,
     notes: CascadeUnrepresentableNote[],
 ): T & { unrepresentable_notes?: CascadeUnrepresentableNote[] } {
     if (notes.length === 0) return result;
+    const explanation = `${notes.length} note(s) du canon ne sont pas lues comme écrites — voir unrepresentable_notes`;
+    const existing = typeof result.note === 'string' && result.note !== '' ? `${result.note} — ` : '';
     return {
         ...result,
         unrepresentable_notes: notes,
-        ...('note' in result
-            ? {}
-            : { note: `${notes.length} note(s) du canon ne sont pas lues comme écrites — voir unrepresentable_notes` }),
+        note: `${existing}${explanation}`,
     };
 }
 

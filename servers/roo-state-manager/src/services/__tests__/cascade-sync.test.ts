@@ -4,8 +4,9 @@
  * Ce que ces tests verrouillent (au-delà du « ça marche ») :
  *   - une lecture périmée / vide / illisible n'est PAS harmonisée (`covered:false`) ;
  *   - le rendu en variables d'environnement est FIDÈLE à la grammaire du
- *     runtime (`failover.ts`) : `_RESET` positionnel (les cases vides comptent),
- *     `_LABEL`/`_DIRECTION`/`_NOTE` filtrés (splitSteps), `!own` porté par la cible ;
+ *     runtime (`failover.ts`) : `_RESET` et `_NOTE` positionnels (les cases
+ *     vides comptent — `parseStepResets`, `splitStepNotes`), `_LABEL`/
+ *     `_DIRECTION` filtrés (splitSteps), `!own` porté par la cible ;
  *   - la comparaison porte sur des VALEURS : une liste de MÊME cardinalité dont
  *     un élément change est un `modified` à cardinalité constante ;
  *   - le plan n'écrit QUE des clés de cascade : un secret du siège ne peut ni
@@ -210,7 +211,8 @@ describe('#4427 PR2 — rendu fidèle à la grammaire du runtime (failover.ts)',
         expect(env[`${CASCADE_ENV_PREFIX}SONNET_LABEL`]).toBe('Mistral GLM>Kimi K3');
         // DIRECTION : la première est le défaut 'degraded', la seconde 'lateral'.
         expect(env[`${CASCADE_ENV_PREFIX}SONNET_DIRECTION`]).toBe('degraded>lateral');
-        // NOTE scalaire : un préfixe contigu, comme splitSteps les lit.
+        // NOTE scalaire : un préfixe contigu (l'écrivain s'arrête au trou ;
+        // l'écriture positionnelle `a>>c` est un grain de suivi).
         expect(env[`${CASCADE_ENV_PREFIX}SONNET_NOTE`]).toBe('pas de thinking, raisonne en clair');
         // HAIKU n'a ni label déclaré ni direction ≠ défaut, ni note, ni reset.
         expect(env[`${CASCADE_ENV_PREFIX}HAIKU_LABEL`]).toBeUndefined();
@@ -266,8 +268,9 @@ describe('#4427 PR2 — rendu fidèle à la grammaire du runtime (failover.ts)',
  *
  * Le diagnostic est EXACT : une note est rapportée si et seulement si le
  * runtime ne la lira pas à sa place. La lecture du runtime est rejouée ici par
- * une réplique de `splitSteps` (`failover.ts` : split sur `>`, trim, filtre des
- * vides) appliquée à la valeur que `renderCascadeEnv` pose réellement.
+ * une réplique de `splitStepNotes` (claudish `failover.ts`, `34941b09` du
+ * 28/11 : split sur `>`, trim, TROUS GARDÉS — une case vide est un placeholder)
+ * appliquée à la valeur que `renderCascadeEnv` pose réellement.
  */
 describe('#4427 — notes non représentables (rapportées, jamais inventées)', () => {
     const FOUR_TEXT = ['SONNET = a@one > b@two > c@three > d@four', 'HAIKU = h@one > h@two', 'AUTO = 1'].join('\n');
@@ -294,13 +297,18 @@ describe('#4427 — notes non représentables (rapportées, jamais inventées)',
         return payload;
     }
 
-    /** Réplique de `splitSteps` (failover.ts) : split sur `>`, trim, filtre des vides. */
-    const splitSteps = (value: string): string[] => value.split('>').map((s) => s.trim()).filter((s) => s !== '');
+    /**
+     * Réplique de `splitStepNotes` (claudish `failover.ts`, `34941b09` du
+     * 28/11) : split sur `>`, trim, TROUS GARDÉS. `a>>c` donne `['a','','c']` —
+     * `c` reste sur le barreau 2. Le filtrage des vides de l'ancien
+     * `splitSteps` est un runtime RÉVOLU pour `_NOTE` : le rejouer ici mentirait.
+     */
+    const splitStepNotes = (value: string): string[] => value.split('>').map((s) => s.trim());
 
     /** Notes réelles que le runtime lira, barreau par barreau (absent = `undefined`). */
     const runtimeRead = (payload: ReturnType<typeof noted>): Array<string | undefined> => {
         const written = renderCascadeEnv(payload)[`${CASCADE_ENV_PREFIX}SONNET_NOTE`] ?? '';
-        const read = splitSteps(written);
+        const read = splitStepNotes(written);
         return payload.roles.SONNET.steps.map((_, i) => read[i]?.trim() || undefined);
     };
 
@@ -324,12 +332,14 @@ describe('#4427 — notes non représentables (rapportées, jamais inventées)',
         ]);
     });
 
-    test('MUTANT — `a>>c` ne doit JAMAIS être écrit : le runtime filtre le vide et décale la note', () => {
+    test('MUTANT — l’écrivain s’arrête au trou ; le runtime POSITIONNEL lirait `a>>c` correctement', () => {
         const payload = noted(['a', undefined, 'c']);
+        // L'écriture positionnelle est représentable depuis claudish 34941b09
+        // (grain de suivi) : c'est l'ÉCRIVAIN qui laisse la note de côté, pas
+        // le runtime. Les deux moitiés sont figées ici, sinon une régression de
+        // l'une se cacherait derrière l'autre.
+        expect(splitStepNotes('a>>c')).toEqual(['a', '', 'c']);
         expect(renderCascadeEnv(payload)[`${CASCADE_ENV_PREFIX}SONNET_NOTE`]).toBe('a');
-        // Ce que le runtime ferait de la valeur « attendue » par le rapport :
-        // la note de c serait lue sur b — un barreau qui n'en porte aucune.
-        expect(splitSteps('a>>c')).toEqual(['a', 'c']);
         expect(reported(payload)).toEqual(['SONNET#2:after-hole']);
     });
 
@@ -344,13 +354,14 @@ describe('#4427 — notes non représentables (rapportées, jamais inventées)',
         ]);
     });
 
-    test('note BLANCHE : l’écrivain la compte, le runtime l’ignore — la note suivante est décalée', () => {
+    test('note BLANCHE : le runtime la lit comme absente à SA place — plus aucun décalage', () => {
         const payload = noted(['a', '   ', 'c']);
+        // L'ancien runtime filtrait la case blanche et posait `c` sur le
+        // barreau 1 (`shifted`) ; `splitStepNotes` la garde comme placeholder.
         expect(renderCascadeEnv(payload)[`${CASCADE_ENV_PREFIX}SONNET_NOTE`]).toBe('a>   >c');
-        expect(runtimeRead(payload)).toEqual(['a', 'c', undefined, undefined]);
-        // La note blanche n'est pas une note (le runtime la lit comme absente,
-        // ce qu'elle dit) : elle n'est pas rapportée. La note réelle décalée, si.
-        expect(reported(payload)).toEqual(['SONNET#2:shifted']);
+        expect(runtimeRead(payload)).toEqual(['a', undefined, 'c', undefined]);
+        // La note blanche n'est pas une note, et elle ne décale plus rien.
+        expect(reported(payload)).toEqual([]);
     });
 
     test('une note VIDE au milieu est un trou comme un autre — rien n’est inventé', () => {

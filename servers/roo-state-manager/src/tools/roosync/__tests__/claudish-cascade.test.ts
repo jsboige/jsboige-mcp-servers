@@ -328,10 +328,12 @@ describe('compare / status — trois surfaces, jamais fusionnées', () => {
  *
  * Rapport po-2025:claudish (27/11) : une note au 2ᵉ barreau et rien au 1ᵉʳ
  * n'arrive sur aucun siège — et rien ne le disait. L'écrivain s'arrête au trou
- * DÉLIBÉRÉMENT (le runtime lit `_NOTE` avec `splitSteps`, qui FILTRE les vides :
- * un `a>>c` décalerait la note sur le mauvais barreau). Ce qui manquait n'est
- * pas l'écriture — c'est la VISIBILITÉ : l'instrument rapporte désormais chaque
- * note laissée de côté, sans jamais inventer de valeur dans le `.env`.
+ * DÉLIBÉRÉMENT : depuis claudish `34941b09` le runtime lit `_NOTE`
+ * POSITIONNELLEMENT (un trou est un placeholder, `a>>c` garde sa place), donc
+ * l'écriture positionnelle est représentable — mais elle est un grain de suivi,
+ * pas cette PR. Ce qui manquait n'est pas l'écriture — c'est la VISIBILITÉ :
+ * l'instrument rapporte désormais chaque note laissée de côté, sans jamais
+ * inventer de valeur dans le `.env`.
  */
 const GAP_NOTE = 'note du 2e barreau';
 
@@ -378,7 +380,7 @@ describe('notes non représentables — rapportées, jamais inventées', () => {
         expect('unrepresentable_notes' in published).toBe(false);
     });
 
-    test('apply (dry_run) : la note à trou n’est PAS inventée en `>>`, et elle est rapportée', async () => {
+    test('apply (dry_run) : la note à trou n’est pas écrite (écriture positionnelle = grain de suivi) et elle est rapportée', async () => {
         await publishGapped();
         const result = (await roosyncClaudishCascade({
             action: 'apply',
@@ -386,6 +388,9 @@ describe('notes non représentables — rapportées, jamais inventées', () => {
             now: T0,
         })) as Record<string, unknown>;
         const keys = (result.would_write as Array<{ key: string }>).map((w) => w.key);
+        // Depuis claudish 34941b09 l'écriture positionnelle (`a>>c`) serait lue
+        // correctement ; l'écrivain ne la fait pas encore — la note n'est donc
+        // pas écrite, et c'est ce que le diagnostic rend visible.
         expect(keys).not.toContain('CLAUDISH_FAILOVER_SONNET_NOTE');
         const dropped = result.unrepresentable_notes as Array<Record<string, unknown>>;
         expect(dropped.map((d) => `${String(d.role)}#${String(d.index)}`)).toEqual(['SONNET#1']);
