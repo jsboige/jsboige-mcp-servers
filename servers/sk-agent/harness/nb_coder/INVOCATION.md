@@ -268,8 +268,14 @@ du driver, donc une valeur non entière ou < 1 refuse **tout** point d'entrée q
 - un `retry` **rajoute** la ligne si elle a quitté la file et la retient dans
   `fed_lines.json` ;
 - un grain `deferred` ne compte pas contre `CAP` ;
-- aucune ligne que le chargeur fermé du scheduler refuserait (champ inconnu, type faux)
-  n'entre dans la file : elle est jetée et journalisée, la file reste chargeable ;
+- aucune ligne que le chargeur fermé du scheduler refuserait n'entre dans la file : c'est
+  **son propre chargeur** (`nb_coder_scheduler.load_queue`) qui la juge, pas une seconde liste
+  de règles tenue à la main — champ inconnu, type faux, mais aussi `issue` ou `notebook`
+  manquant, chemin hors du dépôt, combinaisons interdites (`from_spec`/`claim_late`,
+  `revise_from`/`verify_from`) ;
+- cette vérification a lieu **à l'entrée de `pending.jsonl`**, avant tout appel GitHub
+  (`rejected <issue> bad-line <défaut> <ligne>`, `rejected unparseable-line …`) : une ligne
+  fausse qui attendrait dans `pending` tuerait le démon au poll suivant (revue du 28/11) ;
 - aucune page déjà dans `specs.txt` du kit n'est republiée, aucune feuille livrée rouverte.
 
 ### 7.4 Une ligne d'unfold ne tue jamais le démon (revue du 27/11)
@@ -289,3 +295,29 @@ connaître pour lire `feeder.log` :
   reste et le même message revient à chaque poll : c'est au kit de corriger son index, pas au
   feeder de deviner. Une page publiée *avant* la ligne d'attente (sans la marque) reste
   jetée : `unfold-rejected page-already-published`.
+
+### 7.5 Une réouverture écrit son commentaire avant de changer l'état (revue du 28/11)
+
+Une réouverture de feuille (`unfold.kind = reopen`) écrit deux fois sur GitHub : le
+**commentaire** `**Redépliée (c0021)** — … prise par le tapis nb_coder de la lane <lane>`,
+puis le passage de la feuille en `open`. **Le commentaire va toujours en premier** : il nomme
+la lane, c'est la seule marque qui dise, au poll suivant, si une feuille ouverte est *notre*
+réouverture. L'état va en dernier : une coupure entre les deux (limite secondaire, démon
+tué) laisse une feuille **fermée portant notre commentaire**, que le poll suivant termine
+sans second commentaire. L'ordre inverse laissait une feuille **ouverte sans commentaire**,
+indiscernable d'une feuille rouverte par une autre lane : le poll suivant la jetait
+`reopen-already-open` — feuille rouverte, sans commentaire, sans coche du lot, sans grain.
+
+`leaf_verdict` lit `reopened_by` : la lane nommée par le dernier commentaire de réouverture
+de la feuille. Pour une feuille **ouverte**, trois cas :
+
+- sans notre commentaire → `reopen-already-open`, **jetée** : une autre lane l'a rouverte, on
+  ne la prend pas et on ne commente pas deux fois ;
+- avec notre commentaire → notre réouverture, finie ou interrompue : la ligne est nourrie,
+  sans aucune écriture sur la feuille (la règle du scheduler sur les grains connus fait le
+  reste) ;
+- avec notre commentaire **puis** un `[CLAIMED]` d'une autre lane →
+  `reopen-held-by-another-lane`, jetée : la tenue se lit après la marque.
+
+Tests : `test_nb_coder_unfold.py` (`Seat`), `test_nb_coder_feeder.py` (`ReopenSeat`),
+`test_nb_coder_leaf_check.py` (`test_a_reopen_comment_names_the_lane_that_reopened_the_leaf`).

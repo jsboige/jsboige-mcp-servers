@@ -39,6 +39,12 @@ RUST_PATH_RE = re.compile(r"MyIA\.AI\.Notebooks/\S+?-Rust\.ipynb")
 PARENT_RE = re.compile(r"Parent\s*:\s*#(\d+)")
 DEP_RE = re.compile(r":dep\s+\S+")
 
+# The reopen comment nb_coder_unfold.py posts on a leaf it unfolds again. It is that
+# module's idempotency mark: a resume finds it and does not post a second one. The head
+# lives here, with the reader, so the two cannot drift.
+REOPEN_HEAD = "**Redépliée (c0021)**"
+REOPEN_RE = re.compile(re.escape(REOPEN_HEAD) + r"(?s:.*)\blane (\S+?)\.?\s*$")
+
 CLAIMED, RELEASED, DELIVERED = "CLAIMED", "RELEASED", "DELIVERED"
 
 
@@ -97,6 +103,16 @@ def holder_of(marks: list[tuple[str, str]], lane: str) -> str | None:
     return None
 
 
+def reopened_by(bodies: list[str]) -> str | None:
+    """The lane named by the last reopen comment on the leaf, or None when there is none.
+
+    A leaf carrying this lane's reopen comment is that lane's own reopen (finished, or
+    interrupted before its state change). An OPEN leaf without it was opened by someone
+    else: the reopen posts its comment first for exactly that reason (review 28/11)."""
+    lanes = [m.group(1) for b in bodies if (m := REOPEN_RE.match(b.strip()))]
+    return lanes[-1] if lanes else None
+
+
 def target_path(body: str) -> str | None:
     paths = RUST_PATH_RE.findall(body or "")
     return paths[0] if paths else None
@@ -132,6 +148,7 @@ def leaf_verdict(issue: int, *, gh, tree, lane: str, repo: str = "jsboige/CoursI
         "delivered_marker": delivered_of(marks),
         "held_by": held,
         "last_marker": marks[-1] if marks else None,
+        "reopened_by": reopened_by(bodies),
         "target": target,
         "rust_on_main": (target in tree) if target else None,
         "source_on_main": (src in tree) if src else None,

@@ -35,6 +35,22 @@ def issue(state="open", body=f"Cible : {RUST}"):
     return {"number": 1, "title": "Sudoku port", "state": state, "body": body, "comments": 1}
 
 
+def test_a_reopen_comment_names_the_lane_that_reopened_the_leaf():
+    # The unfold's idempotency mark (review 28/11, defect B): read on the live leaf, it says
+    # whether an open leaf is OUR reopen (to resume) or another lane's (never to take).
+    body = ("**Redépliée (c0021)** — le lot #5 est repassé sous 2 feuilles ouvertes non livrées "
+            "(mesure REST : aucune). La page et son script de rejeu ci-dessus restent valables ; "
+            "prise par le tapis nb_coder de la lane me:lane.")
+    v = L.leaf_verdict(1, gh=gh_factory(issue(), [body]), tree={PY}, lane="me:lane")
+    assert v["reopened_by"] == "me:lane" and L.reject_reason(v) is None
+    v = L.leaf_verdict(1, gh=gh_factory(issue(), [body.replace("me:lane", "other:lane")]),
+                       tree={PY}, lane="me:lane")
+    assert v["reopened_by"] == "other:lane"          # another lane's reopen: not ours
+    v = L.leaf_verdict(1, gh=gh_factory(issue(), ["[CLAIMED] lane other"]), tree={PY},
+                       lane="me:lane")
+    assert v["reopened_by"] is None                  # a claim marker is not a reopen
+
+
 def test_a_free_leaf_is_feedable():
     v = L.leaf_verdict(1, gh=gh_factory(issue()), tree={PY}, lane="me:lane")
     assert v["feedable"] is True and v["target"] == RUST and v["source_on_main"] is True

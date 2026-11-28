@@ -393,11 +393,141 @@ def test_trap5_an_unreadable_tree_keeps_an_unfold_line_and_the_daemon_survives(t
     def boom():
         raise RuntimeError("git ls-tree origin/main down")
 
-    feeder, q, p, _ = make(tmp_path, pending=[{"issue": 12, "unfold": {
-        "kind": "reopen", "lot": 5, "pli": "Alpha page"}}], unfold=NoCall(), tree=boom)
+    feeder, q, p, _ = make(tmp_path, pending=[{"issue": 12, "notebook": "Dir/N12-Rust.ipynb",
+                                               "unfold": {"kind": "reopen", "lot": 5,
+                                                          "pli": "Alpha page"}}],
+                           unfold=NoCall(), tree=boom)
     assert feeder.poll() is None                    # an exception here used to kill the daemon
     assert lines(q) == [] and len(lines(p)) == 1    # kept, re-measured next poll
     assert "unfold-unmeasured" in log_text(tmp_path)
+
+
+# ---------------------------------------------------------------- hand-edited pending (review 28/11, A)
+@pytest.mark.parametrize("line, why", [
+    # Measured by the reviewer: valid JSON, no notebook -> KeyError raised OUT of poll(),
+    # no log line, the process dead.
+    ({"issue": 9}, "missing field(s) ['notebook']"),
+    ({"notebook": "Dir/N1.ipynb"}, "missing field(s) ['issue']"),
+    ({"issue": "abc", "notebook": "Dir/N1.ipynb"}, "issue must be a positive integer"),
+    # Rules the scheduler's closed loader applies to the whole file: one such line in the
+    # queue takes the conveyor down, so it must not be fed.
+    ({"issue": 9, "notebook": "C:/abs/N9.ipynb"}, "notebook must be repo-relative"),
+    ({"issue": 9, "notebook": "Dir/N9.ipynb", "claim_late": True, "claim": False},
+     "claim_late defers claim: claim false contradicts it"),
+    # Never due, never logged: the feeder could not reach PENDING-EMPTY.
+    ({"issue": 12, "unfold": {"kind": "reopen", "pli": "Alpha page"}}, "unfold needs an integer lot"),
+    ({"issue": 12, "unfold": "reopen"}, "unfold needs an integer lot"),
+    # A reopen queues the leaf itself: without its notebook the leaf would be reopened and
+    # the comment would announce a grain that never enters the queue.
+    ({"issue": 12, "unfold": {"kind": "reopen", "lot": 5, "pli": "Alpha page"}},
+     "missing field(s) ['notebook']"),
+])
+def test_a_shapeless_pending_line_is_rejected_at_the_entrance(tmp_path, line, why):
+    # pending.jsonl is hand-edited (INVOCATION.md §7.2). The check is the scheduler's own
+    # loader, applied before any live read and before any write.
+    feeder, q, p, calls = make(tmp_path, pending=[line, {"issue": 3, "notebook": "Dir/N3.ipynb"}],
+                               verdicts={3: feedable(3)})
+    assert feeder.poll() is None                    # this used to kill the daemon
+    assert lines(p) == []                           # dropped, and the sound line behind it consumed
+    assert [x["issue"] for x in lines(q)] == [3]    # the sound line behind it was fed
+    assert calls == [3]                             # the shapeless one never reached a live read
+    head = f"rejected {line.get('issue', '?')} bad-line "
+    rejected = [l.split("Z ", 1)[1] for l in log_text(tmp_path).splitlines()
+                if f"Z {head}" in l]
+    assert len(rejected) == 1 and rejected[0].startswith(head + why)
+
+
+def test_the_queue_the_feeder_writes_is_one_the_scheduler_loads(tmp_path):
+    # The invariant from the entrance to the queue: what the feeder writes, the closed
+    # loader accepts. Measured on the file itself, with the real loader.
+    good = [{"issue": 3, "notebook": "Dir/N3.ipynb"}, {"issue": 4, "notebook": "Dir/N4.ipynb"}]
+    feeder, q, p, _ = make(tmp_path, pending=[
+        {"issue": 9}, {"issue": 5, "notebook": "C:/abs/N5.ipynb"}, *good],
+        verdicts={3: feedable(3), 4: feedable(4)}, cap=5)
+    feeder.poll()
+    feeder.poll()
+    assert [x["issue"] for x in lines(q)] == [3, 4]
+    items, _ = S.load_queue(q)                      # QueueError here = the conveyor is down
+    assert [x["issue"] for x in items] == [3, 4]
+
+
+def test_scheduler_line_refuses_what_the_scheduler_refuses():
+    # The rules are the loader's, not a second list: a missing field is refused, and the
+    # message is the loader's own without its line-number prefix.
+    with pytest.raises(ValueError, match=r"missing field\(s\) \['notebook'\]"):
+        F.scheduler_line({"issue": 1})
+    with pytest.raises(ValueError) as exc:
+        F.scheduler_line({"issue": 1, "notebook": "Dir/N1.ipynb", "bogus": 1})
+    assert exc.exconly() == "ValueError: unknown field(s) ['bogus']"
+
+
+class ReopenSeat:
+    """A fake GitHub holding ONE folded leaf (#9, of lot #5) and recording every write.
+    ``fail_state_once`` makes the first state change raise, as a secondary rate limit does."""
+
+    def __init__(self, *, fail_state_once=False):
+        self.open, self.comments, self.rec = False, [], []
+        self.fail_state_once, self.ticked = fail_state_once, False
+
+    def __call__(self, *a):
+        a = tuple(map(str, a))
+        self.rec.append(a)
+        j = " ".join(a)
+        if "search/issues" in j:
+            return {"items": []}
+        if "/comments" in j:
+            if "POST" in j:
+                body = json.loads(Path(a[a.index("--input") + 1]).read_text(encoding="utf-8"))
+                self.comments.append(body["body"])
+                return {}
+            return [{"body": b} for b in self.comments]
+        if "issues/5" in j:
+            if "PATCH" in j:
+                self.ticked = True                # the lot: the fold is ticked
+            return {"body": "- [ ] Beta page\n"}
+        if "issues/9" in j:
+            if "PATCH" in j:
+                if self.fail_state_once:
+                    self.fail_state_once = False
+                    raise RuntimeError("gh api: secondary rate limit hit")
+                self.open = True
+                return {}
+            return {"state": "open" if self.open else "closed",
+                    "body": "Cible : MyIA.AI.Notebooks/Dir/N9-Rust.ipynb",
+                    "comments": len(self.comments)}
+        return {}
+
+    def writes(self):
+        """(verb, path) of every write on the leaf or the fold, in order."""
+        out = []
+        for a in self.rec:
+            if len(a) < 3 or a[0] != "-X" or a[1] not in ("POST", "PATCH"):
+                continue
+            out.append((a[1], a[2].split("CoursIA/")[-1]))
+        return out
+
+
+def test_a_reopen_cut_between_its_two_writes_is_finished_never_dropped(tmp_path):
+    # Review 28/11, defect B, replayed through the daemon. Measured by the reviewer with the
+    # state change first: poll#1 kept the line, poll#2 read the leaf as 'already-open' and
+    # dropped it — a leaf reopened with no comment, no fold tick and no grain, all silent.
+    U = _load("nb_coder_unfold")
+    seat = ReopenSeat(fail_state_once=True)
+    feeder, q, p, _ = make(tmp_path, gh=seat, unfold=U, pending=[
+        {"issue": 9, "notebook": "Dir/N9-Rust.ipynb",
+         "unfold": {"kind": "reopen", "lot": 5, "pli": "Beta page"}}])
+    assert feeder.poll() is None                    # the cut: kept, nothing decided on a guess
+    assert len(lines(p)) == 1 and seat.ticked is False
+    assert seat.open is False and len(seat.comments) == 1    # closed, but carrying our mark
+    assert "unfold-unmeasured 9" in log_text(tmp_path)
+    assert seat.writes() == [("POST", "issues/9/comments"), ("PATCH", "issues/9")]
+    assert feeder.poll() is None                    # the resume
+    assert [x["issue"] for x in lines(q)] == [9] and lines(p) == []
+    assert seat.open is True and seat.ticked is True
+    assert len(seat.comments) == 1                  # the mark was found: no second comment
+    assert seat.writes()[2:] == [("PATCH", "issues/9"), ("PATCH", "issues/5")]
+    assert "reopen-already-open" not in log_text(tmp_path)
+    assert "unfold-reopen-comment 9" in log_text(tmp_path)
 
 
 def test_a_published_page_whose_line_never_came_is_resumed_not_dropped(tmp_path):

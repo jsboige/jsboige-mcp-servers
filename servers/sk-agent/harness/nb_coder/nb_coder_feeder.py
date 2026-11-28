@@ -31,6 +31,10 @@ Ported from the lane-local feeder/feeder.py (#1913). Preserved, each one a regre
 * trap 5 — every pending line is validated on LIVE data just before feeding;
 * trap 6 — a stale reserve is therefore harmless: its delivered lines are dropped, and
   ``nb_coder_reserve.py`` rebuilds a fresh one rather than trusting a stored list;
+* entrance — a pending line is judged by the scheduler's OWN closed loader before it enters
+  ``pending.jsonl`` and before any GitHub call; a line that loader refuses (missing or
+  unknown field, wrong type, forbidden combination) is dropped and logged, never awaited
+  (review 28/11: it used to escape ``poll()`` and kill the daemon at the next poll);
 * every 30 min a drift sweep (``nb_coder_drift.py``, the sibling in THIS tree); a NEW flag
   ends the feeder for the operator;
 * a transient verdict re-offers the grain ONCE by the feeder; a qualification pause
@@ -53,6 +57,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,8 +87,8 @@ def key(item: dict) -> tuple[int, str]:
     return (int(item["issue"]), item["notebook"])
 
 
-def _scheduler_fields() -> dict:
-    """The scheduler's closed queue schema, read from the sibling so the two cannot drift."""
+def _scheduler_module():
+    """The sibling scheduler module, loaded once per process."""
     name = "nb_coder_scheduler"
     mod = sys.modules.get(name)
     if mod is None:
@@ -91,22 +96,63 @@ def _scheduler_fields() -> dict:
         mod = importlib.util.module_from_spec(spec)
         sys.modules[name] = mod
         spec.loader.exec_module(mod)
-    return mod.ITEM_FIELDS
+    return mod
 
 
 def scheduler_line(item: dict) -> str:
-    """The queue line for ``item``: feeder-only fields stripped, unknown fields and wrong
-    field types refused — a line the scheduler's closed loader would reject must never be
-    written, or it takes the whole conveyor down."""
+    """The queue line for ``item``: feeder-only fields stripped, and the line VALIDATED by
+    the scheduler's own closed loader.
+
+    The loader raises on the WHOLE file it is given, so a line it refuses must never reach
+    the queue: it would take the whole conveyor down, not only that grain. The rules are
+    read from the loader itself, so the two cannot drift — the feeder used to re-implement
+    two of them (unknown field, wrong type) and miss the others (missing ``issue`` or
+    ``notebook``, a non-positive issue, a notebook that is not repo-relative, the
+    from_spec/meta_from/claim_late combinations)."""
     clean = {k: v for k, v in item.items() if k not in FEEDER_ONLY_FIELDS}
-    fields = _scheduler_fields()
-    unknown = sorted(set(clean) - set(fields))
-    if unknown:
-        raise ValueError(f"unknown queue field(s) {unknown}")
-    for k, ty in fields.items():
-        if k in clean and not isinstance(clean[k], ty):
-            raise ValueError(f"field {k} must be {ty.__name__}")
-    return json.dumps(clean, ensure_ascii=False) + "\n"
+    line = json.dumps(clean, ensure_ascii=False) + "\n"
+    _scheduler_refuses(line)
+    return line
+
+
+def _scheduler_refuses(line: str) -> None:
+    """Raise ValueError when the scheduler's closed loader refuses ``line``."""
+    mod = _scheduler_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / "queue.jsonl"
+        p.write_text(line, encoding="utf-8", newline="")
+        try:
+            mod.load_queue(p)
+        except mod.QueueError as exc:
+            raise ValueError(str(exc).replace("queue line 1: ", "")) from exc
+
+
+def line_defect(item: dict) -> str | None:
+    """Why a parsed pending line can never be fed, or None.
+
+    ``pending.jsonl`` is hand-edited (INVOCATION.md §7.2), so its shape is checked at the
+    entrance. A grain line without ``notebook`` raised ``KeyError`` out of ``offer_grain``
+    and killed the daemon with no log line; an unfold line without an integer ``lot`` could
+    never become due, so the feeder never reached PENDING-EMPTY (review 28/11, defect A).
+    A grain line is measured with the scheduler's own closed loader — the same check that
+    would have refused it in the queue — and a reopen is measured on the line it queues
+    (the leaf itself), so a reopen without its notebook is refused BEFORE it writes
+    anything."""
+    if "unfold" in item:
+        u = item["unfold"]
+        if not isinstance(u, dict) or not isinstance(u.get("lot"), int):
+            return "unfold needs an integer lot"
+        if u.get("kind") == "reopen":
+            try:
+                scheduler_line({k: v for k, v in item.items() if k != "unfold"})
+            except ValueError as exc:
+                return str(exc)
+        return None
+    try:
+        scheduler_line(item)
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
 def utc_stamp(epoch: float) -> str:
@@ -338,6 +384,9 @@ class Feeder:
                                          now=self.clock(), repo=self.repo))
 
     def prune_bad_lines(self, pend: list[str]) -> list[str]:
+        """Unparseable lines and shapeless ones (``line_defect``) leave the list, each with
+        its own log line; the rest keeps its order. A shapeless line is a hand-edit, not a
+        transient fault: it is dropped, never replayed."""
         good, bad = [], []
         for l in pend:
             try:
@@ -345,11 +394,15 @@ class Feeder:
                 if not isinstance(d, dict):
                     raise ValueError("not a JSON object")
             except ValueError:
-                bad.append(l)
+                bad.append(f"unparseable-line {l[:80]!r}")
+                continue
+            defect = line_defect(d)
+            if defect:
+                bad.append(f"{d.get('issue', '?')} bad-line {defect} {l[:80]!r}")
             else:
                 good.append(l)
-        for l in bad:
-            self.log(f"rejected unparseable-line {l[:80]!r}")
+        for why in bad:
+            self.log(f"rejected {why}")
         if bad:
             self.write_pending(good)
         return good
@@ -520,7 +573,10 @@ class Feeder:
 
     def offer_grain(self, item: dict, pend: list[str], idx: int, st: dict) -> None:
         """Offer one due grain line: feed, retry, or drop it. The pending line always leaves
-        the list unless the live data could not be read."""
+        the list unless the live data could not be read.
+
+        ``item`` comes through ``prune_bad_lines``: a line the scheduler's loader refuses
+        was dropped there, so ``key(item)`` cannot raise here (review 28/11, defect A)."""
         k = key(item)
         rest = pend[:idx] + pend[idx + 1:]
         v, reason = self.live_verdict(k[0], item)       # trap 5: live data just before feeding

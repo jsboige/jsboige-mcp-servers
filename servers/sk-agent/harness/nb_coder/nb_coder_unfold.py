@@ -18,9 +18,15 @@ fold is ticked in the lot issue.
 Added by the port (trap 4, the measured stale-reserve replays): the rejection guards. A
 publish whose spec key is already in the kit's ``specs.txt`` is DROPPED (the local re-ran
 ``publish.py`` and re-posted a byte-identical lot comment). A reopen of a leaf that is
-already open, delivered, held by another lane, or whose Rust target is already on
-origin/main is DROPPED (the local reopened a leaf another lane had delivered). A dropped
-item is removed from pending; a deferred/failed one is kept for the next poll.
+already open without this lane's reopen comment, delivered, held by another lane, or whose
+Rust target is already on origin/main is DROPPED (the local reopened a leaf another lane had
+delivered). A dropped item is removed from pending; a deferred/failed one is kept for the
+next poll.
+
+A reopen writes its comment BEFORE the state change (review 28/11): the comment names the
+lane, so an open leaf carrying it is this lane's own reopen — finished, or interrupted
+between the two writes — and the remaining work is resumed instead of dropped as another
+lane's.
 """
 from __future__ import annotations
 
@@ -100,14 +106,14 @@ def specs_published(kit_pub: str | Path, key: str) -> bool:
     return any(line.split() and line.split()[0] == key for line in text.splitlines())
 
 
-def reopen_guard(item: dict, *, gh, tree, lane: str,
-                 repo: str = "jsboige/CoursIA") -> str | None:
-    """The DROP reason for a reopen, or None. An already-open leaf is refused so no duplicate
-    comment is posted; a delivered/held/on-main leaf is refused so delivered work is never
-    replayed (trap 4)."""
-    n = item["issue"]
-    v = leaf.leaf_verdict(n, gh=gh, tree=tree, lane=lane, repo=repo)
-    if v["state"] == "open":
+def reopen_reason(v: dict, lane: str) -> str | None:
+    """The DROP reason for reopening the leaf whose live picture is ``v``, or None.
+
+    An already-open leaf is refused so no duplicate comment is posted — UNLESS this lane's
+    own reopen comment is on it: then the leaf is our reopen (finished, or interrupted
+    before its state change) and the remaining work is resumed, not refused. A
+    delivered/held/on-main leaf is refused so delivered work is never replayed (trap 4)."""
+    if v["state"] == "open" and v.get("reopened_by") != lane:
         return "already-open"
     if v["delivered_marker"]:
         return "delivered"
@@ -205,27 +211,41 @@ def do(item: dict, *, log, gh, cache: dict, now: float, lane: str, tmpdir: str |
             return UnfoldResult("failed", None, "no-queue-line", published=True)
         out = rows[0]
     elif kind == "reopen":
+        # The leaf's live picture, read once: the guard AND the resume memory. The reopen
+        # comment names this lane, so the live leaf says whether a reopen is ours — no local
+        # flag, which a daemon death would lose in between the two writes.
         try:
-            reason = reopen_guard(item, gh=gh, tree=tree, lane=lane, repo=repo)
-        except Exception as exc:
+            v = leaf.leaf_verdict(item["issue"], gh=gh, tree=tree, lane=lane, repo=repo)
+        except Exception as exc:                   # unreadable live data: keep, never guess
             log(f"unfold-unmeasured reopen #{item.get('issue')} {str(exc)[:120]}")
             return UnfoldResult("deferred", None, "unmeasured")
+        reason = reopen_reason(v, lane)
         if reason:
             log(f"unfold-rejected reopen-{reason} #{item['issue']}")
             return UnfoldResult("dropped", None, f"reopen-{reason}")
         n = item["issue"]
-        body = ("**Redépliée (c0021)** — le lot #%d est repassé sous %d feuilles ouvertes non "
+        body = (leaf.REOPEN_HEAD + " — le lot #%d est repassé sous %d feuilles ouvertes non "
                 "livrées (mesure REST : %s). La page et son script de rejeu ci-dessus restent "
                 "valables ; prise par le tapis nb_coder de la lane %s."
                 % (u["lot"], MAX_OPEN, und or "aucune", lane))
-        payload = Path(tmpdir) / f"c_reopen_{n}.json"
-        payload.parent.mkdir(parents=True, exist_ok=True)
-        payload.write_text(json.dumps({"body": body}, ensure_ascii=False),
-                           encoding="utf-8", newline="")
-        gh("-X", "PATCH", f"repos/{repo}/issues/{n}", "-f", "state=open")
-        gh("-X", "POST", f"repos/{repo}/issues/{n}/comments", "--input", str(payload))
+        # TWO writes, ordered so that an interruption is visible and resumable (review 28/11,
+        # defect B). The COMMENT goes first: it is this lane's mark, so a resume finds it and
+        # never posts a second one. The STATE goes last: a failure there leaves a closed leaf
+        # carrying the reopen comment, which the next poll finishes. The other order left an
+        # OPEN leaf with no comment — indistinguishable from a leaf another lane reopened, so
+        # the next poll dropped the line as 'already-open': leaf reopened, no comment, no fold
+        # tick, no grain, all silent.
+        if v.get("reopened_by") != lane:
+            payload = Path(tmpdir) / f"c_reopen_{n}.json"
+            payload.parent.mkdir(parents=True, exist_ok=True)
+            payload.write_text(json.dumps({"body": body}, ensure_ascii=False),
+                               encoding="utf-8", newline="")
+            gh("-X", "POST", f"repos/{repo}/issues/{n}/comments", "--input", str(payload))
+            log(f"unfold-reopen-comment {n}")
+        if v["state"] != "open":
+            gh("-X", "PATCH", f"repos/{repo}/issues/{n}", "-f", "state=open")
         log(f"unfold-reopen {n}")
-        out = {k: v for k, v in item.items() if k != "unfold"}
+        out = {fk: fv for fk, fv in item.items() if fk != "unfold"}
     else:
         log(f"unfold-rejected unknown-kind {kind}")
         return UnfoldResult("dropped", None, f"unknown-kind {kind}")

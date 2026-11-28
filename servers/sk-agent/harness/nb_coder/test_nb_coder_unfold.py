@@ -10,6 +10,7 @@ The room is measured on a fake REST; publish/feeder_lines/gh are spies, so a rej
 unfold can be shown to post nothing (no duplicate lot comment, no reopen of delivered work).
 """
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -253,3 +254,109 @@ def test_a_publish_whose_kit_lost_the_key_publishes_again(tmp_path):
                cache={}, now=1.0, lane="me:lane", tmpdir=tmp_path, publish=pub,
                feeder_lines=fl)
     assert res.action == "fed" and len(pub.calls) == 1
+
+
+# ---------------------------------------------------------------- a reopen in two writes (review 28/11, B)
+class Seat:
+    """A fake GitHub holding ONE folded leaf (#9, of lot #5) and recording every call.
+    ``fail_state_once`` makes the first state change raise, as a secondary rate limit does."""
+
+    def __init__(self, *, state="closed", comments=(), fail_state_once=False):
+        self.state, self.comments, self.rec = state, list(comments), []
+        self.fail_state_once = fail_state_once
+
+    def __call__(self, *a):
+        a = tuple(map(str, a))
+        self.rec.append(a)
+        j = " ".join(a)
+        if "search/issues" in j:
+            return {"items": []}
+        if "/comments" in j:
+            if "POST" in j:
+                payload = Path(a[a.index("--input") + 1]).read_text(encoding="utf-8")
+                self.comments.append(json.loads(payload)["body"])
+                return {}
+            return [{"body": b} for b in self.comments]
+        if "issues/5" in j:
+            return {"body": "- [ ] Beta page\n"}
+        if "issues/9" in j:
+            if "PATCH" in j:
+                if self.fail_state_once:
+                    self.fail_state_once = False
+                    raise RuntimeError("gh api: secondary rate limit hit")
+                self.state = "open"
+                return {}
+            return {"state": self.state, "body": f"Cible : {RUST}",
+                    "comments": len(self.comments)}
+        return {}
+
+    def writes(self):
+        """Every write on the leaf and the fold, in order."""
+        out = []
+        for c in self.rec:
+            if len(c) < 3:                       # a bare read: gh("repos/<repo>/issues/<n>")
+                continue
+            if c[1] == "POST" and "/comments" in c[2]:
+                out.append("comment")
+            elif c[1] == "PATCH" and "issues/9" in c[2]:
+                out.append("state")
+            elif c[1] == "PATCH" and "issues/5" in c[2]:
+                out.append("fold")
+        return out
+
+
+def reopen_comment(lane):
+    return ("**Redépliée (c0021)** — le lot #5 est repassé sous 2 feuilles ouvertes non livrées "
+            "(mesure REST : aucune). La page et son script de rejeu ci-dessus restent valables ; "
+            f"prise par le tapis nb_coder de la lane {lane}.")
+
+
+def run(seat, tmp_path):
+    return U.do(item_reopen(), log=lambda m: None, gh=seat, cache={}, now=1.0, lane="me:lane",
+                tmpdir=tmp_path, tree=set())
+
+
+def test_a_reopen_writes_its_comment_before_it_changes_the_state(tmp_path):
+    # Review 28/11, defect B. The state used to go first: a failure on the comment then left
+    # an OPEN leaf with no comment, and the resume read it as a leaf another lane reopened.
+    seat = Seat()
+    assert run(seat, tmp_path).action == "fed"
+    assert seat.writes() == ["comment", "state", "fold"]
+    assert seat.comments == [reopen_comment("me:lane")]     # byte-identical to the earlier form
+
+
+def test_a_reopen_cut_after_its_comment_is_resumed_without_a_second_comment(tmp_path):
+    seat = Seat(fail_state_once=True)
+    with pytest.raises(RuntimeError, match="secondary rate limit"):
+        run(seat, tmp_path)
+    # Nothing is hidden: the leaf is still closed and carries our comment, so the cut shows.
+    assert seat.state == "closed" and seat.comments == [reopen_comment("me:lane")]
+    assert seat.writes() == ["comment", "state"]
+    res = run(seat, tmp_path)                              # the next poll
+    assert res.action == "fed" and res.out["issue"] == 9
+    assert seat.state == "open" and len(seat.comments) == 1
+    assert seat.writes() == ["comment", "state", "state", "fold"]
+
+
+def test_an_open_leaf_with_another_lanes_reopen_comment_is_dropped(tmp_path):
+    seat = Seat(state="open", comments=[reopen_comment("other:lane")])
+    res = run(seat, tmp_path)
+    assert res.action == "dropped" and res.reason == "reopen-already-open"
+    assert seat.writes() == [] and len(seat.comments) == 1
+
+
+def test_an_open_leaf_with_our_reopen_comment_is_resumed_with_no_write_on_it(tmp_path):
+    # Our reopen is finished (the daemon died before consuming the line): nothing is posted
+    # twice, the line is fed and the scheduler's own known-grain rule does the rest.
+    seat = Seat(state="open", comments=[reopen_comment("me:lane")])
+    res = run(seat, tmp_path)
+    assert res.action == "fed" and res.out == {"issue": 9}
+    assert [w for w in seat.writes() if w != "fold"] == []
+    assert len(seat.comments) == 1
+
+
+def test_a_leaf_we_reopened_that_another_lane_claimed_since_is_not_taken(tmp_path):
+    seat = Seat(state="open", comments=[reopen_comment("me:lane"), "[CLAIMED] lane other:lane"])
+    res = run(seat, tmp_path)
+    assert res.action == "dropped" and res.reason == "reopen-held-by-another-lane"
+    assert seat.writes() == []
