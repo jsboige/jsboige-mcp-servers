@@ -777,7 +777,8 @@ def _stage5_kernel_delivery(tmp_path, monkeypatch, rec, create_mode=None):
     if create_mode is not None:
         rec["create_mode"] = {"source": "Series/Planners-05c-Python.ipynb",
                               "target": nb_rel}
-        monkeypatch.setattr(d, "stage5_source_drift", lambda *a: {"drift": "none"})
+        # keyword-tolerant: stage5_pr measures the drift with rebase/base_rev/old_blob (#1885)
+        monkeypatch.setattr(d, "stage5_source_drift", lambda *a, **k: {"drift": "none"})
 
         def register_pair(w, s, n, lane, facts=None):
             sent["facts"] = facts

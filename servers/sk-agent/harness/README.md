@@ -86,6 +86,27 @@ and it never speaks for a resume (`--revise-from` / `--verify-from` read their c
 mode from the trace). `NBCODER_PREFLIGHT_CREDENTIALS=0` disables the credential check
 alone, for a seat whose endpoint deliberately serves without a key.
 
+## Resuming a run
+
+Two flags re-enter a trace, and each reads its creation mode from it (a resume is never
+asked `--from-spec` / `--source-nb` / `--meta-from`, and the two flags exclude each
+other):
+
+- `--revise-from <trace>`: a fresh model round on the draft the trace already built.
+- `--verify-from <trace>`: no model turn. On `verify-error` the scheduler requeues it
+  once by itself (`--verify-recoveries`, default 1). On a stage-5 refusal of an APPROVED
+  build -- `source-drifted`, `pr-branch-failed`, `pr-git-failed`, `pr-push-failed`,
+  `pr-repo-unresolved`, `pr-create-failed`, `pr-rebase-failed` -- it re-runs stage 5
+  alone, and **only a hand-written queue item reaches it**, one carrying
+  `verify_from: <trace>`; the scheduler never writes that line.
+
+The stage-5 resume is admitted on a proof that the build on disk is the one approved (the
+`sha256` bound at approval, or written by the graft); an older trace is held to its last
+verify record. It recreates its branch from today's `origin/main` and measures the drift
+from the build's own base, never from wherever a previous attempt left the worktree. Its
+push is leased: a resume from `pr-create-failed` finds the branch its previous attempt
+pushed and replaces it only while origin still sits on the commit recorded at that push.
+
 ## Requirements
 
 - Python 3.11+; the **sk-agent venv** is the intended interpreter (it carries `mcp`).

@@ -162,12 +162,21 @@ def test_late_reservation_gives_up_after_two_timeouts(monkeypatch, tmp_path):
     assert rec["verdict"] == f"late-claim-refused:{t}"
 
 
-def test_both_stage5_sites_go_through_late_reservation():
-    """The main path and the revision path each open a PR; neither may skip the gate."""
+def test_every_stage5_site_goes_through_late_reservation():
+    """The main path, the revision path and the stage-5-only resume (23/11) each open a
+    PR; none may skip the gate. Read per call site: the `if` it sits under names the gate."""
     for fn in (D.run, D.run_revision):
-        src = inspect.getsource(fn)
-        assert src.count("stage5_pr(") == 1
-        assert src.index("late_reservation(args, rec)") < src.index("stage5_pr(")
+        lines = inspect.getsource(fn).splitlines()
+        sites = [i for i, ln in enumerate(lines) if "stage5_pr(" in ln]
+        assert sites, fn.__name__
+        for i in sites:
+            j = i - 1
+            while not lines[j].lstrip().startswith(("if ", "if(")):
+                j -= 1
+                assert i - j <= 6, lines[i]        # the guard is right above, not pages up
+            guard = " ".join(ln.strip() for ln in lines[j:i])
+            assert "late_reservation(args, rec)" in guard, guard
+            assert guard.endswith(":"), guard
 
 
 # ---------------------------------------------------------------- revision path

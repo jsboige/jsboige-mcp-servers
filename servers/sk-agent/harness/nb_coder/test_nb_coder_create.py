@@ -559,6 +559,28 @@ def test_repair_prompt_contract():
 
 
 # ------------------------------------------------- prose authority + markdown repair (17/11 #27104)
+# ------------------------------------------- stochastic twin doctrine (23/11, fournée o11)
+def test_the_prompt_teaches_the_montecarlo_branch():
+    """o11 wipe (4× verify-reject + 1 refusal): the twin's stochastic cells were degraded
+    to « indisponible » placeholders because ALÉA NUMPY only offered the literal-array
+    branch (impossible for Monte-Carlo protocols) and TWIN_VALUES demanded « À
+    L'IDENTIQUE ». The merged twin ICT-15h IS the convention: port the protocol with a
+    seeded RNG, deterministic to the last digit, stochastic = own real results, gap
+    named. The prompt must teach both branches, and never leave « indisponible » as the
+    model's best move."""
+    seg = [{"idx": 1, "cell_type": "code", "titre": "langevin"}]
+    twin = [{"cell_type": "markdown", "source": "# t"},
+            {"cell_type": "code", "source": "rng = np.random.default_rng(0)\nprint(rng.normal(size=1500))"}]
+    p = D.creation_json_prompt(seg, 2, "", src_cells=twin)
+    assert "MONTE-CARLO" in p                       # the second branch exists
+    assert "PORTE LE PROTOCOLE" in p
+    assert "xorshift64*" in p                       # the merged-twin convention (#27734)
+    assert "tableau littéral" in p                  # the small-draws branch survives
+    assert "jamais de cellule « indisponible »" in p
+    v = D.TWIN_VALUES_RULE
+    assert "DÉTERMINISTE" in v and "TIRAGE" in v and "indisponible" in v
+
+
 def test_creation_json_prompt_injects_twin_prose():
     """The twin's markdown prose is handed to the builder VERBATIM — the model must
     COPY it, not regenerate it (regenerated prose came back corrupted: Cyrillic/CJK)."""
@@ -745,6 +767,414 @@ def test_gate_call_uses_explicit_propagated_path(tmp_path):
     off = D.gate_call("off")                       # off never spawns, path irrelevant
     assert off == {"verdict": "off", "mode": "off", "exit": None,
                    "blocking_refusal": False}
+
+# ------------------------------------- local modules are part of the material (23/11)
+
+def test_local_modules_are_named_in_both_creation_prompts(tmp_path):
+    """CoursIA#28208: six creation turns died on the same pair of findings —
+    « RegimeRps est une heuristique nouvelle, pas un port de detect_regime ». The module
+    (GameTheory/limit_sets.py) sits in the worktree beside the source notebook and the
+    notebook imports it, but no prompt ever showed it: the coder received the twin's CELLS
+    (plus prose, comments, outputs), invented a replacement, and the verifier rejected it
+    every round. A port's material is the notebook PLUS the local modules it imports, so
+    their names and signatures belong in the plan prompt and in every segment prompt.
+    """
+    (tmp_path / "limit_sets.py").write_text(
+        "import numpy as np\n"
+        "def detect_regime(times, traj, *,\n"
+        "                  tol_point: float = 2e-3,\n"
+        "                  window_frac: float = 0.2):\n"
+        "    return 'point_fixe', {}\n\n"
+        "def stag_hunt_matrices():\n"
+        "    return None, None\n", encoding="utf-8")
+    src = write_nb(tmp_path / "T-Python.ipynb", [
+        {"cell_type": "code",
+         "source": "import limit_sets\nfrom numpy import zeros\n", "metadata": {}},
+    ])
+    mods = D.local_modules(src)
+    assert [m["file"] for m in mods] == ["limit_sets.py"], "only the LOCAL module resolves"
+    joined = ", ".join(mods[0]["defs"])
+    assert "detect_regime(" in joined and "tol_point" in joined, \
+        "a signature spanning several lines is caught whole"
+    assert "stag_hunt_matrices()" in joined
+
+    block = D.local_module_block(mods)
+    assert "limit_sets.py" in block and "N'invente JAMAIS" in block
+
+    p1 = D.creation_prompt(1, {"title": "t", "body": "b", "comments": ""},
+                           "N-CSharp.ipynb", "T-Python.ipynb",
+                           {"kernel_name": "k"}, "", "VUE", modules=mods)
+    p2 = D.creation_json_prompt([{"idx": 0, "cell_type": "code"}], 1, modules=mods)
+    for p in (p1, p2):
+        assert "MODULES PYTHON LOCAUX" in p and "limit_sets.py" in p
+    assert D.local_module_block([]) == "" and D.local_modules(None) == []
+
+
+def test_a_package_above_the_notebook_folder_is_part_of_the_material(tmp_path, monkeypatch):
+    """CoursIA#27740/#27737 (23/11): both grains died `stage2-short-segment:0` — the
+    model refused, rightly, to invent `NerveB1Result`/`nerve_b1_substrats`, and
+    returned `{"cells": [], "notes": "… les implémentations des modules ict ne
+    sont pas fournies …"}`. The package lives ONE LEVEL ABOVE the notebook folder
+    (`ICT-Series/ict/`, imported from `ICT-Series/ICT-15j/…`), where the
+    beside-the-notebook rule of #28208 resolves nothing. Imports resolve against
+    the notebook folder and its first two ancestors; a package expands to its
+    files; a package named by several import forms is listed once.
+    """
+    pkg = tmp_path / "Series" / "ict"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "meta_proxy.py").write_text(
+        "def proxy_signature(x):\n    return None\n", encoding="utf-8")
+    (pkg / "nerve_discriminant.py").write_text(
+        "from dataclasses import dataclass\n"
+        "def nerve_b1(strengths, *, tol=0.05):\n    return None\n"
+        "def discrimination_verdict(results, use_persistence=True):\n    return {}\n",
+        encoding="utf-8")
+    nbdir = tmp_path / "Series" / "ICT-15j"
+    nbdir.mkdir()
+    nb = {"cells": [{"cell_type": "code", "metadata": {}, "source":
+                     "import numpy as np\n"
+                     "from ict import spectral as SP\n"
+                     "from ict.nerve_discriminant import nerve_b1, discrimination_verdict\n"
+                     "import ict.meta_proxy\n"}],
+          "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    (nbdir / "T-Python.ipynb").write_text(json.dumps(nb), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)          # production: cwd is the worktree root
+    mods = D.local_modules("Series/ICT-15j/T-Python.ipynb")
+    files = [m["file"] for m in mods]
+    assert "Series/ict/nerve_discriminant.py" in files, \
+        "a package above the notebook folder is part of the material"
+    assert "Series/ict/meta_proxy.py" in files, "the whole package is listed"
+    assert "numpy" not in " ".join(files), "site-packages imports stay out"
+    assert len(files) == len(set(files)), "one entry per file, however it was imported"
+    nerve = [m for m in mods if m["file"].endswith("nerve_discriminant.py")][0]
+    joined = ", ".join(nerve["defs"])
+    assert "nerve_b1(" in joined and "discrimination_verdict(" in joined
+    block = D.local_module_block(mods)
+    assert "Series/ict/nerve_discriminant.py" in block
+    # o8 regression (23/11, ICT grains #27737/#27740/#27742): with an ABSOLUTE
+    # source path — what production passes — `file` used to fall back to
+    # `p.as_posix()`, leaking `D:/dev/claudish/.tmp/…` into the prompt while the
+    # block's own header said « chemin relatif à la racine du worktree ».
+    (tmp_path / ".git").mkdir(exist_ok=True)
+    abs_mods = D.local_modules(str(nbdir / "T-Python.ipynb"))
+    abs_files = [m["file"] for m in abs_mods]
+    assert "Series/ict/nerve_discriminant.py" in abs_files, \
+        "an absolute input still yields a worktree-relative path"
+    assert not any(str(tmp_path) in f for f in abs_files), \
+        "no machine path leaks into the prompt"
+
+
+def test_a_named_leaf_pulls_its_own_relative_imports_into_the_source(tmp_path, monkeypatch):
+    """o14 (23/11, CoursIA#27740): the model refused to invent the normalisation —
+    « l'implémentation de ict.time_arrow.transition_matrix … n'a pas été fournie ».
+    `spectral.py` carries `from .time_arrow import transition_matrix`; the leaf was
+    inlined, its sibling never was, and pass 2 lists the package alphabetically (12
+    files) so `time_arrow.py` sorted past the cap. A named leaf's own relative
+    imports are promoted to SOURCE too, bounded by LOCAL_MODULE_SIBLING_SOURCE_CAP.
+    """
+    pkg = tmp_path / "Series" / "ict"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "time_arrow.py").write_text(
+        "def transition_matrix(n, rho):\n"
+        "    return [[rho if i != j else 1.0 for j in range(n)] for i in range(n)]\n",
+        encoding="utf-8")
+    (pkg / "spectral.py").write_text(
+        "from .time_arrow import transition_matrix\n"
+        "def spectral_summary(g, rho=0.3):\n    return transition_matrix(2, rho)\n",
+        encoding="utf-8")
+    # sorts FIRST in pass 2: the sibling must not depend on that listing order
+    (pkg / "aaa.py").write_text("def filler():\n    return 0\n", encoding="utf-8")
+    nbdir = tmp_path / "Series" / "ICT-15j"
+    nbdir.mkdir()
+    nb = {"cells": [{"cell_type": "code", "metadata": {}, "source":
+                     "from ict import spectral as SP\n"}],
+          "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    (nbdir / "T-Python.ipynb").write_text(json.dumps(nb), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    mods = D.local_modules("Series/ICT-15j/T-Python.ipynb")
+    by_file = {m["file"]: m for m in mods}
+    assert "Series/ict/spectral.py" in by_file
+    assert "Series/ict/time_arrow.py" in by_file, \
+        "a named leaf's own relative import is material too"
+    dep = by_file["Series/ict/time_arrow.py"]
+    assert "source" in dep, "the sibling is promoted to SOURCE, not a signature list"
+    assert "def transition_matrix" in dep["source"]
+    assert "def transition_matrix" in D.local_module_block(mods), \
+        "the promoted sibling's code reaches the prompt"
+
+
+def test_the_revision_prompt_carries_the_local_module_sources(tmp_path, monkeypatch):
+    """o17 (23/11, CoursIA#27742): six revise rounds contested with « le message ne
+    fournit pas les algorithmes de spectral_… ». Creation promoted `ict/spectral.py`
+    (pass 1/pass 1b) but `revision_prompt` had no modules parameter at all: the
+    reviser saw the twin's CALLS and could only substitute. The same block the
+    creation prompt uses must reach every revision round."""
+    pkg = tmp_path / "Series" / "ict"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "spectral.py").write_text(
+        "def spectral_summary(states, n_symbols):\n"
+        "    return {'gap': 0.42, 'states': len(states)}\n", encoding="utf-8")
+    nbdir = tmp_path / "Series" / "ICT-15l"
+    nbdir.mkdir()
+    nb = {"cells": [{"cell_type": "code", "metadata": {}, "source":
+                     "from ict import spectral as SP\nx = SP.spectral_summary([], 3)\n"}],
+          "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    src = nbdir / "T-Python.ipynb"
+    src.write_text(json.dumps(nb), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    mods = D.local_modules(str(src))
+    assert mods and any("def spectral_summary" in (m.get("source") or "") for m in mods)
+
+    no_mod = D.revision_prompt({"title": "t", "body": "b"}, "VIEW", [])
+    assert "def spectral_summary" not in no_mod          # nothing invented
+    with_mod = D.revision_prompt({"title": "t", "body": "b"}, "VIEW", [], modules=mods)
+    assert "def spectral_summary" in with_mod, \
+        "the definitions reach the reviser — without them it can only substitute"
+    assert "N'invente JAMAIS une heuristique à la place d'une" in with_mod
+    # before the findings, so the material frames the constats it answers
+    assert with_mod.index("def spectral_summary") < with_mod.index("## Constats du vérificateur")
+
+
+def test_sibling_promotion_is_bounded(tmp_path, monkeypatch):
+    """A leaf importing seven siblings must not blow the prompt: at most
+    LOCAL_MODULE_SIBLING_SOURCE_CAP inlined sources, however many are imported."""
+    pkg = tmp_path / "ict"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    lines = "".join(f"from .dep{i} import f{i}\n" for i in range(7))
+    (pkg / "core.py").write_text(lines + "def f():\n    return 0\n", encoding="utf-8")
+    for i in range(7):
+        (pkg / f"dep{i}.py").write_text(f"def f{i}():\n    return {i}\n", encoding="utf-8")
+    nbdir = tmp_path / "nb"
+    nbdir.mkdir()
+    nb = {"cells": [{"cell_type": "code", "metadata": {}, "source": "from ict import core\n"}],
+          "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    (nbdir / "T-Python.ipynb").write_text(json.dumps(nb), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    mods = D.local_modules("nb/T-Python.ipynb")
+    promoted = [m for m in mods if "source" in m and m["file"].startswith("ict/dep")]
+    assert len(promoted) == D.LOCAL_MODULE_SIBLING_SOURCE_CAP
+
+
+def test_the_sibling_import_forms_are_all_read():
+    """`from .x import y`, `from . import a, b` and an absolute intra-package
+    `from ict.x import y` all name a sibling; a third-party import never does."""
+    f = D._sibling_imports
+    assert "time_arrow" in f("from .time_arrow import transition_matrix\n")
+    assert {"a", "b"} <= f("from . import a, b\n")
+    assert "time_arrow" in f("from ict.time_arrow import y\n")
+    assert f("import numpy as np\n") == set()
+
+
+def test_a_module_block_is_bounded_and_names_the_rest():
+    """o8 (23/11): rendering every signature of every ancestor-resolved file
+    pushed stage-2 prompts to ~61k tokens, and the model's answers degraded to
+    unparseable 440-char stubs — every ICT grain died `stage2-short-segment`.
+    Six signatures per module name the material; the FILE carries the rest, and
+    the whole block stays under LOCAL_MODULE_BLOCK_CHAR_CAP (+ header/footer).
+    """
+    mods = [{"name": "ict.big", "file": "Series/ict/big.py",
+             "defs": [f"fn_{i}(x)" for i in range(10)]}]
+    blk = D.local_module_block(mods)
+    assert "fn_5(" in blk and "fn_6(" not in blk, "at most six signatures rendered"
+    assert "+4 autres" in blk, "the unrendered signatures are named, not silent"
+    many = [{"name": f"m{i}", "file": f"Series/ict/m{i}.py",
+             "defs": [f"fn_{i}_{j}(x, y=None, *, tol=1e-9, label='signature-longue-pour-forcer-la-troncature')"
+                      for j in range(6)]} for i in range(40)]
+    blk2 = D.local_module_block(many)
+    assert len(blk2) <= D.LOCAL_MODULE_BLOCK_CHAR_CAP + 700, \
+        "the block is bounded however many modules resolve"
+    assert "autres modules" in blk2, "truncated modules are named, not silent"
+
+
+def test_the_imported_leafs_full_source_is_inlined(tmp_path, monkeypatch):
+    """o9 (23/11 soir, cinq grains ICT morts `stage2-short-segment:0` avec des
+    prompts SAINS à 13-19k tokens) : le bloc borné a corrigé le bloat mais
+    affamé le build — l'appel est un single-shot SANS outils, et la réponse
+    mesurée fut « le contenu de basin_family.py … ne sont pas disponibles dans
+    le message, et la lecture demandée précédemment a échoué ». Ce que le
+    carnet NOMME (`from ict import basin_family`) porte désormais sa SOURCE
+    COMPLÈTE ; le reste du paquet reste en signatures."""
+    pkg = tmp_path / "Series" / "ict"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "basin_family.py").write_text(
+        "BASIN_BODY_MARKER = 0x5eed\n"
+        "def basin_family_dynamics(traj, *, tol=1e-9):\n"
+        "    return traj, tol\n", encoding="utf-8")
+    (pkg / "neighbor_module.py").write_text(
+        "def neighbor(x):\n    return x\n", encoding="utf-8")
+    nbdir = tmp_path / "Series" / "ICT-15f"
+    nbdir.mkdir()
+    nb = {"cells": [{"cell_type": "code", "metadata": {}, "source":
+                     "from ict import basin_family as bf\n"
+                     "import ict\n"}],
+          "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    (nbdir / "T-Python.ipynb").write_text(json.dumps(nb), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)          # production: cwd is the worktree root
+    mods = D.local_modules("Series/ICT-15f/T-Python.ipynb")
+    srcs = {m["file"]: m for m in mods if "source" in m}
+    assert "Series/ict/basin_family.py" in srcs, \
+        "`from ict import basin_family` resolves the LEAF, not just the package"
+    assert "BASIN_BODY_MARKER" in srcs["Series/ict/basin_family.py"]["source"], \
+        "the leaf's BODY is in the material, not its signatures alone"
+    assert "Series/ict/neighbor_module.py" not in srcs, \
+        "a file the notebook never names stays signature-only"
+    block = D.local_module_block(mods)
+    assert "SOURCE COMPLÈTE" in block and "BASIN_BODY_MARKER" in block
+    assert "neighbor(" in block, "the rest of the package stays listed"
+    assert "tu n'as pas d'outil de lecture" in block, \
+        "the instruction matches the tool-less reality of the build call"
+
+
+def test_inlined_sources_are_bounded():
+    """Real dependency sets (ICT-15j: seven named leaves, 98 583 chars measured
+    o10) must fit WHOLE — the 140k total exists for the 2.5 MB package, not to
+    starve a real set (o10: bistable.py fell off a 70k budget at cumulative
+    72 568, and the model's refusal named exactly that file). Beyond the cap,
+    overflow falls to the named listing — never silent."""
+    seven = [{"name": f"pkg.m{i}", "file": f"Series/ict/m{i}.py",
+              "defs": [f"fn_{i}(x)"],
+              "source": "x" * (9000 + i * 2000)} for i in range(7)]
+    blk = D.local_module_block(seven)      # 105 000 chars — under the cap
+    assert blk.count("SOURCE COMPLÈTE") == 7, \
+        "a real measured dependency set fits whole"
+    over = [{"name": f"pkg.m{i}", "file": f"Series/ict/m{i}.py",
+             "defs": [f"fn_{i}(x)"],
+             "source": "z" * 40000} for i in range(6)]
+    blk2 = D.local_module_block(over)      # 6x30k = 180k > 140k
+    assert len(blk2) <= (D.LOCAL_MODULE_SOURCE_TOTAL_CAP
+                         + D.LOCAL_MODULE_BLOCK_CHAR_CAP + 800), \
+        "inlined sources obey the total cap, listing obeys its own"
+    assert blk2.count("SOURCE COMPLÈTE") == 4, \
+        "the 5th leaf over budget falls back to signatures, first four inline"
+    assert "signatures seulement" in blk2, "overflow lands in the named listing"
+    one = D.local_module_block([{"name": "pkg.big", "file": "Series/ict/big.py",
+                                 "defs": ["fn(x)"], "source": "y" * 50000}])
+    assert len(one) <= D.LOCAL_MODULE_SOURCE_FILE_CAP + 1500, \
+        "a single huge leaf is capped at the file cap"
+
+
+def test_a_parenthesised_multiline_import_is_read(tmp_path, monkeypatch):
+    """#1885 review: `_import_statements` scanned PHYSICAL lines, so the PEP 8 form of a
+    long import -- `from ict import (`, one name per line, `)` -- matched nothing and its
+    leaves reached no prompt at all. A cell is read as LOGICAL lines, from its tokens: a
+    bracket inside a string or a comment opens nothing, a line of a docstring is not a
+    statement, and a cell the lexer refuses is scanned line by line, as before."""
+    pkg = tmp_path / "Series" / "ict"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "basin_family.py").write_text(
+        "BASIN_MARKER = 1\ndef basin():\n    return 0\n", encoding="utf-8")
+    (pkg / "spectral.py").write_text(
+        "SPECTRAL_MARKER = 2\ndef spectral():\n    return 0\n", encoding="utf-8")
+    nbdir = tmp_path / "Series" / "ICT-15j"
+    nbdir.mkdir()
+    # beside the notebook, and named by a line of a DOCSTRING: not an import
+    (nbdir / "fake_module.py").write_text("def fake():\n    return 0\n", encoding="utf-8")
+    nb = {"cells": [
+        # list-form source; the continuation; a comment inside the brackets; an alias
+        {"cell_type": "code", "metadata": {}, "source": [
+            "import numpy as np\n",
+            "from ict import (          # the leaves this notebook uses\n",
+            "    basin_family,\n",
+            "    spectral as SP,\n",
+            ")\n",
+            "import os.path\n"]},
+        {"cell_type": "code", "metadata": {}, "source":
+            'doc = """\nimport fake_module\n"""\n'
+            'x = "("\n'
+            "from ict import meta_missing\n"},       # a bracket in a string opens nothing
+        # the lexer refuses this one (unterminated quote): scanned line by line, as before
+        {"cell_type": "code", "metadata": {}, "source":
+            "%%bash\necho it's not quoted\nimport json\n"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    src = nbdir / "T-Python.ipynb"
+    src.write_text(json.dumps(nb), encoding="utf-8")
+
+    stmts = D._import_statements(nb)
+    assert stmts == [("numpy", []), ("ict", ["basin_family", "spectral"]), ("os.path", []),
+                     ("ict", ["meta_missing"]), ("json", [])], stmts
+
+    monkeypatch.chdir(tmp_path)
+    mods = D.local_modules(str(src))
+    files = {m["file"]: m for m in mods}
+    assert "Series/ict/basin_family.py" in files and "Series/ict/spectral.py" in files, \
+        "the leaves of a multi-line import are material, like any named leaf"
+    assert "BASIN_MARKER" in files["Series/ict/basin_family.py"]["source"]
+    assert "fake_module.py" not in files, "a docstring line is not an import"
+
+
+def test_the_ancestor_walk_never_leaves_the_worktree(tmp_path, monkeypatch):
+    """#1885 review: the walk was "not clamped to the worktree root". The runs' worktrees
+    lie side by side (`.tmp/nbst/o14/worktrees/<grain>/…`), so a notebook sitting AT its
+    worktree root walked two levels up and read a neighbour's package as its own material.
+    The boundary is the first `.git` walking up -- a FILE in a linked worktree, a dir in a
+    main checkout. Inside it the walk is unchanged; with no `.git` above nothing is known,
+    and nothing is clamped."""
+    runs = tmp_path / "worktrees"
+    theirs = runs / "pkg"                    # a neighbour's package: outside both worktrees
+    theirs.mkdir(parents=True)
+    (theirs / "__init__.py").write_text("", encoding="utf-8")
+    (theirs / "leaf.py").write_text("def outside():\n    return 0\n", encoding="utf-8")
+    nb = {"cells": [{"cell_type": "code", "metadata": {}, "source": "from pkg import leaf\n"}],
+          "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    linked = runs / "wt-a"                   # a linked worktree: `.git` is a FILE
+    linked.mkdir()
+    (linked / "T-Python.ipynb").write_text(json.dumps(nb), encoding="utf-8")    # AT its root
+    checkout = runs / "wt-b"                 # a main checkout: `.git` is a dir
+    (checkout / "Notebooks").mkdir(parents=True)
+    (checkout / "Notebooks" / "T-Python.ipynb").write_text(json.dumps(nb), encoding="utf-8")
+    own = checkout / "pkg"                   # ITS package, one level above the notebook
+    own.mkdir()
+    (own / "__init__.py").write_text("", encoding="utf-8")
+    (own / "leaf.py").write_text("def inside():\n    return 0\n", encoding="utf-8")
+
+    def files(nb_path) -> list[str]:
+        return sorted(m["file"] for m in D.local_modules(str(nb_path)))
+
+    monkeypatch.chdir(tmp_path)
+    assert files(linked / "T-Python.ipynb") == ["worktrees/pkg/__init__.py",
+                                               "worktrees/pkg/leaf.py"], \
+        "no `.git` above: no boundary is known, the walk reaches the neighbour as it did"
+    assert files(checkout / "Notebooks" / "T-Python.ipynb") == ["worktrees/wt-b/pkg/__init__.py",
+                                                               "worktrees/wt-b/pkg/leaf.py"]
+
+    (linked / ".git").write_text("gitdir: ../.git/worktrees/wt-a\n", encoding="utf-8")
+    (checkout / ".git").mkdir()
+    assert files(linked / "T-Python.ipynb") == [], \
+        "a notebook at its worktree root never reads what lies outside it"
+    assert files(checkout / "Notebooks" / "T-Python.ipynb") == ["worktrees/wt-b/pkg/__init__.py",
+                                                               "worktrees/wt-b/pkg/leaf.py"], \
+        "one level above the notebook folder, INSIDE the worktree: still material"
+
+
+def test_the_verifier_block_stays_under_its_measured_bound():
+    """#1885 review: "the verifier prompt can grow by up to about 200 000 characters;
+    measure it". Measured 26/11: 147 526 chars at the worst -- 12 sources that fill the
+    140 000 budget, 12 signature-only entries at the 6 000 listing cap, 1 102 of prose and
+    the framing -- and 126 831 on the largest real source notebook (ICT-15j, 8 sources),
+    inside a 217 508-char verifier prompt. A cap moved up moves that number: re-measure,
+    then move this pin."""
+    half = D.LOCAL_MODULE_TOTAL_CAP // 2
+    per = D.LOCAL_MODULE_SOURCE_TOTAL_CAP // half - 120
+    full = [{"name": "pkg.leaf" + str(i), "file": "Series/ict/leaf" + str(i) + ".py", "defs": [],
+             "source": "x" * per} for i in range(half)]
+    listed = [{"name": "pkg.other" + str(i), "file": "Series/ict/other" + str(i) + ".py",
+               "defs": [f"fn{j}({'a' * 140})" for j in range(40)]}
+              for i in range(D.LOCAL_MODULE_TOTAL_CAP - half)]
+    blk = D.local_module_verifier_block(full + listed)
+    assert blk.count("`, SOURCE COMPLÈTE") == half, "every source fits: the budget is full"
+    assert len(blk) <= 147_600, f"the verifier block grew to {len(blk)} chars -- re-measure"
+    assert "signatures seulement" in blk, "the listed half is under the listing cap"
+    assert D.local_module_verifier_block(None) == "" == D.local_module_verifier_block([])
 
 
 if __name__ == "__main__":

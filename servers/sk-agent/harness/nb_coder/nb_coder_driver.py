@@ -1803,8 +1803,419 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
 
 
 # ---------------------------------------------------------------- creation mode (--source-nb)
+LOCAL_MODULE_DEF_CAP = 24   # signatures listed per local module
+LOCAL_MODULE_FILE_CAP = 12  # files listed per imported package
+LOCAL_MODULE_TOTAL_CAP = 24  # entries across every import, prompt stays bounded
+                             # (o14: 7 named leaves + up to 4 promoted siblings must
+                             # fit before the alphabetical signature fill)
+LOCAL_MODULE_RENDER_DEF_CAP = 6   # signatures RENDERED per module in the prompt block
+                                   # (o8 ICT: 24x13 rendered signatures = ~61k-token stage-2
+                                   #  prompts, unparseable stub answers)
+LOCAL_MODULE_BLOCK_CHAR_CAP = 6000  # signature-listing part of the block
+LOCAL_MODULE_SOURCE_FILE_CAP = 30000   # chars of ONE imported leaf's full source
+LOCAL_MODULE_SOURCE_TOTAL_CAP = 140000  # chars across every inlined source
+LOCAL_MODULE_SIBLING_SOURCE_CAP = 4    # extra leaves promoted to SOURCE (pass 1b):
+                                       # the named leaves' own relative imports (o14)
+# (o9 ICT, 23/11: with signatures only, the build call — a tool-less single shot —
+#  answered « le contenu de basin_family.py … n'est pas disponibles dans le message,
+#  et la lecture demandée précédemment a échoué » and died stage2-short-segment:0 on
+#  every ICT grain. The leaf the notebook imports gets its SOURCE inline; the rest of
+#  the package stays signature-only. Measured leaves: 9.8-22.8 KB each, 1-2 per grain.
+#  o10 ICT, 23/11 soir: 70k was too tight for a real dependency set — ICT-15j names
+#  SEVEN leaves (98 583 chars measured) and the 5th in render order (bistable.py,
+#  cumulative 72 568) fell off the budget; the model's refusal named exactly that
+#  file. 140k fits every measured set while still bounding the 2.5 MB package.)
+
+
+def _top_level_defs(p: Path) -> list[str]:
+    try:
+        txt = p.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    # the signature may span lines (detect_regime does) — `[^)]*` crosses newlines
+    return [f"{fn}({' '.join(a.split())})"[:160]
+            for fn, a in re.findall(r"^def\s+(\w+)\s*\(([^)]*)\)", txt, re.M)
+            ][:LOCAL_MODULE_DEF_CAP]
+
+
+def _ancestor_roots(folder: Path) -> list[Path]:
+    """The notebook's folder and its first two ancestors -- never past the worktree root.
+
+    The root is the first `.git` walking up (a FILE in a linked worktree, a dir in a main
+    checkout): the anchor `_worktree_rel` already reads. The runs' worktrees lie side by
+    side (`.tmp/nbst/o14/worktrees/<grain>/…`), so a notebook sitting AT its worktree root
+    walked two levels up, into its neighbours' material (#1885 review). With no `.git`
+    above -- a bare folder, a relative path in a test -- no boundary is known and the walk
+    stays what it was."""
+    stop = next((d for d in (folder, *folder.parents) if (d / ".git").exists()), None)
+    # a root is kept when it IS the worktree root or lies inside it -- dropped when the
+    # root is one of ITS parents (it sits above the boundary)
+    return [r for r in (folder, *list(folder.parents)[:2])
+            if stop is None or r == stop or stop in r.parents]
+
+
+def _resolve_import(folder: Path, dotted: str) -> list[Path]:
+    """Files one import names: `<module>.py`, or every `<pkg>/*.py` for a package.
+
+    Searched in the notebook's folder, then its first two ancestors inside its worktree
+    (`_ancestor_roots`). Series
+    folders keep their package one level ABOVE the notebook folder (measured
+    23/11, CoursIA#27740/#27737: `ICT-Series/ict/` imported from
+    `ICT-Series/ICT-15-IntegratedComplexity/ICT-15j-…`); the beside-the-notebook
+    rule alone found nothing, the coder refused to invent the module — correctly —
+    and stage 2 died `short-segment` on both grains. The notebook's own
+    `sys.path.insert(0, Path('.').resolve())` is what makes those ancestors
+    importable at execution time; this walk mirrors it, bounded to two levels.
+    """
+    parts = [p for p in dotted.split(".") if p]
+    if not parts:
+        return []
+    for root in _ancestor_roots(folder):
+        base = root.joinpath(*parts)
+        if base.with_suffix(".py").is_file():
+            return [base.with_suffix(".py")]
+        if (base / "__init__.py").is_file():
+            return [base / "__init__.py"] + sorted(base.glob("*.py"))[:LOCAL_MODULE_FILE_CAP]
+    return []
+
+
+def _logical_lines(src: str) -> list[str]:
+    """A cell's source as LOGICAL lines: a parenthesised continuation is ONE item.
+
+    Built from the tokens, so a bracket inside a string or a comment opens nothing and
+    a line of a docstring is never a statement. Two tokens of one row keep the SOURCE
+    text between them (`import os.path` keeps its dots); a continuation joins with one
+    space, and a comment leaves with its token. A cell the lexer refuses (an unterminated
+    quote in a `%%bash` cell, an indentation it cannot read) falls back to its physical
+    lines -- the scan as it was before #1885's review."""
+    src = src.replace("\r\n", "\n").replace("\r", "\n")
+    lines = src.splitlines()
+
+    def gap(before, after) -> str:
+        return lines[before[0] - 1][before[1]:after[1]] if before[0] == after[0] else " "
+
+    out: list[str] = []
+    buf: list[str] = []
+    prev = None
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type in (tokenize.NEWLINE, tokenize.ENDMARKER):
+                if buf:
+                    out.append("".join(buf))
+                buf, prev = [], None
+            elif tok.type in (tokenize.NL, tokenize.COMMENT, tokenize.INDENT,
+                              tokenize.DEDENT):
+                continue
+            else:
+                if prev is not None:
+                    buf.append(gap(prev, tok.start))
+                buf.append(tok.string)
+                prev = tok.end
+    except Exception:
+        return src.splitlines()
+    if buf:
+        out.append("".join(buf))
+    return out
+
+
+def _import_statements(nb) -> list[tuple[str, list[str]]]:
+    """(dotted_module, [imported_names]) per import statement, in cell order.
+
+    `from ict import basin_family as bf` -> ("ict", ["basin_family"]) — the LEAF,
+    which `_resolve_import` alone never sees. `import ict.meta_proxy` ->
+    ("ict.meta_proxy", []). Names strip their `as` alias and the parenthesised
+    form, on one line or across several (`_logical_lines`).
+    """
+    out: list[tuple[str, list[str]]] = []
+    for cell in nb.get("cells") or []:
+        if cell.get("cell_type") != "code":
+            continue
+        for line in _logical_lines(_text(cell.get("source"))):
+            m = re.match(r"\s*from\s+([A-Za-z_][\w.]*)\s+import\s+(.+?)\s*$", line)
+            if m:
+                names = [n.strip().split(" as ")[0].strip()
+                         for n in m.group(2).strip("()").split(",")]
+                out.append((m.group(1), [n for n in names if n]))
+                continue
+            m = re.match(r"\s*import\s+([A-Za-z_][\w.]*)", line)
+            if m:
+                out.append((m.group(1), []))
+    return out
+
+
+def _module_entry(folder: Path, p: Path, name: str, source: bool) -> dict:
+    """One material entry. `source=True` inlines the file's text (capped); the
+    build call has no tools, « lire le fichier » n'y résout rien (mesuré o9)."""
+    e = {"name": name,
+         "file": p.name if p.parent == folder else _worktree_rel(p),
+         "defs": _top_level_defs(p)}
+    if source:
+        try:
+            txt = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            txt = ""
+        if len(txt) > LOCAL_MODULE_SOURCE_FILE_CAP:
+            txt = txt[:LOCAL_MODULE_SOURCE_FILE_CAP] + \
+                f"\n# … source tronquée ({len(txt)} caractères au total)\n"
+        e["source"] = txt
+    return e
+
+
+def _sibling_imports(txt: str) -> set[str]:
+    """Module names a leaf imports from its OWN package.
+
+    Relative (`from .time_arrow import transition_matrix`, `from . import x`) and
+    absolute intra-package (`from ict.time_arrow import y`) styles both reduce to
+    the last segment; names that do not resolve beside the leaf drop out at the
+    `.is_file()` check. Measured 23/11 (o14, CoursIA#27740):
+    `ict/spectral.py:50` is `from .time_arrow import transition_matrix` — and
+    time_arrow.py reached no prompt at all (pass-2 lists the package's first 12
+    files alphabetically; `t` sorts past them), so the model refused to invent
+    the normalisation. A founded refusal, and a material gap.
+    """
+    out: set[str] = set()
+    for m in re.finditer(r"^\s*from\s+\.(\w+)\s+import\b", txt, re.M):
+        out.add(m.group(1))
+    for m in re.finditer(r"^\s*from\s+\.\s+import\s+([\w, ()]+)", txt, re.M):
+        out.update(n.strip().split(" as ")[0].strip()
+                   for n in m.group(1).strip("()").split(","))
+    for m in re.finditer(r"^\s*(?:from|import)\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)", txt, re.M):
+        out.add(m.group(1).split(".")[-1])
+    return {n for n in out if n and re.fullmatch(r"\w+", n)}
+
+
+def local_modules(src_nb) -> list[dict]:
+    """Python modules a source notebook imports that live in its worktree.
+
+    23/11 (CoursIA#28208): six creation turns died on the same pair of findings —
+    « RegimeRps est une heuristique nouvelle, pas un port de detect_regime ». The module
+    (GameTheory/limit_sets.py) sits in the worktree beside the source notebook, but no
+    prompt ever showed it: the coder received the twin's CELLS only (plus prose, comments
+    and outputs), then invented a replacement that the verifier rejected every round. A
+    port's material is the notebook PLUS the local modules it imports.
+
+    23/11, same day (#27740/#27737): the module is not always BESIDE the notebook —
+    `ICT-Series/ict/` is a package one level above the notebook folder, so the
+    beside-only rule found nothing and the model again refused to invent
+    (`NerveB1Result`, `nerve_b1_substrats`, …) — both grains died
+    `stage2-short-segment:0`. Imports now resolve against the notebook folder AND
+    its first two ancestors, packages expand to their files, and a package named
+    twice (`import ict`, `from ict.x import y`) is listed once.
+
+    23/11 soir (fournée o9, mêmes grains, correctif borné en vol) : signatures seules =
+    refus fondé — l'appel de build est un single-shot SANS outils, la réponse mesurée
+    fut « le contenu de basin_family.py … ne sont pas disponibles dans le message, et
+    la lecture demandée précédemment a échoué » (5 grains ICT morts
+    `stage2-short-segment:0`, prompts sains à 13-19k tokens — la taille n'était plus
+    en cause). Ce que le carnet NOMME (`from ict import basin_family`,
+    `import ict.meta_proxy`, module beside) résout maintenant vers sa FEUILLE et
+    porte sa SOURCE COMPLÈTE (bornée) ; un paquet nu (`import ict`) reste en
+    signatures — la feuille importée porte ce qui manque.
+
+    Only paths that resolve to a real `.py` are returned (numpy and friends drop
+    out here).
+    """
+    if not src_nb:
+        return []
+    try:
+        nb = json.loads(Path(src_nb).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    folder = Path(src_nb).parent
+    stmts = _import_statements(nb)
+    out: list[dict] = []
+    seen: set = set()
+
+    def _emit(p: Path, name: str, source: bool) -> bool:
+        key = p.as_posix()
+        if key in seen or len(out) >= LOCAL_MODULE_TOTAL_CAP:
+            return False
+        seen.add(key)
+        out.append(_module_entry(folder, p, name, source))
+        return True
+
+    src_paths: list[Path] = []
+
+    # pass 1 — the leaves the notebook NAMES: from-import names that are files,
+    # and every import resolving to a SINGLE file (dotted leaf, beside module)
+    for dotted, names in stmts:
+        for leaf in names:
+            parts = [p for p in dotted.split(".") if p] + [leaf]
+            for root in _ancestor_roots(folder):
+                cand = root.joinpath(*parts).with_suffix(".py")
+                if cand.is_file():
+                    if _emit(cand, f"{dotted}.{leaf}", True):
+                        src_paths.append(cand)
+                    break
+    for dotted, _ in stmts:
+        files = _resolve_import(folder, dotted)
+        if len(files) == 1:
+            if _emit(files[0], dotted, True):
+                src_paths.append(files[0])
+
+    # pass 1b — the named leaves' OWN imports, one relative level (bounded): the
+    # material a leaf needs is not only the leaf. o14 (23/11, CoursIA#27740):
+    # spectral.py carries `from .time_arrow import transition_matrix`, time_arrow
+    # never reached the prompt, and the model's refusal named exactly that gap
+    # (« sa seule signature ne permet pas d'établir les conventions exactes »).
+    promoted = 0
+    for leaf in src_paths:
+        if promoted >= LOCAL_MODULE_SIBLING_SOURCE_CAP:
+            break
+        try:
+            txt = leaf.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        for name in sorted(_sibling_imports(txt)):
+            if promoted >= LOCAL_MODULE_SIBLING_SOURCE_CAP:
+                break
+            cand = leaf.parent / f"{name}.py"
+            if cand.is_file() and _emit(cand, f"{leaf.parent.name}.{name}", True):
+                promoted += 1
+
+    # pass 2 — bare packages: signature listing only (capped), never crowding
+    # out the leaves above
+    for dotted, _ in stmts:
+        for p in _resolve_import(folder, dotted):
+            _emit(p, dotted, False)
+    return out
+
+
+def _worktree_rel(p: Path) -> str:
+    """`p` relative to its worktree root — NEVER the absolute machine path.
+
+    Measured 23/11 (o8, ICT grains): the ancestor-resolved files fell back to
+    `p.as_posix()`, i.e. `D:/dev/claudish/.tmp/nbst/o8/worktrees/…` leaked into
+    the prompt while its own header said « chemin relatif à la racine du
+    worktree ». The model was told one thing and shown another. Two anchors,
+    in order: the process cwd when `p` sits under it (a driver launched from
+    the worktree root — and every test that chdir's into its tmp repo), then
+    the first `.git` walking up (a FILE in a linked worktree, a dir in a main
+    checkout). Bare filename as the last resort.
+    """
+    try:
+        return p.resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        pass
+    for d in (p.parent, *p.parent.parents):
+        if (d / ".git").exists():
+            try:
+                return p.relative_to(d).as_posix()
+            except ValueError:
+                break
+    return p.name
+
+
+def local_module_block(modules: list | None) -> str:
+    """Prompt block for the source notebook's local modules. '' when none.
+
+    Two sections. SOURCES COMPLÈTES: every module the notebook NAMES (`from ict
+    import basin_family`, `import ict.meta_proxy`, module beside the notebook)
+    renders its full text, bounded per file and in total — the build call is a
+    tool-less single shot, and signatures alone drew a founded refusal on every
+    ICT grain of fournée o9 (23/11 : « le contenu de basin_family.py … pas
+    disponibles dans le message, et la lecture demandée précédemment a échoué »,
+    `stage2-short-segment:0`). SIGNATURES: the rest of a bare package stays
+    listed — six signatures per file, the whole listing under
+    LOCAL_MODULE_BLOCK_CHAR_CAP (the o8 lesson: 24x13 rendered signatures pushed
+    stage-2 prompts to ~61k tokens and answers degraded to unparseable stubs)."""
+    if not modules:
+        return ""
+    src_parts, list_lines, overflow = _local_module_render(modules)
+    head = ("\n\nMODULES PYTHON LOCAUX DU DOSSIER SOURCE — ce carnet les importe "
+            "(chemins relatifs à la racine du worktree).\n")
+    parts = []
+    if src_parts:
+        parts.append("SOURCES COMPLÈTES des modules importés (le port se fait À PARTIR "
+                     "D'ELLES — tu n'as pas d'outil de lecture) :\n\n" + "\n\n".join(src_parts))
+    if list_lines:
+        parts.append("Autres fichiers du paquet (signatures seulement) :\n" + "\n".join(list_lines))
+    if overflow:
+        parts.append(f"(+{overflow} autres modules non montrés — mêmes règles : ne rien "
+                     f"inventer, porteur = le carnet source)")
+    return (head + "\n\n".join(parts) +
+            "\nPORTE les fonctions utilisées — mêmes seuils, mêmes constantes, mêmes "
+            "libellés de verdict. N'invente JAMAIS une heuristique à la place d'une "
+            "fonction d'un module ci-dessus : le vérificateur compare au module source "
+            "et rejette toute réimplémentation non équivalente (mesuré CoursIA#28208 : "
+            "six tours perdus à ce motif).\n")
+
+
+def _local_module_render(modules: list) -> tuple[list[str], list[str], int]:
+    """The two renderings a local-module list splits into, shared by every prompt that
+    carries them: full sources (bounded per file and in total), signature lines for the
+    rest, and the overflow count (23/11: the builder's and the verifier's block must show
+    the SAME definitions — a verifier reading less than the builder cannot judge it)."""
+    src_parts: list[str] = []
+    src_total = 0
+    list_lines: list[str] = []
+    list_total = 0
+    overflow = 0
+    for m in modules:
+        txt = m.get("source")
+        if txt is not None:
+            txt = txt[:LOCAL_MODULE_SOURCE_FILE_CAP]   # defensive: _module_entry
+            if src_total + len(txt) <= LOCAL_MODULE_SOURCE_TOTAL_CAP or not src_parts:
+                src_parts.append(f"### `{m['file']}` — module `{m['name']}`, SOURCE COMPLÈTE\n"
+                                 f"```python\n{txt}\n```")
+                src_total += len(txt)
+                continue
+            overflow += 1   # budget spent: falls through to its signature line
+        defs = m["defs"][:LOCAL_MODULE_RENDER_DEF_CAP]
+        more = len(m["defs"]) - len(defs)
+        s = ", ".join(defs) if defs else "(aucune fonction de premier niveau)"
+        if more > 0:
+            s += f" … +{more} autres dans le fichier"
+        line = f"- `{m['file']}` — {s}"
+        if list_total + len(line) > LOCAL_MODULE_BLOCK_CHAR_CAP:
+            overflow += len(modules)
+            break
+        list_lines.append(line)
+        list_total += len(line)
+    return src_parts, list_lines, overflow
+
+
+def local_module_verifier_block(modules: list | None) -> str:
+    """The SAME module sources, framed for the verifier. '' when none.
+
+    23/11 soir (CoursIA#27742, fournée o18): the revision prompt had just been given the
+    modules, the builder produced a faithful reimplementation and argued it — and the
+    verifier rejected with « le degré du graphe des transitions observées ne peut pas
+    être vérifié, à partir de la SOURCE fournie, comme équivalent à la sensibilité
+    calculée par sensitivity_distribution ». Its own words named the gap: the verifier
+    read less than the builder. `local_sensitivity` counts exactly those neighbours
+    (`observed_adjacency`, f(y) ≠ f(x)) — the source says so, and the verifier never
+    saw the source. Material AND rule travel together, on both sides of the parity."""
+    if not modules:
+        return ""
+    src_parts, list_lines, overflow = _local_module_render(modules)
+    head = ("\n\nMODULES PYTHON LOCAUX QUE LA SOURCE IMPORTE — leurs définitions ne figurent "
+            "dans aucune cellule du jumeau ; la recette qu'ils portent est ici.\n")
+    parts = []
+    if src_parts:
+        parts.append("SOURCES COMPLÈTES des modules importés — DÉFINITIONS DE RÉFÉRENCE, la "
+                     "partie de la SOURCE qui ne vit pas dans ses cellules :\n\n"
+                     + "\n\n".join(src_parts))
+    if list_lines:
+        parts.append("Autres fichiers du paquet (signatures seulement) :\n" + "\n".join(list_lines))
+    if overflow:
+        parts.append(f"(+{overflow} autres modules non montrés — signatures et seuls)")
+    return (head + "\n\n".join(parts) +
+            "\nJuge la RECETTE À L'IDENTIQUE **sur ces définitions**. Un LIVRABLE qui réécrit "
+            "en C# la MÊME définition (mêmes entrées, mêmes paramètres, même quantité mesurée, "
+            "mêmes sorties) est une RÉIMPLÉMENTATION FIDÈLE — le geste attendu quand la "
+            "bibliothèque n'a pas d'équivalent .NET — et n'est PAS une substitution, même "
+            "s'il ne subsiste aucun appel de bibliothèque dans le carnet. SUBSTITUTION, c'est "
+            "une AUTRE méthode qui mesure autre chose : là, rejette en nommant, ligne à ligne, "
+            "ce que la définition ci-dessus calcule et ce que le LIVRABLE calcule à sa place. "
+            "N'écris jamais « ne peut pas être vérifié à partir de la SOURCE fournie » : la "
+            "définition est ci-dessus, compare-les (mesuré CoursIA#27742 : huit tours de "
+            "révision perdus à cette phrase, le port étant fidèle).\n")
+
+
 def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel: dict,
-                    ctx: str, view: str, conventions: str = "", cs_view: str = "") -> str:
+                    ctx: str, view: str, conventions: str = "", cs_view: str = "",
+                    modules: list | None = None) -> str:
     """Stage 1 in creation mode: the target notebook does NOT exist on origin/main — the
     model plans the COMPLETE twin from the Python source + the issue's cell table.
     Measured 17/11 (#27099 dry pass): asking for FULL cell sources here returned a
@@ -1822,6 +2233,7 @@ def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel
         f"Noyau canonique d'exécution : {kernel['kernel_name']}\n\n"
         f"## Contexte de série\n{ctx}\n\n"
         f"## Jumeau Python (structure à porter)\n{view}\n\n"
+        + local_module_block(modules)
         + (f"## Jumeau C# du même carnet (portage antérieur — RÉFÉRENCE de traduction)\n"
            f"{cs_view}\n\n"
            "Ce port C# du même carnet éclaire ton portage : structure retenue, découpage des "
@@ -1905,21 +2317,100 @@ PORT_CONTENT_RULES = (
     "désactivée par un commutateur, ni rangée dans un bloc de « résultats attendus » qui la "
     "calcule. Le stub rend une valeur neutre ; un contrôle éventuel compare à des valeurs "
     "de référence FIGÉES (littéraux), jamais à un calcul qui implémente la réponse.\n"
+    "- CALCULS ≠ EXERCICES : toutes les mesures, comparaisons et verdicts que le jumeau "
+    "Python affiche doivent être CALCULÉS ET EXÉCUTÉS par les cellules ORDINAIRES de ton "
+    "carnet, avec leurs sorties réelles. Une cellule d'exercice est un AJOUT pédagogique "
+    "(stub // TODO étudiant) : jamais le remplacement d'un calcul de la source. Un carnet "
+    "dont les cellules principales rendent des zéros neutres, des TODO, ou renvoient à "
+    "l'exercice pour obtenir le résultat est rejeté (mesuré 23/11, fournée o13 : 2 carnets "
+    "rejetés sur 4 tours à ce seul motif). De même, TOUS les régimes et étapes que la "
+    "source calcule doivent être calculés — jamais « R0/R1 restent à compléter ».\n"
+    "- EXERCICES DE LA SOURCE, RIEN DE PLUS : les cellules d'exercice de ton carnet "
+    "reproduisent les exercices que le jumeau Python pose LUI-MÊME, et seulement ceux-là. "
+    "Une cellule de DÉFINITION de la source — une fonction qu'elle donne toute faite, "
+    "`centre_m`, `predire_recolle`, `session_bookmaker` — se reproduit à l'identique comme "
+    "cellule ORDINAIRE, jamais convertie en stub. Ne dédouble jamais une fonction de la "
+    "source en un stub `<nom>` plus une cellule `<nom>_calcule` qui en donne la réponse : "
+    "le stub n'est alors pas sans solution et le calcul est un doublon (mesuré 23/11, "
+    "fournée o14, CoursIA#27741 : 2 findings majeurs « solution révélée », les stubs "
+    "`centre_m`/`predire_recolle` doublés par `centre_calcule`/`predire_calcule`). Si la "
+    "source ne pose pas d'exercice sur un point, tu n'en inventes pas. Le tableau "
+    "« Cellules à porter » de l'issue est INDICATIF (archetype = « classification "
+    "voltron heuristique », équivalents .NET « indicatifs à affiner par le producteur ») : "
+    "une cellule que le jumeau EXÉCUTE et dont il affiche les sorties reste une cellule "
+    "ordinaire même si la colonne dit « exercice » — la stubber casse la clause de "
+    "parité numérique. Le quota d'exercices se satisfait sur les cellules d'exercice "
+    "RÉELLES du jumeau (« Exercice N » en markdown, `# TODO etudiant`).\n"
+    "- AUCUNE CELLULE OMISE : rendre un segment partiel (des cellules absentes de ta "
+    "réponse) tue la génération ENTIÈRE — le harnais s'arrête sur le premier segment "
+    "incomplet (mesuré 23/11, fournée o14 : « cellules 12 et 14 non fournies » = "
+    "stage2-short-segment:8, zéro tour de vérification). Une dépendance absente des "
+    "cellules précédentes ne justifie ni une cellule vide, ni une cellule retirée : le "
+    "jumeau Python porte le code de référence, écris-le toi-même dans la cellule. "
+    "Chaque cellule du segment demandé est livrée, entière.\n"
+    "- RECETTE À L'IDENTIQUE : si la source obtient une mesure par un appel de "
+    "bibliothèque (`SP.spectral_summary`, `SE.sensitivity_distribution`, "
+    "`SM.make_strategies`…), appelle l'équivalent C# de CETTE bibliothèque. Ne lui "
+    "substitue jamais un proxy, une approximation ou une implémentation maison qui mesure "
+    "AUTRE CHOSE (mesuré 23/11, fournée o13 : proxys de graphe à la place du spectre, "
+    "simulation manuelle à la place de l'évolution de population). Réimplémenter est "
+    "légitime quand l'équivalent C# n'existe pas, à condition de reproduire l'ALGORITHME "
+    "de la source à l'identique — mêmes définitions, mêmes paramètres, même quantité "
+    "mesurée.\n"
+    "- BIBLIOTHÈQUE PYTHON SANS ÉQUIVALENT C# (gudhi, networkx, scipy.stats…) : ce "
+    "n'est ni un motif de refus, ni une raison de cellule vide. Réimplémente "
+    "l'ALGORITHME de la bibliothèque sur les structures C# standard (union-find, tri, "
+    "BFS, tableau), borné à la taille que le carnet utilise réellement (un nuage de "
+    "30 points → filtration de Rips complète, triviale à cette taille), vérifie-le sur "
+    "un cas jouet à réponse connue et atteste-le en prose. Un refus de génération "
+    "invoquant une simulation, un proxy ou une bibliothèque « impossibles à porter » "
+    "est un ÉCHEC du carnet : le port est toujours faisable en découpant le calcul en "
+    "étapes DANS la cellule et en bornant les tailles (grilles, pas de temps, "
+    "itérations, tous déjà fixés par le jumeau). Mesuré 23/11, fournée o15, "
+    "CoursIA#27740 : « Je ne peux pas fournir un port complet et fidèle des "
+    "simulations et des proxys dans cette tranche » → stage2-short-segment:0, deux "
+    "tours perdus alors que la source était dans le prompt.\n"
+    "  · La frontière du droit de réécrire est celle du CALCUL, pas de la main qui "
+    "l'écrit : réécrire en C# la MÊME définition que la fonction source (mêmes "
+    "entrées, mêmes paramètres, même quantité, mêmes sorties) est une "
+    "RÉIMPLÉMENTATION — le geste ATTENDU quand la bibliothèque manque — jamais une "
+    "substitution. Substituer, c'est mettre à sa place une AUTRE méthode qui mesure "
+    "autre chose (un TPM/laplacien à la place de `spectral_summary`, un proxy de "
+    "graphe à la place de la persistance de Rips) : celle-là est interdite. Refuser "
+    "d'écrire le calcul parce qu'on craint de « substituer un calcul non "
+    "équivalent » est donc un ÉCHEC : écris la réimplémentation fidèle, compare au "
+    "jumeau, et si un écart subsiste, nomme-le et déclare la tolérance (règle "
+    "RECETTE À L'IDENTIQUE). Mesuré 23/11, fournée o16, CoursIA#27740 : refus à la "
+    "première cellule, « sans risquer de substituer un calcul non équivalent ».\n"
     "- ALÉA NUMPY : si le jumeau tire ses DONNÉES d'un générateur numpy (`default_rng`, "
-    "PCG64, SeedSequence, `normal`), ne réimplémente pas ce générateur : il ne tirera pas "
-    "les mêmes nombres. Reprends les données d'ENTRÉE tirées par le jumeau sous forme de "
-    "tableau littéral COMPLET — jamais tronqué, jamais laissé vide (26/11, o41 : un carnet "
-    "a rejeté « les flux uniformes NumPy cités ne sont pas renseignés ») — dis-le en prose "
-    "(« données tirées par le jumeau, reprises telles quelles »), puis CALCULE tous les "
-    "résultats à partir d'elles ET COMPARE ces résultats recalculés à ceux que le jumeau "
-    "affiche, sous une tolérance déclarée. Ne recopie jamais une SORTIE du jumeau à la "
-    "place d'un calcul, et ne garde jamais la comparaison derrière un test que le tableau "
-    "vide rend faux.\n")
+    "PCG64, SeedSequence, `normal`), deux cas :\n"
+    "  · tirage PETIT et VISIBLE dans les sorties du jumeau → reprends les données "
+    "d'ENTRÉE tirées par le jumeau sous forme de tableau littéral COMPLET — jamais "
+    "tronqué, jamais laissé vide (26/11, o41 : un carnet a rejeté « les flux uniformes "
+    "NumPy cités ne sont pas renseignés »). Dis-le en prose (« données tirées par le "
+    "jumeau, reprises telles quelles »), puis CALCULE tous les résultats à partir d'elles "
+    "ET COMPARE ces résultats recalculés à ceux que le jumeau affiche, sous une "
+    "tolérance déclarée. Ne recopie jamais une SORTIE du jumeau à la place d'un calcul, "
+    "et ne garde jamais la comparaison derrière un test que le tableau vide rend faux.\n"
+    "  · protocole MONTE-CARLO (trajectoires, milliers de tirages, seuls des agrégats "
+    "sont visibles) → PORTE LE PROTOCOLE : même graine déclarée, même loi, même taille "
+    "d'échantillon, mêmes seuils, avec un RNG cible seedé (convention des jumeaux "
+    "ICT-15/15h, #27734 : xorshift64*). Les quantités DÉTERMINISTES sortent identiques "
+    "au dernier chiffre affiché ; les quantités STOCHASTIQUES sont TES résultats réels, "
+    "et la prose nomme l'écart (« graine fixe, RNG différent de numpy : source +0.471, "
+    "ce carnet +0.427 »). Un jumeau C# exécute POUR DE VRAI : jamais de cellule "
+    "« indisponible », « non calculé » ni message d'excuse à la place d'un calcul "
+    "(rejet vérificateur garanti — mesuré 23/11, fournée o11 : 4 carnets rejetés à ce "
+    "seul motif après 3-4 tours de révision). Ce port est LIVRABLE et approuvé dans ce "
+    "dépôt : le jumeau mergé ICT-15h en est la preuve de bout en bout (RNG xorshift64* "
+    "seedé, protocole identique, écarts nommés en prose). L'équivalence exigée est "
+    "celle du PROTOCOLE, pas celle des tirages.\n")
 
 
 def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "",
                          src_cells: list | None = None,
-                         cs_cells: list | None = None) -> str:
+                         cs_cells: list | None = None,
+                         modules: list | None = None) -> str:
     """Stage 2 in creation mode, ONE SEGMENT at a time: the model returns the sources of
     the plan's cells i..j only. Measured 17/11: the whole-notebook single-shot answer
     does not survive the output budget. The harness assembles every segment.
@@ -2013,7 +2504,7 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
         "n'appelles aucun outil d'écriture.\n\n"
         f"Cellules de cette tranche (index du PLAN, ordre du carnet) :\n"
         + json.dumps(segment_cells, ensure_ascii=False)[:9000] + "\n"
-        + prose + comments + refs + "\n"
+        + prose + comments + refs + local_module_block(modules) + "\n"
         + CREATION_LINK_COUNT_RULES + "\n"
         + PORT_CONTENT_RULES + "\n"
         + (f"Conventions de livraison (imposées) :\n{conventions}\n\n" if conventions else "")
@@ -2339,6 +2830,9 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
     with the missing idx listed."""
     all_cells: list = []
     seg_reports: list = []
+    # 23/11: the source notebook's local .py modules are part of the material a port must
+    # reproduce — computed once, injected into every segment prompt (CoursIA#28208)
+    mods = local_modules(getattr(args, "source_nb", None)) if src_cells else []
     if creation_plan_seq_fill(plan_cells, n_src_cells):
         # A count-exact, order-only plan (the agent system prompt's own schema,
         # CoursIA#28079) is addressable as-is — recorded, then validated below
@@ -2372,7 +2866,7 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
         unparsed/empty answer returns parsed=None and the caller decides."""
         env = await sk_call_retry(session, args, rec, stage,
                                   creation_json_prompt(tranche, n_src_cells, conventions,
-                                                       src_cells, cs_cells), conv,
+                                                       src_cells, cs_cells, modules=mods), conv,
                                   max_tokens=BUILD_MAX_TOKENS)
         part, env = await parse_or_repair(session, args, rec, stage, env, conv,
                                           max_tokens=BUILD_MAX_TOKENS)
@@ -2474,7 +2968,7 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             # smaller tranche, so the omissions cannot hide in a long answer again
             env = await sk_call_retry(session, args, rec, f"2-build+{si}+repair",
                                       creation_json_prompt(missing, n_src_cells,
-                                                           conventions), conv,
+                                                           conventions, modules=mods), conv,
                                       max_tokens=BUILD_MAX_TOKENS)
             conv = env.get("conversation_id") or conv
             part2, env = await parse_or_repair(session, args, rec, f"2-build+{si}+repair",
@@ -4512,10 +5006,13 @@ def twin_reference_view(nb_path, max_chars: int = TWIN_REF_VIEW_CAP) -> str:
 
 
 TWIN_VALUES_RULE = (
-    "- VALEURS : chaque valeur affichée par le jumeau (nombre, tableau, verdict, booléen) "
-    "doit sortir À L'IDENTIQUE de ton exécution — mêmes instances, mêmes paramètres, même "
-    "précision d'affichage. Un écart de valeur avec la sortie de référence est un rejet "
-    "garanti ; n'affiche jamais une autre valeur comme si c'était la même.\n"
+    "- VALEURS : chaque valeur DÉTERMINISTE affichée par le jumeau (nombre, tableau, "
+    "verdict, booléen) doit sortir À L'IDENTIQUE de ton exécution — mêmes instances, "
+    "mêmes paramètres, même précision d'affichage. Une valeur qui dépend d'un TIRAGE "
+    "aléatoire n'est pas reproductible à l'identique : porte le protocole (même graine "
+    "déclarée, RNG cible seedé) et affiche TON résultat réel, l'écart nommé en prose. "
+    "Un écart sur une valeur déterministe est un rejet garanti ; une cellule "
+    "« indisponible » à la place d'un calcul l'est tout autant.\n"
     # 26/11, CoursIA batch o41: the former tail (« si la bibliothèque cible ne peut pas
     # reproduire une valeur, dis-le en prose et affiche l'écart mesuré ») is where the
     # dormant branch was born — the producer "said it in prose" from an `else` that printed
@@ -4538,13 +5035,19 @@ TWIN_VALUES_RULE = (
 
 
 def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: str = "",
-                    spec: bool = False, twin_view: str = "", api_block: str = "") -> str:
+                    spec: bool = False, twin_view: str = "", api_block: str = "",
+                    modules: list | None = None) -> str:
     """Self-contained on purpose: the build conversation may be gone (sk-agent keeps no
     durable store here, and --revise-from runs in a new process). The reviser gets the
     spec, the whole notebook with its REAL outputs, the twin's code cells with THEIR real
     outputs (the values to reproduce, 22/11), and the findings — and may contest a finding
     instead of bending the notebook to a wrong one. ``api_block`` (.NET exec-reject,
-    22/11): the real API of the package members the failing cells' diagnostics name."""
+    22/11): the real API of the package members the failing cells' diagnostics name.
+    ``modules`` (23/11): the source notebook's local .py modules, rendered by the SAME
+    block the creation prompt uses. A revision used to carry the twin's CALLS
+    (`SP.spectral_summary(...)`) but never the module defining them, so the only move
+    left was a substitute — CoursIA#27742 lost six rounds to « le message ne fournit
+    pas les algorithmes de spectral_… » while the 14 KB source sat one pass away."""
     fl = [{"cell": f.get("cell"), "severity": f.get("severity"), "detail": f.get("detail")}
           for f in findings if isinstance(f, dict)]
     return (
@@ -4558,6 +5061,7 @@ def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: s
         + f"## Carnet actuel — sources ET sorties réelles\n{view}\n\n"
         + (f"## Jumeau source — code ET sorties de RÉFÉRENCE (les valeurs à reproduire)\n"
            f"{twin_view}\n\n" if twin_view else "")
+        + local_module_block(modules)
         + (f"## {api_block}\n\n" if api_block else "")
         + f"## Constats du vérificateur\n{json.dumps(fl, ensure_ascii=False, indent=1)}\n\n"
         "## Règles\n"
@@ -6386,6 +6890,10 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
         note_content_verdict(rec, "verify-same-served-model")
     elif rc == 0 and entry.get("verdict") == "approve":
         note_content_verdict(rec, "verify-approved")
+        # The approval is bound to the bytes judged: a resume that re-runs stage 5 alone
+        # (23/11) refuses a build written since this verdict.
+        with contextlib.suppress(OSError):
+            entry["built_sha256"] = hashlib.sha256(built_nb.read_bytes()).hexdigest()
     elif rc == 1 and entry.get("verdict") == "reject":
         note_content_verdict(rec, "verify-reject")
     else:
@@ -6410,16 +6918,24 @@ def _git(wt: Path, *git_args: str, timeout: int = 300) -> tuple[int, str]:
 PUSH_TIMEOUT_S = 900
 
 
-def _push_branch(wt: Path, branch: str, timeout: int = PUSH_TIMEOUT_S) -> tuple[int, str]:
+def _push_branch(wt: Path, branch: str, timeout: int = PUSH_TIMEOUT_S,
+                 lease: str | None = None) -> tuple[int, str]:
     """`git push -u origin <branch>` that never crashes the grain (22/11, CoursIA#28018).
 
     CoursIA's pre-push hook is `git lfs pre-push`: a manual push of #28018 took 85 s, the
     driver's took more than its 300 s timer, and the uncaught TimeoutExpired crashed a
     grain whose notebook was built AND approved. A timed-out push is judged by the remote,
     not the timer: if origin's branch already points at HEAD the push landed and stage 5
-    goes on; otherwise it is a plain push failure, recorded, never a crash."""
+    goes on; otherwise it is a plain push failure, recorded, never a crash.
+
+    `lease` is the full sha of the commit a PREVIOUS attempt of the same grain pushed
+    (a resume from `pr-create-failed`, #1885 review). The push then carries
+    `--force-with-lease=refs/heads/<branch>:<sha>`: origin is replaced only while it still
+    sits on that commit, and refuses anything else. Never set on a first run, or on a
+    resume that has no such record -- a same-named branch is then refused, as before."""
+    extra = [f"--force-with-lease=refs/heads/{branch}:{lease}"] if lease else []
     try:
-        return _git(wt, "push", "-u", "origin", branch, timeout=timeout)
+        return _git(wt, "push", "-u", *extra, "origin", branch, timeout=timeout)
     except subprocess.TimeoutExpired:
         pass
     try:
@@ -6618,8 +7134,25 @@ def _load_drift_module():
     return mod
 
 
-def stage5_source_drift(wt_path: Path, src_twin: str) -> dict:
-    """Did the port's source twin move on origin/main since the worktree's base?
+def stage5_base_rev(wt_path: Path, rec: dict) -> str:
+    """The revision the port was BUILT on: the worktree head its trace recorded.
+
+    On a resume that failed past the branch (a push or a create failure) the worktree sits
+    on the previous attempt's commit, whose twin already carries the integration's nav
+    link: measured from THERE, a markdown cell the source gained since reads ``structure``
+    and the approved build is refused again (23/11). HEAD only when the trace records no
+    head this repository still resolves."""
+    head = ((rec.get("stages") or {}).get("worktree") or {}).get("head")
+    if head:
+        rc, _ = _git(wt_path, "rev-parse", "-q", "--verify", f"{head}^{{commit}}", timeout=60)
+        if rc == 0:
+            return str(head)
+    return "HEAD"
+
+
+def stage5_source_drift(wt_path: Path, src_twin: str, rebase: bool = True,
+                        base_rev: str = "HEAD", old_blob: str | None = None) -> dict:
+    """Did the port's source twin move on origin/main since the port was built?
 
     22/11, CoursIA main red for every open PR: #27805 ported Sudoku-07-Norvig while
     #27348 added three cells to its Python twin; merged on stale checks, the port
@@ -6629,20 +7162,93 @@ def stage5_source_drift(wt_path: Path, src_twin: str) -> dict:
     integration edits (nav link, README row, reseal) land on the fresh twin;
     `structure`/`code`/`deleted` refuse the push (the port is stale, a retry
     re-ports from the new source). A fetch that fails leaves the comparison to
-    the last known origin/main and says so -- fail-open, as before this guard."""
+    the last known origin/main and says so -- fail-open, as before this guard.
+
+    ``rebase=False`` measures and leaves the worktree on the build's base: stage 5
+    grafts first when the source only gained markdown cells (23/11), then re-bases.
+    ``base_rev`` is the revision the port was built on (``stage5_base_rev``);
+    ``old_blob`` the source as a previous delivery attempt measured it (a build
+    already grafted is aligned with THAT source)."""
     rc_f, out_f = _git(wt_path, "fetch", "-q", "origin", "main")
     try:
-        drift = _load_drift_module().source_drift(wt_path, "HEAD", src_twin)
+        drift = _load_drift_module().source_drift(wt_path, base_rev, src_twin,
+                                                  old_blob=old_blob)
     except Exception as e:  # never a blocker on an instrument failure
         return {"drift": "unmeasured", "error": f"{type(e).__name__}: {e}"[:300]}
     if rc_f != 0:
         drift["fetch_error"] = out_f[:200]
-    if drift.get("drift") == "markdown-only":
+    if rebase and drift.get("drift") in ("markdown-only", "markdown-added"):
         rc, out = _git(wt_path, "checkout", "-q", "--detach", "origin/main")
         drift["rebased"] = rc == 0
         if rc != 0:
             drift["rebase_error"] = out[:300]
     return drift
+
+
+def _nb_style(text: str, nb: dict) -> dict:
+    """How a notebook file was serialised, found by round-trip: the style whose
+    re-serialisation of the parsed notebook gives back its own text. A rewrite then
+    differs from the file only by what was changed in it, never by indent, key order,
+    escapes or a trailing newline. Falls back to nbformat's own style."""
+    for indent in (1, 2, None):
+        for sort_keys in (True, False):
+            for ascii_ in (False, True):
+                for tail in ("\n", ""):
+                    kw = {"indent": indent, "sort_keys": sort_keys, "ensure_ascii": ascii_}
+                    if indent is None:
+                        kw["separators"] = (",", ":")
+                    if json.dumps(nb, **kw) + tail == text:
+                        return {"kw": kw, "tail": tail}
+    return {"kw": {"indent": 1, "sort_keys": True, "ensure_ascii": False}, "tail": "\n"}
+
+
+def stage5_graft_markdown(wt_path: Path, src_twin: str, drift: dict,
+                          built_nb: Path, base_rev: str = "HEAD",
+                          old_blob: str | None = None) -> dict:
+    """Copy into the built port the markdown cells its source twin gained on origin/main.
+
+    Admitted only by `graft_markdown` (the port is cell-aligned with the source it was
+    built on; the source gained markdown cells and nothing else). The source the port is
+    aligned with is read where `stage5_source_drift` measured from: ``old_blob`` when
+    readable, else ``base_rev``. The build is rewritten
+    in the run dir, its previous bytes kept next to it (`<build>.pre-graft-<ts>Z.ipynb`),
+    in the file's own serialisation and line endings -- the notebook that will be pushed
+    differs from the approved one by the added cells and nothing else. Deterministic:
+    no model turn, no git gesture."""
+    try:
+        mod = _load_drift_module()
+        raw = built_nb.read_bytes()
+        text = raw.decode("utf-8-sig").replace("\r\n", "\n")
+        port = json.loads(text)
+        old_nb = ((mod.blob_notebook(wt_path, old_blob) if old_blob else None)
+                  or mod.notebook_at(wt_path, base_rev, src_twin))
+        res = mod.graft_markdown(port, old_nb,
+                                 mod.notebook_at(wt_path, "origin/main", src_twin))
+        if res.get("error"):
+            return {"ok": False, "error": res["error"]}
+        cells, already = res.pop("cells"), res.pop("already")
+        backup = None
+        if not already:
+            backup = built_nb.with_name(
+                f"{built_nb.stem}.pre-graft-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.ipynb")
+            shutil.copy2(built_nb, backup)
+            style = _nb_style(text, port)
+            out = json.dumps(port | {"cells": cells}, **style["kw"]) + style["tail"]
+            if b"\r\n" in raw:
+                out = out.replace("\n", "\r\n")
+            try:
+                with open(built_nb, "w", encoding="utf-8", newline="") as fh:
+                    fh.write(out)
+            except Exception:
+                # the file is truncated by now: ANY failure of the write restores it -- a
+                # disk error, and an encoding one too (UnicodeEncodeError is a ValueError)
+                shutil.copy2(backup, built_nb)     # never leave a half-written approved build
+                raise
+    except Exception as e:  # refuses loudly; an approved build is never shipped half-grafted
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:200]}
+    return {"ok": True, "inserted": res["inserted"], "count": res["count"], "already": already,
+            "backup": backup.name if backup else None,
+            "sha256": hashlib.sha256(built_nb.read_bytes()).hexdigest()}
 
 
 def integration_pr_lines(integ: dict | None) -> str:
@@ -6767,20 +7373,72 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
 
     cm0 = rec.get("create_mode") or {}
     src0 = cm0.get("source") if isinstance(cm0, dict) else None
+    pr_resume = bool((rec.get("stages") or {}).get("pr_resume"))
+
+    def _rebase() -> bool:
+        """Detach onto today's origin/main. False when it failed -- and the refusal is
+        written: an integration replayed on a stale base is not pushed on a guess."""
+        rc, out = _git(wt_path, "checkout", "-q", "--detach", "origin/main")
+        if rc == 0:
+            entry["rebased"] = True
+            return True
+        entry["error"] = f"re-base on origin/main failed: {out[:300]}"
+        rec["verdict"], rec["pr"] = "pr-rebase-failed", entry
+        return False
+
     if src0:
-        drift = stage5_source_drift(wt_path, str(src0))
+        # Measured BEFORE any git gesture, so that a graft refused below leaves HEAD where
+        # it was -- a worktree left on origin/main would read "no drift" on the next
+        # attempt and push a port without the cells the source gained. Measured FROM the
+        # source the port is aligned with, never from wherever a previous attempt left
+        # the worktree: that attempt's main blob when it delivered an already-grafted
+        # build (stages.pr_resume carries it), else the build's base, the head the
+        # trace recorded (stage5_base_rev).
+        base_rev = stage5_base_rev(wt_path, rec)
+        old_blob = ((rec.get("stages") or {}).get("pr_resume") or {}).get("main_blob")
+        drift = stage5_source_drift(wt_path, str(src0), rebase=False, base_rev=base_rev,
+                                    old_blob=old_blob)
         entry["source_drift"] = drift
+        entry["base_rev"] = base_rev
         if drift.get("drift") in ("structure", "code", "deleted"):
             entry["error"] = (f"source twin {src0} changed on origin/main since the build "
                               f"({drift['drift']}): the port is stale, no PR")
             rec["verdict"], rec["pr"] = f"source-drifted:{drift['drift']}", entry
             return
-        if drift.get("drift") == "markdown-only" and not drift.get("rebased"):
-            entry["error"] = f"markdown-only drift, re-base failed: {drift.get('rebase_error')}"
-            rec["verdict"], rec["pr"] = "source-drifted:rebase-failed", entry
+        if drift.get("drift") == "markdown-added":
+            # 23/11, CoursIA#28209: an APPROVED 44-cell port, then #28239 inserted ONE
+            # markdown cell at index 43 of the 44-cell Python twin and stage 5 read it
+            # "structure" -> the port was refused. An addition of markdown cells changes
+            # no cell the verifier judged: the added cells are copied verbatim into the
+            # port at the index they hold in the fresh source (deterministic, no model
+            # turn), and the approval stays true for everything it judged.
+            grafted = stage5_graft_markdown(wt_path, str(src0), drift, built_nb,
+                                            base_rev=base_rev, old_blob=old_blob)
+            entry["graft"] = {k: v for k, v in grafted.items() if k != "cells"}
+            if not grafted.get("ok"):
+                entry["error"] = f"markdown-added drift, graft refused: {grafted.get('error')}"
+                rec["verdict"], rec["pr"] = "source-drifted:graft-failed", entry
+                return
+        # The integration lands on the fresh twin. Every refusal above has returned
+        # already, so nothing below finds the worktree on origin/main by accident.
+        if drift.get("drift") in ("markdown-only", "markdown-added"):
+            if _rebase():
+                drift["rebased"] = True
+            else:
+                return
+        elif pr_resume and not _rebase():
             return
+    elif pr_resume and not _rebase():
+        # no source twin to measure (edit mode, spec twin): the same start
+        return
 
-    rc, out = _git(wt_path, "checkout", "-b", branch)
+    # A resume re-creates its branch from origin/main as a first run does, drift or not
+    # (above): the worktree may sit on the previous attempt's branch, and a second commit
+    # stacked on that one would be empty (the same build, an idempotent integration).
+    # It also meets the branch its previous attempt left in the repo (the scheduler
+    # releases a failed grain's worktree, never its branch). Nothing is force-pushed -- a
+    # branch already on origin with other bytes is refused by the push below, as before.
+    rc, out = _git(wt_path, "checkout", "-B" if pr_resume else "-b", branch)
     if rc != 0:
         entry["error"] = out[:300]
         rec["verdict"], rec["pr"] = "pr-branch-failed", entry
@@ -6836,10 +7494,15 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         entry["integration"] = {"skipped": "no source twin in the repo "
                                            "(edit mode or spec twin)"}
 
+    graft = entry.get("graft") or {}
+    graft_idx = ", ".join(str(g["index"]) for g in graft.get("inserted") or [])
     commit_body = (
         f"{desc}\n\n"
         + "\n".join(f"- cell {g.get('cell')} ({g.get('geste')}): {_text(g.get('but')).strip()}"
                     for g in (rec.get("plan") or {}).get("plan") or [] if isinstance(g, dict))
+        + (f"\n\nCellule(s) markdown {graft_idx} : ajoutées au jumeau source sur main après "
+          f"la construction du portage, recopiées telles quelles aux mêmes indices "
+          f"(greffe déterministe, code inchangé)." if graft.get("count") else "")
         + f"\n\nProducteur : {args.agent} (harnais nb_coder, stages 0-5)."
         + f"\nVérification indépendante : {args.verifier_agent} — "
         f"{(rec.get('verify') or {}).get('verdict')} "
@@ -6868,7 +7531,9 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         entry["error"] = f"commit: {out[:300]}"
         rec["verdict"], rec["pr"] = "pr-git-failed", entry
         return
-    entry["commit"], _ = _git(wt_path, "rev-parse", "--short", "HEAD")
+    # `_git` returns (rc, out): the sha is the SECOND element (this read recorded `0`
+    # until #1885's review measured it).
+    _, entry["commit"] = _git(wt_path, "rev-parse", "--short", "HEAD")
 
     # Twin-parity reseal, AFTER the integration commit (the tool records the
     # git blob SHAs at HEAD: notebook, README row and inbound link must be in
@@ -6901,11 +7566,20 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         except Exception as e:
             integ["guards_error"] = f"{type(e).__name__}: {e}"[:300]
 
-    rc, out = _push_branch(wt_path, branch)
+    # A resume from `pr-create-failed` finds its OWN branch on origin: the previous attempt
+    # pushed it, then died at `gh pr create`. Rebuilt on today's origin/main the new commit
+    # is not its descendant, so a plain push is refused (non-fast-forward) and the grain
+    # would loop to `pr-push-failed` (ai-01, #1885). The lease is the commit that attempt
+    # recorded at its push: origin is replaced only while it still sits there. A first run,
+    # and every other resume, pushes without one and is refused as before.
+    lease = ((rec.get("stages") or {}).get("pr_resume") or {}).get("pushed_sha")
+    rc, out = _push_branch(wt_path, branch, lease=lease)
     if rc != 0:
         entry["error"] = f"push: {out[:300]}"
         rec["verdict"], rec["pr"] = "pr-push-failed", entry
         return
+    # The full commit origin now holds: what a later resume may replace, under lease.
+    _, entry["head_sha"] = _git(wt_path, "rev-parse", "HEAD")
 
     n_exec = len(rec.get("execution") or [])
     gates_ok, gates_unmeasured = split_gates(rec.get("gates") or [])
@@ -6960,6 +7634,11 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
            f"{(entry.get('source_drift') or {}).get('main_blob')}, cellules de code "
            "identiques) : intégration rejouée sur la version fraîche."
            if (entry.get("source_drift") or {}).get("rebased") else "")
+        + (f"\n- Le jumeau source a **gagné {graft['count']} cellule(s) markdown** sur `main` "
+           f"depuis la construction (indice(s) {graft_idx} sur le jumeau frais) : recopiée(s) "
+           "telles quelles dans le portage aux mêmes indices — greffe déterministe, aucun "
+           "tour de modèle ; aucune cellule jugée par le vérificateur n'a changé."
+           if graft.get("count") else "")
         + f"\n{issue_link_line(args.issue, issue, args.notebook)}\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
     body_file = built_nb.parent / f"pr-body-{args.issue}.md"
@@ -7715,6 +8394,25 @@ async def revision_dotnet_api(pm, rec: dict, kname: str, exec_dir: Path, built_p
     return (g or {}).get("block") or ""
 
 
+def _cell_ids(items) -> set:
+    return {i.get("cell") for i in (items or []) if isinstance(i, dict)
+            and isinstance(i.get("cell"), int)}
+
+
+def contest_maintained(contested, findings) -> bool:
+    """Whether a verifier that re-judged an UNCHANGED draft still rejects on a cell the
+    builder CONTESTED. Read only by the stop rule of a contested-only round: a maintained
+    contest is final for the invocation (looping would ask the builder the same question
+    again, CoursIA#27288), while a reject whose contested cells were all LIFTED rests on
+    findings the builder has never seen and must be handed over. Measured fournée o20,
+    CoursIA#27742 (23/11): the builder contested cell 2; the verifier, reading the module
+    sources for the first time, lifted cell 2 and rejected on cell 10 instead — the old
+    rule stopped there and the new finding never reached the builder. No usable cell on
+    the contested side is NOT a proven lift: the reject stands (stop)."""
+    cells = _cell_ids(contested)
+    return not cells or bool(cells & _cell_ids(findings))
+
+
 async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path: Path,
                       kname: str, exec_dir: Path, conventions: str, create_mode: bool,
                       wt_path: Path, out_dir: Path) -> None:
@@ -7767,7 +8465,10 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
                                 twin_view=(twin_reference_view(src_nb)
                                            if src_nb and Path(src_nb) != Path(built_path)
                                            else ""),
-                                api_block=api_block),
+                                api_block=api_block,
+                                modules=(local_modules(src_nb)
+                                         if src_nb and Path(src_nb) != Path(built_path)
+                                         else None)),
                 None, max_tokens=BUILD_MAX_TOKENS)
             entry["conversation_id"] = env.get("conversation_id")
             part, env = await parse_or_repair(sk, args, rec, f"6-revise+{rnd}", env, None,
@@ -7867,10 +8568,21 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
         entry["elapsed_s"] = round(time.time() - t0, 1)
         done += 1
         if contested_only:
-            # The unchanged draft was independently judged once. Looping would ask the
-            # builder to contest the same findings again; a resumed invocation may add
-            # missing data or a new strategy before paying another revision.
-            break
+            # The unchanged draft was independently judged once more. A reject that still
+            # stands on a cell the builder CONTESTED is final for this invocation: looping
+            # would ask it to contest the same finding again (CoursIA#27288), and a resumed
+            # invocation may add missing data or a new strategy before paying another
+            # revision. A reject whose contested cells were all LIFTED is another matter:
+            # it rests on findings the builder has never seen, and the loop goes on to hand
+            # them over (fournée o20, CoursIA#27742 — contest_maintained).
+            out = [f for f in (rec.get("verify") or {}).get("findings") or []
+                   if isinstance(f, dict)]
+            if (not str(rec.get("verdict") or "").startswith("verify-") or not out):
+                break               # not re-judged, or nothing actionable: as before
+            entry["contest"] = ("maintained" if contest_maintained(entry.get("contested"), out)
+                                else "lifted")
+            if entry["contest"] == "maintained":
+                break
         if (rec.get("verdict") == "verify-reject"
                 and revise_round_extends(done, budget, cap, source_in,
                                          (rec.get("verify") or {}).get("source"),
@@ -7914,6 +8626,43 @@ _REVISE_CARRY = ("plan", "kernel", "kernel_cwd", "create_mode", "create_metadata
                  "verify", "revisions", "exec_mode", "repo_origin", "last_content_verdict",
                  "executed_kernel", "kernelspec_align")
 
+# Stage 5 refused to DELIVER an approved build. The content was judged; only the delivery
+# gestures are worth retrying -- on the build as it is.
+PR_REFUSED_VERDICTS = ("source-drifted:", "pr-branch-failed", "pr-git-failed",
+                       "pr-push-failed", "pr-repo-unresolved", "pr-create-failed",
+                       "pr-rebase-failed")
+
+
+def approved_build_state(prior: dict, built: Path, out_dir: Path, issue) -> dict:
+    """Is the build on disk the one the verifier approved? (stage-5-only resume, 23/11)
+
+    ``changed`` False only on a measured proof. A trace written since 23/11 binds the
+    approval to the build's sha256 (and a graft binds its own: the approved cells plus
+    the markdown the source gained). An older trace is held to its last verify record:
+    the build must not have been written after that verification finished. No record,
+    no proof. Fail-closed before anything is pushed."""
+    out: dict = {"changed": True}
+    try:
+        digest = hashlib.sha256(built.read_bytes()).hexdigest()
+    except OSError as e:
+        return out | {"why": f"build unreadable: {e}"[:160]}
+    out["sha256"] = digest[:16]
+    bound = {(prior.get("verify") or {}).get("built_sha256"),
+             ((prior.get("pr") or {}).get("graft") or {}).get("sha256")} - {None}
+    if bound:
+        return out | {"by": "sha256", "changed": digest not in bound}
+    try:
+        last = json.loads((out_dir / f"verify-{issue}.json").read_text(encoding="utf-8"))
+        t = datetime.fromisoformat(str(last["finished"]).replace("Z", "+00:00"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return out | {"why": "no verify record to hold the build to"}
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    mtime = datetime.fromtimestamp(built.stat().st_mtime, timezone.utc)
+    return out | {"by": "mtime-vs-last-verify", "changed": mtime > t,
+                  "built_mtime": mtime.isoformat(timespec="seconds"),
+                  "verify_finished": t.isoformat(timespec="seconds")}
+
 
 async def run_revision(args, rec: dict) -> dict:
     """--revise-from <issue-N.json> / --verify-from <issue-N.json>: resume a grain without
@@ -7950,13 +8699,20 @@ async def run_revision(args, rec: dict) -> dict:
     # The content field, when present, is what this gate decides on; old traces fall back
     # to the top-level verdict unchanged.
     content_prior = prior.get("last_content_verdict") or prior.get("verdict")
+    stage5_only = False
     if resume_from:
         # a late-claim refusal is resumable once the holder RELEASED the notebook: the
         # build was approved and only the reservation failed (21/11, #27851). The live
         # scoped claim re-read below refuses again while another lane still holds it.
         late_refused = (str(prior.get("verdict") or "").startswith(LATE_CLAIM_REFUSED)
                         and (prior.get("verify") or {}).get("verdict") == "approve")
-        if prior.get("verdict") != "verify-error" and not late_refused:
+        # 23/11 (#28209): stage 5 refused to DELIVER an approved build (a source drift
+        # made of one markdown cell). The build on disk is the one the verifier
+        # approved: stage 5 is re-run on it as it is -- no gate, no verify, no model turn.
+        stage5_only = (str(prior.get("verdict") or "").startswith(PR_REFUSED_VERDICTS)
+                       and content_prior == "verify-approved"
+                       and (prior.get("verify") or {}).get("verdict") == "approve")
+        if prior.get("verdict") != "verify-error" and not late_refused and not stage5_only:
             rec["verdict"] = f"refused-verify-not-crashed:{prior.get('verdict')}"
             return rec
     elif content_prior != "verify-reject":
@@ -8053,7 +8809,7 @@ async def run_revision(args, rec: dict) -> dict:
     src_nb = _prior_src_nb(prior, wt_path, args.notebook)
     exec_dir = Path(prior.get("kernel_cwd") or "")
     for label, p in (("worktree", wt_path), ("built", built), ("source", src_nb),
-                     ("kernel-cwd", exec_dir)):
+                     *(() if stage5_only else (("kernel-cwd", exec_dir),))):
         if not str(p) or not p.exists():
             rec["verdict"] = f"refused-revise-{label}-missing:{p}"
             return rec
@@ -8093,6 +8849,39 @@ async def run_revision(args, rec: dict) -> dict:
            or (prior.get("create_mode") or {}).get("target") or "")
     kname = (args.kernel_override or (tag_kernel(tgt) if create_mode else None)
              or (prior.get("kernel") or {}).get("kernel_name") or "")
+    if stage5_only:
+        # Only a build PROVEN untouched since its approval is delivered; the worktree is
+        # the one the run recorded (restored above at its head when the scheduler had
+        # released it), so stage 5 measures the drift against the build's own base.
+        state = approved_build_state(prior, built, out_dir, args.issue)
+        # The source as the previous attempt measured it, when the build it delivered
+        # from is aligned with it (no drift, markdown-only drift, or a graft that
+        # succeeded): a cell the source gained SINCE is grafted onto the grafted build.
+        # A build the previous attempt could not align (graft refused, structure/code
+        # drift) is measured from its own base again.
+        prev_pr = prior.get("pr") if isinstance(prior.get("pr"), dict) else {}
+        prev_drift, prev_graft = prev_pr.get("source_drift") or {}, prev_pr.get("graft") or {}
+        aligned = (prev_drift.get("drift") in ("none", "markdown-only")
+                   or (prev_drift.get("drift") == "markdown-added" and prev_graft.get("ok")))
+        rec["stages"]["pr_resume"] = {
+            "from": prior.get("verdict"), "build": state,
+            "main_blob": prev_drift.get("main_blob")
+            if aligned and prev_drift.get("main_blob") else None,
+            # The commit the previous attempt pushed before dying at `gh pr create`: the
+            # stage-5 push may replace exactly that one, under lease (#1885). Absent from an
+            # older trace -> no lease -> a same-named branch is refused, never force-replaced.
+            "pushed_sha": (prev_pr.get("head_sha") or None)
+            if prior.get("verdict") == "pr-create-failed" else None}
+        rec["revised_from"]["mode"] = "pr"
+        if state["changed"]:
+            rec["verdict"] = ("refused-pr-resume-build-changed:"
+                              f"{state.get('by') or state.get('why') or 'unproven'}")
+            return rec
+        note_content_verdict(rec, "verify-approved")
+        if args.max_stage >= 5 and late_reservation(args, rec):
+            stage5_pr(args, rec, wt_path, built, issue, token)
+        rec["finished"] = utcnow()
+        return rec
     if resume_from:
         # verify-error is NOT a verdict: the verifier process crashed on an instrument
         # failure (20/11: the shared GitHub REST bucket ran out mid-run), so the build was
@@ -8354,7 +9143,8 @@ async def run(args, rec: dict) -> dict:
                                               ctx, view, conventions)
             elif create_mode:
                 prompt = creation_prompt(args.issue, issue_eff, args.notebook, args.source_nb,
-                                         kernel, ctx, view, conventions, cs_view)
+                                         kernel, ctx, view, conventions, cs_view,
+                                         modules=local_modules(src_nb))
             else:
                 prompt = plan_prompt(args.issue, issue_eff, args.notebook, kernel,
                                      ctx, view, conventions)

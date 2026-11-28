@@ -307,6 +307,138 @@ def test_image_swap_changes_the_digest(tmp_path):
     assert v.outputs_digest(c)[0]["sha"] == da["sha"]
 
 
+def test_the_verifier_reads_the_modules_the_builder_reads(tmp_path, monkeypatch):
+    """Fournée o18 (23/11 soir), CoursIA#27742: the revision prompt had just been given
+    the local modules, the builder produced a faithful reimplementation and argued it
+    — and the verifier rejected with « le degré du graphe des transitions observées ne
+    peut pas être vérifié, à partir de la SOURCE fournie ». Its own words named the
+    gap: it read less than the builder. `local_sensitivity` counts exactly those
+    neighbours. Material and rule must travel on BOTH sides of the parity."""
+    pkg = tmp_path / "Series" / "ict"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "sensitivity.py").write_text(
+        "def local_sensitivity(states, n, state_function):\n"
+        "    return [sum(1 for y in range(n) if y != x) for x in range(n)]\n"
+        "def sensitivity_distribution(states, n, f):\n"
+        "    return {'mean': 1.0}\n", encoding="utf-8")
+    nbdir = tmp_path / "Series" / "ICT-15l"
+    nbdir.mkdir()
+    src = nbdir / "T-Python.ipynb"
+    src.write_text(json.dumps({"cells": [{"cell_type": "code", "metadata": {},
+                                          "source": "from ict import sensitivity as SE\n"}],
+                               "metadata": {}, "nbformat": 4, "nbformat_minor": 5}),
+                  encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    mods = v.nbcd.local_modules(str(src))
+    assert mods, "the module must resolve before anything can reach the prompt"
+
+    issue = {"title": "t", "body": "b"}
+    bare = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [])
+    assert "def local_sensitivity" not in bare          # nothing is invented
+    with_mods = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [], modules=mods)
+    assert "def local_sensitivity" in with_mods, \
+        "the verifier must read the definition it is asked to compare against"
+    # the definitions stand with the SOURCE, ahead of the deliverable they frame
+    assert (with_mods.index("## SOURCE") < with_mods.index("def local_sensitivity")
+            < with_mods.index("## LIVRABLE"))
+    # the symmetric rule of the builder's « réimplémentation ≠ substitution »
+    for p in (bare, with_mods):
+        assert "RÉIMPLÉMENTATION fidèle d'un module local" in p
+        assert "Compare la définition et le port ligne à ligne AVANT de trancher" in p
+    assert "RÉIMPLÉMENTATION FIDÈLE" in with_mods
+    assert "ne peut pas être vérifié à partir de la SOURCE fournie" in with_mods
+    # a [SPEC] twin imports nothing local: the block never rides a spec verdict
+    spec = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [], mode="spec",
+                           modules=mods)
+    assert "def local_sensitivity" not in spec
+    # the builder's own block is unchanged by the shared renderer
+    assert "le port se fait À PARTIR" in v.nbcd.local_module_block(mods)
+    assert "le port se fait À PARTIR" not in with_mods
+
+
+def test_the_verifier_reads_the_reference_outputs_the_builder_reads(tmp_path):
+    """Fournée o7 (23/11), CoursIA#28206: the builder quoted the Python twin's stored
+    output verbatim (« mixture programmes L = [0. 0. 0. 0. 1.] », cellule 34) and the
+    verifier rejected three rounds running with « la SOURCE fournie ne contient pas
+    cette sortie ». Each was right about what it could see: the builder's prompt carries
+    the twin's code AND real outputs (22/11); the verifier's carried the code alone, plus
+    a 12 000-character diff annex that a port exhausts on its first cells. The reference
+    must travel on both sides of the parity."""
+    src = _nb(tmp_path, [_code([_stream("solution retenue : equilibre auxiliaire [12]\n"
+                                        "  mixture programmes L = [0. 0. 0. 0. 1.]\n")])],
+              "T-Python.ipynb")
+    issue = {"title": "t", "body": "b"}
+    bare = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [])
+    assert "mixture programmes L" not in bare                  # nothing is invented
+    assert "## SOURCE — sorties de RÉFÉRENCE" not in bare     # no reference, no section
+    view = v.nbcd.twin_reference_view(src)
+    assert "mixture programmes L" in view, "the builder's renderer must carry the output first"
+    with_ref = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [], twin_view=view)
+    # the reference stands with the SOURCE, ahead of the deliverable it frames
+    assert (with_ref.index("## SOURCE — carnet d'origine")
+            < with_ref.index("## SOURCE — sorties de RÉFÉRENCE")
+            < with_ref.index("mixture programmes L")
+            < with_ref.index("## LIVRABLE"))
+    # the symmetric rule of the builder's TWIN_VALUES_RULE, present with or without a twin
+    for p in (bare, with_ref):
+        assert "valeur CITÉE par le LIVRABLE comme une référence de la SOURCE" in p
+        assert "est VÉRIFIABLE" in p
+        assert "absente de la SOURCE » sans l'y avoir cherchée est un faux constat" in p
+    # a declared cut is never a licence: what is cut has been read by nobody
+    assert "ce qui est coupé n'a été vu par personne" in with_ref
+    # a [SPEC] twin displays nothing: the view never rides a spec verdict
+    spec = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [], mode="spec", twin_view=view)
+    assert "mixture programmes L" not in spec
+    assert "## SOURCE — sorties de RÉFÉRENCE" not in spec
+
+
+def test_stage4_hands_the_twin_reference_to_the_verifier(monkeypatch, tmp_path):
+    """The wire, not only the renderer: stage 4 builds the reference from the SOURCE file
+    it is given, and the call carries it. A rule without its material is a promise."""
+    ok = {"response": '```json\n{"verdict": "approve", "findings": []}\n```'}
+    rc, t, prompts = _run_main_prompts(monkeypatch, tmp_path, [ok])
+    assert rc == 0 and len(prompts) == 1
+    assert "## SOURCE — sorties de RÉFÉRENCE" in prompts[0]
+    assert "SORTIE RÉELLE du jumeau (référence)" in prompts[0]
+    assert t["twin_view_chars"] > 0
+
+
+def test_prompt_marks_the_issue_table_as_indicative():
+    """Fournée o15 (23/11), two reject classes on the same material:
+    - CoursIA#27741: 3 major findings demanding stubs for cells the SOURCE itself
+      executes (`centre_m`, `predire_recolle`, `session_bookmaker`) — stubbing them
+      destroys the numeric parity the acceptance also demands. The issue's own spec
+      says the archetype column is a « classification voltron heuristique ».
+    - CoursIA#27742: rejected for drawing SVG instead of ScottPlot — the .NET column
+      is « indicative, à affiner par le producteur », and the merged ICT-15f/15i
+      twins draw in SVG.
+    Neither indicative column may carry a rejection."""
+    issue = {"title": "t", "body": "b"}
+    p = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [])
+    assert "INDICATIF" in p
+    assert "classification voltron heuristique" in p
+    assert "la stubber" in p and "parité numérique" in p
+    assert "ScottPlot" in p
+    assert "la colonne est indicative, la convention est binding" in p
+    # a stub WITHOUT the source executing it stays a firm major (the rule is scoped)
+    assert "quota d'exercices" in p
+
+
+def test_prompt_reads_the_inventory_count_as_a_count():
+    """Fournée o22 (23/11), CoursIA#27742: the acceptance line « Exercices répertoriés par
+    l'inventaire : 5 (>= 3, OK) » is the COUNT of a mechanical inventory that classes
+    `regime_r0` / `regime_r1` as exercises, while the issue's Objet asks for « au moins
+    trois ». The deliverable carried the three real exercises; the verifier rejected, then
+    MAINTAINED the rejection on the builder's correct contest (« le quota de cinq n'est
+    donc pas atteint ») and the invocation stopped there. A count is not a quota."""
+    p = v.verify_prompt({"title": "t", "body": "b"}, "SRC", "BUILT", {}, "", [], [], [])
+    assert "COMPTE de l'inventaire mécanique, pas un quota de N" in p
+    assert "ne l'écris jamais « quota non atteint »" in p
+    assert ("ne compte jamais comme exercices manquants les cellules que la source "
+            "exécute") in p
+
+
 def test_prompt_scopes_the_verdict_to_the_deliverable():
     """4/4 rejects measured on the pilot grains (16/11) were rejecting on facts the
     verifier cannot observe: chain procedure (claims, MCP, coordinator approval) and
@@ -318,6 +450,26 @@ def test_prompt_scopes_the_verdict_to_the_deliverable():
     assert "ne rejette jamais pour ce motif" in p
     assert "déjà présent à l'identique dans la SOURCE" in p
     assert "PAR LE LIVRABLE" in p
+
+
+def test_prompt_teaches_the_stochastic_parity_convention():
+    """Fournée o12 (23/11): the builder doctrine worked (cells computed for real) but
+    the critic rejected the Monte-Carlo divergence itself — partials flipping sign at
+    the same seed, simulation profits 1859 vs 1993 — demanding value parity that the
+    repo's own merged twins (ICT-15h, #27734) declare impossible. The verifier prompt
+    must judge PROTOCOL parity for drawn quantities, value parity only for
+    deterministic ones, and keep rejecting placeholders. Also: the coord-refs gate
+    strips Epic/see/part-of/lane from cells — that removal is harness-imposed, never
+    'lost content'."""
+    issue = {"title": "t", "body": "b"}
+    p = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [])
+    assert "divergence de valeurs STOCHASTIQUES" in p
+    assert "parité du PROTOCOLE" in p
+    assert "xorshift64*" in p
+    assert "n'est PAS un motif de rejet" in p
+    assert "indisponible" in p                 # placeholder stays a firm reject
+    assert "références de coordination retirées" in p
+    assert "jamais comme contenu perdu" in p
 
 
 def test_prompt_fences_out_pr_stage_repo_artifacts():

@@ -247,14 +247,43 @@ SPEC_TASK = (
 )
 
 
+TWIN_REFERENCE_HEAD = (
+    "## SOURCE — sorties de RÉFÉRENCE (code et TEXTE réellement affiché par le jumeau)\n"
+    "La vue SOURCE ci-dessus ne montre que le CODE des cellules. Voici, pour chaque cellule "
+    "code de la SOURCE, son code et le texte qu'elle affiche RÉELLEMENT : c'est la référence "
+    "des valeurs à reproduire — la même que le producteur a lue. Une valeur que le LIVRABLE "
+    "cite comme « référence Python » est VÉRIFIABLE dès que son texte figure ici : ne la "
+    "rejette jamais comme « absente de la SOURCE » sans l'avoir cherchée dans cette "
+    "section. À l'inverse, une valeur attribuée au jumeau et absente de ces sorties est un "
+    "constat. Une coupe est toujours déclarée (« …[sortie coupée : N caractères] », « vue "
+    "de référence coupée ») : le producteur a lu la même vue, donc ce qui est coupé n'a été "
+    "vu par personne — une valeur attribuée au jumeau depuis une zone coupée n'a pas pu être "
+    "lue, c'est un constat.\n\n")
+
+
 def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
                   conventions: str, src_digest: list[dict] | None = None,
                   built_digest: list[dict] | None = None,
                   diffs: list[dict] | None = None, mode: str = "source",
-                  built_outputs: dict | None = None, prior: dict | None = None) -> str:
+                  built_outputs: dict | None = None, prior: dict | None = None,
+                  modules: list[dict] | None = None, twin_view: str = "") -> str:
+    """``modules`` (23/11 soir): the SOURCE's local .py modules, the SAME renderings the
+    builder's creation and revision prompts carry. Without them the verifier reads less
+    than the builder and can only reject a faithful reimplementation as unverifiable
+    (CoursIA#27742: « ne peut pas être vérifié, à partir de la SOURCE fournie »).
+
+    ``twin_view`` (23/11 soir, fournée o7): the SOURCE's code cells with the text they
+    really display — the reference the builder reads (`twin_reference_view`, 22/11). Before,
+    the verifier's only source outputs were the diff annex: 12 000 characters shared by
+    every differing cell, i.e. spent on the first few. A value the deliverable cited from
+    a later cell was then « absent de la SOURCE » (CoursIA#28206: three rounds maintained
+    on « mixture programmes L = [0. 0. 0. 0. 1.] », a stored output the builder quoted
+    verbatim)."""
     spec = mode == "spec"
     annex = ""
     if spec:
+        modules = None      # a [SPEC] twin imports nothing local
+        twin_view = ""      # a [SPEC] twin displays nothing
         # 20/11 --from-spec: digests/diffs against a [SPEC] twin are noise (every cell
         # "edited", every source digest empty). The views show SOURCES only, so the
         # deliverable's outputs come in their own annex (IT08 #27460: rejected as
@@ -318,6 +347,8 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
         + (f"## SOURCE — jumeau de spec (plan imposé, généré par le harnais)\n{src_view}\n\n"
            if spec else
            f"## SOURCE — carnet d'origine (branche main, RÉFÉRENCE)\n{src_view}\n\n")
+        + (TWIN_REFERENCE_HEAD + f"{twin_view}\n\n" if twin_view else "")
+        + nbcd.local_module_verifier_block(modules)
         + f"## LIVRABLE — carnet produit (À VÉRIFIER)\n{built_view}\n\n"
         + annex
         + "## Faits mécaniques du harnais (des AFFIRMATIONS du producteur — à contre-vérifier "
@@ -340,6 +371,22 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
         "- Un défaut de convention **déjà présent à l'identique dans la SOURCE**, hors des "
         "cellules que le livrable édite : signale-le en `minor` seulement (le grain ne répare "
         "pas la série ; un balayage dédié s'en charge).\n"
+        "- La **divergence de valeurs STOCHASTIQUES** : quand la SOURCE tire ses données d'un "
+        "générateur numpy (Monte-Carlo, trajectoires, `default_rng`/PCG64), le jumeau C# ne "
+        "peut PAS reproduire les mêmes nombres — personne ne le peut, c'est la raison d'être "
+        "de la convention du dépôt (jumeaux mergés ICT-15 et 15h, #27734) : un RNG C# seedé "
+        "(xorshift64*), le PROTOCOLE porté (même graine déclarée, même loi, même taille "
+        "d'échantillon, mêmes seuils, même structure de verdict). Juge la parité du PROTOCOLE "
+        "et les quantités DÉTERMINISTES (identiques au dernier chiffre affiché) ; une "
+        "quantité stochastique qui diverge de la source — signe compris, partielles near-zero "
+        "comprises, profits de simulation compris — n'est PAS un motif de rejet quand le "
+        "protocole est porté et l'écart nommé en prose. Rejette en revanche, et fermement : "
+        "une valeur stochastique non calculée, une cellule « indisponible » ou « non calculé », "
+        "ou une prose qui affirme une mesure absente des sorties réelles.\n"
+        "- Les **références de coordination retirées des cellules** : la garde du dépôt refuse "
+        "`EPIC #`, `see #`, `part of #` et `lane` DANS LES CELLULES du carnet — leur retrait "
+        "du corps est imposé par le harnais (la provenance vit en pied de la dernière cellule). "
+        "Ne le compte jamais comme contenu perdu.\n"
         "- La **procédure de la chaîne** : claim, publication via l'App de lane, usage de MCP "
         "papermill, `model_used`, validations C.1/C.2/B.0, approbation du coordinateur. Ces "
         "étapes ne sont pas observables sur les deux vues ; le harnais (traces, gates, "
@@ -374,7 +421,48 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
         "résultat révélé**, et autorise explicitement les valeurs attendues en commentaire. "
         "N'invente pas un critère plus strict (« sans solution ni indice ») : il rend le port "
         "fidèle impossible et fait osciller le grain (mesuré CoursIA#28208, 23/11 : trois "
-        "rejets citant une formule d'acceptation absente de toute convention).\n\n"
+        "rejets citant une formule d'acceptation absente de toute convention).\n"
+        "- Une **valeur CITÉE par le LIVRABLE comme une référence de la SOURCE** : elle se "
+        "vérifie dans la section « sorties de RÉFÉRENCE », qui porte le texte réellement "
+        "affiché par le jumeau. Une valeur qui s'y trouve est VÉRIFIABLE — la déclarer "
+        "« absente de la SOURCE » sans l'y avoir cherchée est un faux constat, et le "
+        "producteur qui la cite exactement a raison. Mesuré 23/11, fournée o7, "
+        "CoursIA#28206 : rejet maintenu trois tours (« la SOURCE fournie ne contient pas "
+        "cette sortie ») sur une sortie stockée en entier dans le jumeau.\n"
+        "- Le **tableau « Cellules à porter » de l'issue est INDICATIF** : sa colonne "
+        "Archetype est une « classification voltron heuristique » et sa colonne « Équivalent "
+        ".NET » est « indicative, à affiner par le producteur » (verbatim des specs parité). "
+        "Jugent seuls : les clauses Objet et Acceptation, et la parité avec la SOURCE.\n"
+        "  · Une cellule que la SOURCE **exécute** et dont elle affiche les sorties ne peut "
+        "pas être rendue par un stub, même si l'archetype dit « exercice » : la stubber "
+        "détruit la parité numérique qu'exige l'Acceptation, et exiger les deux est "
+        "contradictoire. Le quota d'exercices (≥ N) se satisfait sur les cellules d'exercice "
+        "RÉELLES du jumeau (titres « Exercice N », `# TODO etudiant`). Mesuré 23/11, fournée "
+        "o15, CoursIA#27741 : 3 findings majeurs « stub exigé » sur des cellules que la "
+        "source exécute (`centre_m`, `predire_recolle`, `session_bookmaker`).\n"
+        "  · La ligne d'Acceptation « Exercices répertoriés par l'inventaire : N (>= K, OK) » "
+        "est le COMPTE de l'inventaire mécanique, pas un quota de N : l'exigence est K (« au "
+        "moins K exercices », clause Objet). Un livrable qui porte K exercices RÉELS de la "
+        "source ou plus satisfait la clause ; ne l'écris jamais « quota non atteint », et ne "
+        "compte jamais comme exercices manquants les cellules que la source exécute. Mesuré "
+        "23/11, fournée o22, CoursIA#27742 : rejet maintenu « le quota de cinq n'est donc pas "
+        "atteint » sur trois exercices réels, l'issue exigeant « au moins trois » et "
+        "classant à tort `regime_r0` / `regime_r1` comme exercices.\n"
+        "  · Une figure rendue selon la convention maison (SVG, pattern "
+        "Graphique/Formatter) alors que la colonne « Équivalent .NET » nomme un package "
+        "(ScottPlot…) n'est PAS un rejet : la colonne est indicative, la convention est "
+        "binding. Mesuré 23/11, fournée o15, CoursIA#27742 (rejet « ScottPlot non utilisé » "
+        "alors que les jumeaux ICT-15f/15i mergés dessinent en SVG).\n"
+        "- Une **RÉIMPLÉMENTATION fidèle d'un module local** : la SOURCE appelle des "
+        "fonctions définies dans les modules ci-dessus (`spectral_summary`, "
+        "`sensitivity_distribution`, …) ; un LIVRABLE qui réécrit en C# la MÊME définition "
+        "— mêmes entrées, mêmes paramètres, même quantité mesurée, mêmes sorties — n'est PAS "
+        "une substitution, et l'absence d'appel de bibliothèque n'est pas un constat. "
+        "Compare la définition et le port ligne à ligne AVANT de trancher ; rejette seulement "
+        "une AUTRE méthode qui mesure autre chose, en la nommant. Mesuré 23/11, fournée "
+        "o18, CoursIA#27742 : rejet « le degré du graphe des transitions observées ne peut "
+        "pas être vérifié … comme équivalent » alors que `local_sensitivity` compte "
+        "exactement ces voisins.\n\n"
         "Rends UNIQUEMENT un bloc ```json :\n"
         '{"verdict":"approve|reject","findings":[{"cell":<index du LIVRABLE>,"severity":"major|minor",'
         '"detail":"..."}],"checked":["..."]}\n'
@@ -516,13 +604,23 @@ def main() -> int:
         diffs = cell_diffs(src_p, built_p)
         rec["diff_cells"] = [d["cell"] for d in diffs]
         rec["diff_kinds"] = [d["kind"] for d in diffs]
+        # The reference the BUILDER reads reaches the verifier too (fournée o7): the twin's
+        # code cells with the text they really display. The diff annex alone is 12 000
+        # characters for every differing cell — a port differs on all of them, so the last
+        # cells' outputs were « [tronqué] » and their values « absents de la SOURCE ».
+        twin_view = (nbcd.twin_reference_view(src_p) if args.mode != "spec" else "")
+        rec["twin_view_chars"] = len(twin_view)
         prompt = verify_prompt(issue, nbcd.build_view(src_p), nbcd.build_view(built_p),
                                facts, conventions,
                                outputs_digest(src_p), outputs_digest(built_p), diffs,
                                mode=args.mode,
                                built_outputs=(built_outputs_annex(built_p)
                                               if args.mode == "spec" else None),
-                               prior=prior)
+                               prior=prior, twin_view=twin_view,
+                               # the verifier reads what the builder read (23/11 soir):
+                               # never in spec mode — a [SPEC] twin imports nothing
+                               modules=(nbcd.local_modules(str(src_p))
+                                        if args.mode != "spec" else None))
         rec["prompt_chars"] = len(prompt)
         env, dt = asyncio.run(call_verifier(args, prompt))
         retry = verify_retry_reason(env, args.max_tokens)

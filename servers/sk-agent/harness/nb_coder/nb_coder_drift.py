@@ -25,9 +25,18 @@ twin change?
                       outputs). The port is still a faithful twin; only the
                       integration (nav link, README row, reseal) must be replayed
                       on the fresh twin -- ``nb_coder_integrate --sync-main``.
-- ``structure``     : cells added, removed or re-typed. The cell-index-aligned
-                      conformance spec and the parity seal no longer hold: the
-                      port must be refreshed from the new source.
+- ``markdown-added``: cells were only ADDED and every added cell is markdown --
+                      nothing removed, nothing changed (measured 23/11,
+                      CoursIA#28209: one « ancres Lectures » cell inserted at index
+                      43 of a 44-cell twin, read ``structure`` while the port was
+                      approved on the 44). The port keeps every cell the verifier
+                      judged; the added cells are grafted verbatim at the index they
+                      hold in the new source (``graft_markdown``) and the
+                      integration is replayed on the fresh twin.
+- ``structure``     : any other change of the cell list: cells removed, re-typed
+                      or added that are not markdown. The cell-index-aligned
+                      conformance spec and the parity seal no longer hold: the port
+                      must be refreshed from the new source.
 - ``code``          : same structure, a code cell's source or outputs changed:
                       the port may now compute something else.
 - ``deleted``       : the source is gone from origin/main.
@@ -41,7 +50,9 @@ comments call per drifted PR):
         [--branch-prefix nbcoder/] [--comment] [--json]
 
 Exit 0 = no drift needing a refresh, 1 = at least one PR with structure/code/
-deleted drift, 2 = instrument failure (list unreadable).
+deleted/markdown-added drift (an OPEN PR holds none of the added cells: the graft
+is a stage-5 gesture, it never edits a pushed branch), 2 = instrument failure
+(list unreadable).
 """
 from __future__ import annotations
 
@@ -51,7 +62,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REFRESH_NEEDED = ("structure", "code", "deleted")
+REFRESH_NEEDED = ("structure", "code", "deleted", "markdown-added")
 MARKER = "<!-- nb-coder:source-drift main={blob} -->"
 
 
@@ -84,6 +95,82 @@ def signature(nb: dict) -> dict:
                      for c in cells if c.get("cell_type") == "code"]}
 
 
+def _cell_key(cell: dict) -> tuple:
+    """What makes a cell 'the same cell' across two revisions of a notebook."""
+    return (cell.get("cell_type"), _text(cell.get("source")), _outputs_text(cell))
+
+
+def markdown_insertions(old: dict | None, new: dict | None) -> list[int] | None:
+    """Indices, in ``new``, of the cells a source only GAINED between two revisions.
+
+    Admitted only when every cell of ``old`` is found unchanged, in order, in
+    ``new`` and every cell of ``new`` that is not one of them is markdown: nothing
+    removed, nothing changed, no code cell added. None otherwise -- a removed or
+    re-typed cell, or an added code cell, is still ``structure``.
+    """
+    if not old or not new:
+        return None
+    ko = [_cell_key(c) for c in old.get("cells") or []]
+    kn = [_cell_key(c) for c in new.get("cells") or []]
+    i = j = 0
+    inserted: list[int] = []
+    while i < len(kn):
+        if j < len(ko) and kn[i] == ko[j]:
+            i, j = i + 1, j + 1
+        elif (new["cells"][i].get("cell_type") == "markdown"):
+            inserted.append(i)
+            i += 1
+        else:
+            return None
+    return inserted if j == len(ko) and inserted else None
+
+
+def graft_markdown(port: dict, old: dict, new: dict) -> dict:
+    """Copy into a PORT built on ``old`` the markdown cells the source gained in ``new``.
+
+    Admitted only when the port is cell-aligned with the source it was built on --
+    same count, same cell types in the same order: the added cells then land at the
+    index they hold in the new source and every cell the verifier judged keeps its
+    content. A port that already holds them (a resume) grafts nothing twice.
+
+    Returns ``{"inserted": [{"index", "preview"}], "count", "already", "cells"}``
+    (``cells`` = the port's cells to write back) or ``{"error": why}``.
+    """
+    idx = markdown_insertions(old, new)
+    if idx is None:
+        return {"error": "the source did not only gain markdown cells"}
+    pcells = list(port.get("cells") or [])
+    types_p = [c.get("cell_type") for c in pcells]
+    types_o = [c.get("cell_type") for c in old.get("cells") or []]
+    types_n = [c.get("cell_type") for c in new.get("cells") or []]
+    if types_p == types_n:
+        held = all(_cell_key(pcells[i]) == _cell_key(new["cells"][i]) for i in idx)
+        return ({"inserted": [], "count": 0, "already": True, "cells": pcells} if held
+                else {"error": "the port has the new source's shape but not its added cells"})
+    if types_p != types_o:
+        return {"error": (f"the port is not cell-aligned with the source it was built on "
+                          f"({len(types_p)} cells, the source had {len(types_o)})")}
+    # A port whose ids are the cell index (cell-000, cell-001...) keeps that invariant.
+    sequential = all(c.get("id") == f"cell-{k:03d}" for k, c in enumerate(pcells))
+    ids = {c.get("id") for c in pcells if c.get("id")}
+    done, cells = [], [dict(c) for c in pcells]     # the caller's notebook is never mutated
+    for i in idx:
+        cell = json.loads(json.dumps(new["cells"][i]))    # never the source object itself
+        cid = cell.get("id")
+        if cid and not sequential and cid in ids:
+            k = 2
+            while f"{cid[:60]}-{k}" in ids:
+                k += 1
+            cell["id"] = f"{cid[:60]}-{k}"
+        ids.add(cell.get("id"))
+        cells.insert(i, cell)
+        done.append({"index": i, "preview": _text(cell.get("source")).strip()[:160]})
+    if sequential:
+        for k, c in enumerate(cells):
+            c["id"] = f"cell-{k:03d}"
+    return {"inserted": done, "count": len(done), "already": False, "cells": cells}
+
+
 def classify_drift(old: dict | None, new: dict | None) -> str:
     if new is None:
         return "deleted"
@@ -91,7 +178,7 @@ def classify_drift(old: dict | None, new: dict | None) -> str:
         return "none"
     a, b = signature(old), signature(new)
     if a["types"] != b["types"]:
-        return "structure"
+        return "markdown-added" if markdown_insertions(old, new) is not None else "structure"
     if a["code"] != b["code"]:
         return "code"
     return "markdown-only"
@@ -112,21 +199,47 @@ def notebook_at(repo: Path, rev: str, path: str) -> dict | None:
         return None
 
 
-def source_drift(repo: Path, base_rev: str, src_rel: str, main_rev: str = "origin/main") -> dict:
-    """How the source twin `src_rel` moved between `base_rev` and `main_rev`."""
+def blob_notebook(repo: Path, blob: str) -> dict | None:
+    """The notebook a blob holds (as `source_drift` reports it: a SHA prefix)."""
+    rc, out = _git(repo, "cat-file", "-p", blob)
+    if rc != 0:
+        return None
+    try:
+        return json.loads(out)
+    except ValueError:
+        return None
+
+
+def source_drift(repo: Path, base_rev: str, src_rel: str, main_rev: str = "origin/main",
+                 old_blob: str | None = None) -> dict:
+    """How the source twin `src_rel` moved between `base_rev` and `main_rev`.
+
+    ``old_blob``: the twin's blob on main as a PREVIOUS delivery attempt measured it
+    (its trace's ``main_blob``). A resume whose build was already grafted is aligned
+    with THAT source, not with the build's base: it measures from there, and a cell the
+    source gained since is grafted onto the grafted build. A blob this clone cannot
+    read falls back to the build's base."""
     src_rel = src_rel.replace("\\", "/")
     a, b = blob_at(repo, base_rev, src_rel), blob_at(repo, main_rev, src_rel)
     rec = {"source": src_rel, "base_blob": (a or "")[:12], "main_blob": (b or "")[:12]}
+    old_nb = blob_notebook(repo, old_blob) if old_blob else None
+    if old_nb is not None:
+        a = old_blob
+        rec["base_blob"] = old_blob[:12]
+        rec["measured_from"] = "previous-attempt-main-blob"
     if a is None or _git(repo, "rev-parse", "--verify", "-q", main_rev)[0] != 0:
         # Nothing to compare (the source is not at the base, or main is unreadable):
         # an instrument gap, never a refusal.
         return rec | {"drift": "unmeasured"}
-    if a == b:
+    if a[:12] == (b or "")[:12]:
         return rec | {"drift": "none"}
     if b is None:
         return rec | {"drift": "deleted"}
-    rec["drift"] = classify_drift(notebook_at(repo, base_rev, src_rel),
-                                  notebook_at(repo, main_rev, src_rel))
+    old_nb = old_nb if old_nb is not None else notebook_at(repo, base_rev, src_rel)
+    new_nb = notebook_at(repo, main_rev, src_rel)
+    rec["drift"] = classify_drift(old_nb, new_nb)
+    if rec["drift"] == "markdown-added":
+        rec["inserted"] = markdown_insertions(old_nb, new_nb)
     rc, log = _git(repo, "log", "--format=%h %cI %s", f"{base_rev}..{main_rev}", "--", src_rel)
     rec["commits"] = log.splitlines()[:5] if rc == 0 else []
     return rec
@@ -158,7 +271,10 @@ def drift_comment(rows: list[dict]) -> str:
               "alignée par index et le sceau de parité ne tiennent plus), `code` = une cellule "
               "de code ou sa sortie a changé. Dans les deux cas le portage doit être repris sur "
               "la nouvelle source ; une fusion en l'état rougit `Scripts Tests` pour toutes "
-              "les PR (précédent : #27805 → #27914).",
+              "les PR (précédent : #27805 → #27914). `markdown-added` = le jumeau a seulement "
+              "gagné des cellules markdown (code inchangé) : à recopier dans le portage aux "
+              "mêmes indices — `nb_coder` le fait à la livraison (`graft_markdown`), jamais "
+              "sur une branche déjà poussée.",
               "", "Détecté par `nb_coder_drift.py` (déterministe, sans tour de modèle).",
               MARKER.format(blob=worst["main_blob"])]
     return "\n".join(lines)
