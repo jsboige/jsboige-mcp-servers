@@ -182,6 +182,37 @@ RELACHEE_PROBE_INTERVAL_S = 300.0
 # by CLAIM_READ_TIMEOUT_S) can hold neither the tick nor the grains behind it.
 RELACHEE_PROBE_MAX_READS = 4
 
+# An IMPLICIT occupation is a wait on ANOTHER lane's PR, not a refusal of this grain.
+# The guard's rc=3 on a lot issue names an open PR of another lane that references the
+# issue; the driver READ that PR's files and found them disjoint from this notebook
+# (nb_coder_driver.implicit_verdict), so it defers: the occupation ends when the PR closes.
+# Measured 28/11 on CoursIA#27133 (MGS-24): PRs #28852 (MGS-28) and #28861 (MGS-25), open
+# since 27/11 08:15Z and 09:15Z, disjoint from MGS-24. The ordinary backoff (60 s x
+# attempts, 900 s at most) re-launched the driver six times in 30 minutes -- each launch
+# spending 3-4 min of guard enumeration (209 open PRs) to read the same answer -- and the
+# sixth exhausted --max-attempts: `attempts-exhausted`, grain `failed`, nothing judged,
+# against an occupation that had already outlasted the whole budget by a day.
+# A wait whose end is another lane's event is PARKED: the launch that met it is refunded,
+# the grain leaves the launch loop, and one state read per named PR re-offers it.
+IMPLICIT_OCCUPATION_VERDICT = "deferred-by-claim-implicit-occupation"
+# How often the named PRs' state is read: one gh call per PR per interval, best-effort.
+IMPLICIT_OCCUPATION_PROBE_S = 300.0
+# At most this many parked grains are read per interval, round-robin, for the same reason
+# as RELACHEE_PROBE_MAX_READS: the read is synchronous in tick().
+IMPLICIT_OCCUPATION_MAX_READS = 4
+
+
+def implicit_occupation_prs(verdict: str) -> list[int]:
+    """The PR numbers an IMPLICIT-occupation deferral names, in its order; [] otherwise
+    (any other verdict, or one that names none -- then nothing can be waited on).
+
+    The driver joins them with COMMAS (`deferred-by-claim-implicit-occupation:#28852,#28861`),
+    so the numbers are read, not split on a separator.
+    """
+    if not verdict.startswith(IMPLICIT_OCCUPATION_VERDICT):
+        return []
+    return [int(n) for n in re.findall(r"#(\d+)", verdict[len(IMPLICIT_OCCUPATION_VERDICT):])]
+
 
 def github_reset_wait(verdict: str, now: float) -> float | None:
     """Seconds until the GitHub bucket named by a rate-limit deferral refills, or None."""
@@ -591,6 +622,19 @@ def issue_comment_timeline(issue: int) -> list[tuple[str, str]]:
         created, body = json.loads(line)
         out.append((created or "", body or ""))
     return out
+
+
+def pull_request_state(number: int) -> str | None:
+    """GitHub's `state` of one PR -- `open` or `closed` (a merged PR is `closed`) -- or
+    None when GitHub does not answer. Raises nothing: the caller never clears a park on a
+    read that failed."""
+    p = subprocess.run(["gh", "api", f"repos/{CLAIM_REPO_SLUG}/pulls/{number}",
+                        "--jq", ".state"],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=CLAIM_READ_TIMEOUT_S)
+    if p.returncode != 0:
+        return None
+    return (p.stdout or "").strip() or None
 
 
 # The two markers the RELACHEE probe reads, line-anchored like CLAIM_MARK_RE and the
@@ -1238,6 +1282,22 @@ class Scheduler:
                             verdict=verdict, qualification="RELACHEE",
                             retry_in_s=wait, retry_at=datetime.fromtimestamp(
                                 g["not_before"], timezone.utc).isoformat(timespec="seconds"))
+            elif (verdict.startswith(IMPLICIT_OCCUPATION_VERDICT)
+                  and implicit_occupation_prs(verdict)):
+                # PARKED, not deferred: another lane's open PR holds the issue, its files
+                # are disjoint from this notebook, and the wait ends when that PR closes.
+                # The launch is refunded (it judged nothing) and the grain leaves the
+                # launch loop: _occupation_probe re-offers it when the PRs close.
+                prs = implicit_occupation_prs(verdict)
+                g["status"] = "deferred"
+                g["occupation_wait"] = True
+                g["occupation_prs"] = prs
+                g["attempts"] = max(0, g.get("attempts", 0) - 1)
+                g["not_before"] = self.clock() + IMPLICIT_OCCUPATION_PROBE_S
+                ramp["deferred"] += 1
+                self._event("occupation-parked", key=key, rc=rc, verdict=verdict,
+                            prs=[f"#{n}" for n in prs], attempts=g["attempts"],
+                            retry_in_s=IMPLICIT_OCCUPATION_PROBE_S)
             elif verdict.startswith(DEFERRED_VERDICT_PREFIXES):
                 g["status"] = "deferred"
                 # attempts counts LAUNCHES; the backoff grows with each refusal.
@@ -1501,11 +1561,56 @@ class Scheduler:
                             retry_at=datetime.fromtimestamp(
                                 expiry, timezone.utc).isoformat(timespec="seconds"))
 
+    def _occupation_probe(self, now: float) -> None:
+        """A grain parked on another lane's open PR is re-offered when that PR closes.
+
+        The probe reads the STATE of the PRs the deferral named, and nothing else: it
+        never decides the claim -- the guard alone decides, at the next launch. A PR that
+        is still open keeps the grain parked; one that is closed (merged or abandoned)
+        clears the park, refunds the launches the park burnt, and re-offers the grain.
+
+        A read GitHub does not answer keeps the park: an unread state is not a closed PR.
+        """
+        parked = [(k, g) for k, g in self.state["grains"].items()
+                  if g.get("status") == "deferred" and g.get("occupation_wait")
+                  and g.get("occupation_prs")
+                  and (g.get("not_before") or 0) <= now]   # the park's own interval
+        if not parked:
+            return
+        last = self.state.get("occupation_probe_ts") or 0
+        if now - last < IMPLICIT_OCCUPATION_PROBE_S:
+            return
+        self.state["occupation_probe_ts"] = now
+        offset = int(self.state.get("occupation_probe_offset") or 0) % len(parked)
+        ordered = parked[offset:] + parked[:offset]
+        self.state["occupation_probe_offset"] = offset + IMPLICIT_OCCUPATION_MAX_READS
+        for key, g in ordered[:IMPLICIT_OCCUPATION_MAX_READS]:
+            states: dict[int, str] = {}
+            unread = False
+            for number in g.get("occupation_prs") or []:
+                state = pull_request_state(number)
+                if state is None:
+                    unread = True
+                    states[number] = "unknown"
+                    break
+                states[number] = state
+            if unread or any(s != "closed" for s in states.values()):
+                g["not_before"] = now + IMPLICIT_OCCUPATION_PROBE_S
+                self._event("occupation-holds", key=key,
+                            prs={f"#{n}": s for n, s in states.items()})
+                continue
+            g.update({"occupation_wait": False, "occupation_prs": [],
+                      "not_before": now, "attempts": 0})
+            self._event("occupation-cleared", key=key,
+                        prs=[f"#{n}" for n in states], attempts=0)
+
     def _eligible(self, now: float) -> list[str]:
         out = []
         for key, g in self.state["grains"].items():
             if g.get("status") != "pending" and g.get("status") != "deferred":
                 continue
+            if g.get("occupation_wait"):
+                continue    # parked on another lane's PR: only the probe re-offers it
             if g.get("status") == "deferred" and (g.get("not_before") or 0) > now:
                 continue
             if g.get("attempts", 0) >= self.args.max_attempts:
@@ -1539,7 +1644,8 @@ class Scheduler:
         # otherwise it keeps the scheduler alive forever while never being
         # eligible again.
         for key, g in self.state["grains"].items():
-            if g.get("status") == "deferred" and g.get("attempts", 0) >= self.args.max_attempts:
+            if (g.get("status") == "deferred" and g.get("attempts", 0) >= self.args.max_attempts
+                    and not g.get("occupation_wait")):
                 g["status"] = "failed"
                 g["finished"] = utcnow()
                 self._event("attempts-exhausted", key=key,
@@ -1551,6 +1657,7 @@ class Scheduler:
         self.state["last_gate"] = gate
         self._observe_gate(gate, now)
         self._relache_override_probe(now)
+        self._occupation_probe(now)
 
         pending = self._eligible(now)
         held = None
