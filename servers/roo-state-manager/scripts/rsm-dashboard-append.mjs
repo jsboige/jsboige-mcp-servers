@@ -145,6 +145,22 @@
  * rewrite (PG failed and the file half cannot be checked) names its own reason
  * in `fileRewriteSkipped`.
  *
+ * PG-primary gate — the marker (ai-01, 28/11, follow-up on this issue). The
+ * gate is DATA-gated by default: `isDashboardPgPrimaryEnabled()` resolves it
+ * from the dashboard backfill's completeness marker in PG (`pg-read-gates.ts`),
+ * and that marker is resolved ASYNCHRONOUSLY (`pg-backfill-marker.ts`): a
+ * process that never warms the cache reads `unknown`, which the gate treats
+ * as CLOSED. The MCP host warms it at startup (`tools/registry.ts`) and the
+ * send CLI warms it before it decides (`scripts/send-roosync-message.mjs`) —
+ * the append CLI did not, so it resolved the gate DIFFERENTLY from the tool
+ * it must follow. Measured on ai-01 (28/11): the store's marker IS complete
+ * (the gate reads true once warmed) but the CLI read it false and kept
+ * writing the G: file first, unstamped — the listener posts stayed
+ * "residual writes" for the Phase D instrument of #4131, which is what this
+ * issue reports. The marker module is imported from the VINTAGE's bundled
+ * @vibesync/core (#4918): the cache is per module instance, and the served
+ * store module resolves that copy, never the live dist/.
+ *
  * Exit codes: 0 posted — at least one surface holds the message (a PG-sync
  * miss on the file-first path is a WARN, not an error: the GDrive write
  * stands and the journal reconcile converges it; a failed MIRROR under the
@@ -400,6 +416,65 @@ async function loadMirrorWriterGuard() {
   return mirrorWriterGuard;
 }
 
+// #4915 follow-up (ai-01, 28/11) — resolve the PG-primary gate the way the
+// MCP tool resolves it. The gate is DATA-gated by default (the dashboard
+// backfill's completeness marker in PG, `pg-read-gates.ts`) and that marker is
+// resolved ASYNCHRONOUSLY (`pg-backfill-marker.ts`): a process that never
+// warms the cache reads `unknown`, which the gate treats as CLOSED whatever
+// the store holds. The MCP host warms it at startup (`tools/registry.ts`) and
+// the send CLI warms it before it decides
+// (`scripts/send-roosync-message.mjs`); the append CLI did not, so it
+// resolved the gate DIFFERENTLY from the tool it must follow — measured on
+// ai-01 (28/11): the marker is complete (the gate reads true once warmed)
+// but the CLI read it false and kept writing the G: file first, unstamped,
+// which is exactly the residual writer this issue reports.
+//
+// The marker module is imported from the VINTAGE's bundled @vibesync/core
+// (#4918): the cache is per module instance, and the served store module
+// resolves that copy, never the live dist/.
+const MARKER_LOOKUP_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.UNIFIED_STORE_CONNECT_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 15_000;
+})();
+
+async function warmDashboardPgGate() {
+  let ensureBackfillMarkersFresh;
+  try {
+    ({ ensureBackfillMarkersFresh } = await import(
+      buildUrl('node_modules/@vibesync/core/dist/services/unified-store/pg-backfill-marker.js')
+    ));
+  } catch (err) {
+    // A vintage whose build does not bundle the marker module keeps the
+    // previous behaviour: the gate is read without a warmed state (the marker
+    // is then `unknown` → the G: path — the same answer as before).
+    console.error(
+      `WARN: module de marqueur absent du build servi (${err instanceof Error ? err.message : String(err)}) — la porte PG-primaire est lue sans état`
+    );
+    return;
+  }
+  if (typeof ensureBackfillMarkersFresh !== 'function') {
+    console.error(
+      'WARN: module de marqueur sans `ensureBackfillMarkersFresh` — la porte PG-primaire est lue sans état'
+    );
+    return;
+  }
+  try {
+    // The budget is the writer pool's connect budget
+    // (UNIFIED_STORE_CONNECT_TIMEOUT_MS, 15 s by default, as in
+    // writer-factory), not the 3 s of the MCP request path: this one-shot
+    // process waits on nobody, and a 3 s lookup lost to a PG busy burst
+    // resolved the gate to the G: path (same incident as the send CLI,
+    // ai-01 02/11 07:10:26Z).
+    await ensureBackfillMarkersFresh({ timeoutMs: MARKER_LOOKUP_TIMEOUT_MS });
+  } catch (err) {
+    // Fail-safe: a lookup that fails resolves the gate to the G: path (the
+    // same answer as an absent marker) — an escalation is never lost.
+    console.error(
+      `WARN: état du marqueur de backfill illisible (${err instanceof Error ? err.message : String(err)}) — la porte PG-primaire reste fermée`
+    );
+  }
+}
+
 const machineId = machineArg.trim().toLowerCase();
 // #4090: --dashboard selects the fleet surface; absent it stays the machine
 // escalation key by construction (#3761). Message ids stay machine-prefixed
@@ -408,6 +483,12 @@ const key = dashboardTarget
   ? buildDashboardKey(dashboardTarget.type, machineId, dashboardTarget.workspace ?? '')
   : buildDashboardKey('machine', machineId, '');
 const author = { machineId, workspace: authorWorkspace };
+
+// The marker is warmed BEFORE the append lock is taken: the gate is read
+// inside the locked section (below), but the lookup is a network round-trip
+// (one connect + one indexed read) and holding the lock across it would spend
+// a third of the 30 s TTL on it — the TTL is never renewed.
+await warmDashboardPgGate();
 
 // Review item 1 (verrou append, fail-open): #3761 escalations must never be
 // dropped, so an unacquired lock proceeds unserialized and says so. Holder
