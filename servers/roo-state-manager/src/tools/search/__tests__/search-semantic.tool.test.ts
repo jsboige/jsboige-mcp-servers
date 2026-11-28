@@ -83,7 +83,7 @@ vi.mock('../../../services/unified-store/reader-factory.js', () => ({
 	getUnifiedStoreReader: () => mockUnifiedStoreReader
 }));
 
-import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput, passageQualityFactor, requestFormFactor, composePassageSlots, isPassageGroup, PASSAGE_SLOT_FLOOR_CHARS } from '../search-semantic.tool.js';
+import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput, classifyHarnessTurn, passageQualityFactor, requestFormFactor, composePassageSlots, isPassageGroup, PASSAGE_SLOT_FLOOR_CHARS } from '../search-semantic.tool.js';
 import type { StoredConversation } from '../../../services/unified-store/types.js';
 import { splitChunkId } from '../../../services/task-indexer/ChunkExtractor.js';
 
@@ -3951,6 +3951,138 @@ describe('#4352 machine-output de-rank', () => {
 		const parsed = JSON.parse(getTextContent(result));
 		expect(parsed.results).toHaveLength(1);
 		expect(parsed.results[0].best_score).toBeCloseTo(0.9 * 0.85, 8);
+	});
+});
+
+// ============================================================
+// #4939 — harness-injected user turns
+// ============================================================
+//
+// The three fixtures are the VERBATIM openings of their writers, all longer than
+// PASSAGE_SLOT_FLOOR_CHARS: each one is a chunk that could win a passage slot
+// without the fix, which is what makes the witness meaningful.
+describe('#4939 harness-injected user turns', () => {
+	const COMPACTION_SUMMARY = 'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation. Arbitrations were read from the evidence files, not from the summary.';
+	const RESUME_PROMPT = 'Continue the conversation from where it left off without asking the user any further questions. Resume directly — do not acknowledge the summary, do not recap what was happening, do not preface with a greeting.';
+	const SCHEDULED_PROMPT = 'Run this single MCP tool call and report the result:\nroosync_indexing(action: "save_snapshot")\n\nAfter the result, report:\n1. Number of tools in the snapshot\n2. File path where the snapshot was saved\n\nThis is a scheduled automated task. Do not modify any files.';
+	// NEGATIVE WITNESS: a decision passage that NAMES the harness. It carries the
+	// rubric's vocabulary and the word "compaction", and must stay prose.
+	const DECISION_PROSE = 'La décision d’arrêter le cycle a été prise après la compaction du 27/11 : le budget d’archives ne comptait que 900 s de temps immobile, donc la mesure restait partielle et l’escalade ouverte.';
+
+	beforeEach(() => {
+		mockOpenAIClient.embeddings.create.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+		mockUnifiedStoreReader.isNull.mockReturnValue(true);
+		mockQdrantClient.scroll.mockReset();
+		delete process.env.SEMANTIC_HARNESS_TURN_MALUS;
+		delete process.env.SEMANTIC_FRAGMENT_MALUS;
+		delete process.env.SEMANTIC_REQUEST_MALUS;
+	});
+
+	test('classifies the observed envelopes and leaves prose alone', () => {
+		expect(classifyHarnessTurn(COMPACTION_SUMMARY)).toBe('compaction_summary');
+		expect(classifyHarnessTurn(RESUME_PROMPT)).toBe('resume_prompt');
+		expect(classifyHarnessTurn('Pick up the last task as if the break never happened.')).toBe('resume_prompt');
+		expect(classifyHarnessTurn(SCHEDULED_PROMPT)).toBe('scheduled_prompt');
+		expect(classifyHarnessTurn('=== REPRISE DE TÂCHE EN ATTENTE ===\n\nCette tâche a été mise en pause précédemment.')).toBe('scheduled_prompt');
+		expect(classifyHarnessTurn('Exécute les tâches de maintenance :\n0. Lire dashboard workspace')).toBe('scheduled_prompt');
+		expect(classifyHarnessTurn('[CONTINUATION FROM PREVIOUS SESSION - Resuming in existing worktree]')).toBe('scheduled_prompt');
+		// Anchored: the opening must BE the envelope, not merely contain it.
+		expect(classifyHarnessTurn(`Hier, un agent a écrit : ${COMPACTION_SUMMARY}`)).toBeNull();
+		expect(classifyHarnessTurn(DECISION_PROSE)).toBeNull();
+	});
+
+	test('a compaction summary is de-ranked and reported by kind', async () => {
+		mockQdrantClient.query.mockResolvedValue([
+			{ score: 0.9, payload: { task_id: 'task-compaction', chunk_type: 'message_exchange', content: COMPACTION_SUMMARY, host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'arbitrage' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results).toHaveLength(1);
+		expect(parsed.results[0].best_score).toBeCloseTo(0.9 * 0.85, 8);
+		expect(parsed.current_machine.harness_turn_malus).toMatchObject({
+			applied: 1,
+			by_kind: { compaction_summary: 1 },
+			enabled: true
+		});
+	});
+
+	test('a resume instruction and a scheduled prompt are de-ranked, one witness per form', async () => {
+		const cases: Array<[string, string]> = [
+			[RESUME_PROMPT, 'resume_prompt'],
+			[SCHEDULED_PROMPT, 'scheduled_prompt']
+		];
+		for (const [content, kind] of cases) {
+			mockQdrantClient.query.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: `task-${kind}`, chunk_type: 'message_exchange', content, host_os: 'h1' } }
+			]);
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'arbitrage' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.results[0].best_score).toBeCloseTo(0.9 * 0.85, 8);
+			expect(parsed.current_machine.harness_turn_malus.by_kind).toEqual({ [kind]: 1 });
+		}
+	});
+
+	test('a passage that names a compaction stays prose — no de-rank', async () => {
+		mockQdrantClient.query.mockResolvedValue([
+			{ score: 0.9, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', content: DECISION_PROSE, host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'arbitrage' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.current_machine.harness_turn_malus).toBeUndefined();
+		expect(parsed.results[0].best_score).toBeCloseTo(0.9, 8);
+	});
+
+	test('rollback SEMANTIC_HARNESS_TURN_MALUS=0 restores the raw score and reports disabled', async () => {
+		process.env.SEMANTIC_HARNESS_TURN_MALUS = '0';
+		mockQdrantClient.query.mockResolvedValue([
+			{ score: 0.82, payload: { task_id: 'task-compaction', chunk_type: 'message_exchange', content: COMPACTION_SUMMARY, host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'arbitrage' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results[0].best_score).toBeCloseTo(0.82, 8);
+		expect(parsed.current_machine.harness_turn_malus).toMatchObject({ applied: 0, enabled: false });
+	});
+
+	test('a harness turn is de-ranked, never dropped by exclude_tool_results', async () => {
+		mockQdrantClient.query.mockResolvedValue([
+			{ score: 0.9, payload: { task_id: 'task-compaction', chunk_type: 'message_exchange', content: COMPACTION_SUMMARY, host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'arbitrage', exclude_tool_results: true },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results).toHaveLength(1);
 	});
 });
 

@@ -18,7 +18,7 @@
  * request classifier.
  */
 
-import { classifyMachineOutput } from '../../src/tools/search/search-semantic.tool.js';
+import { classifyMachineOutput, classifyHarnessTurn } from '../../src/tools/search/search-semantic.tool.js';
 
 /** Epic #2609 rubric (a): a passage is at least this long; a shorter chunk is a fragment or a bare request. */
 export const PASSAGE_FLOOR_CHARS = 100;
@@ -36,6 +36,8 @@ export interface RubricChunk {
   snippet?: string;
   chunk_type?: unknown;
   machine_output_kind?: string | null;
+  /** #4939: the harness envelope the engine recognised, when it carried one. */
+  harness_turn_kind?: string | null;
   tool_continuation_status?: string;
 }
 
@@ -44,11 +46,22 @@ export interface RubricGroup {
   chunks?: RubricChunk[];
 }
 
-/** A human-authored passage about a decision: long enough, not machine output, on topic. */
+/**
+ * A human-authored passage about a decision: long enough, not machine output, not a
+ * harness-injected turn, on topic.
+ *
+ * #4939: the harness writes into the `user` role — a compaction summary, a resume
+ * instruction, a scheduler prompt — and those turns carry the coordination
+ * vocabulary the rubric tests for. Measured 2026-11-27 (bench #2609, 01:37Z): the
+ * best q2 passage was a compaction summary and three of four q4 formulations were
+ * beaten by such a turn. They state no decision, so they are excluded by FORM here,
+ * exactly like machine output, never by vocabulary.
+ */
 export function isHumanDecisionPassage(chunk: RubricChunk | undefined): boolean {
   const snippet = chunk?.snippet ?? '';
   return snippet.length >= PASSAGE_FLOOR_CHARS
     && (chunk?.machine_output_kind ?? classifyMachineOutput(chunk?.chunk_type, snippet)) === null
+    && (chunk?.harness_turn_kind ?? classifyHarnessTurn(snippet)) === null
     && chunk?.tool_continuation_status !== 'unknown'
     && DECISION_VOCABULARY.test(snippet);
 }
