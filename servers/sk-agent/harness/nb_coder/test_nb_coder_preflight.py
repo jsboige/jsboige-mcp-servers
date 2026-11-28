@@ -215,6 +215,20 @@ def test_a_creation_grain_without_a_twin_is_refused_before_the_worktree(monkeypa
     assert led["verdict"] == "refused-target-unresolved"
 
 
+def test_the_refusal_prints_its_verdict_line_on_stdout(monkeypatch, tmp_path, capsys):
+    """28/11, CoursIA#29058: a detached driver reaps with an unknown return code, so the
+    scheduler reads the verdict from stdout alone. ap.error printed none: the refusal read
+    as '' (a run failure) and the scheduler released the grain's claim."""
+    _repo_with(tmp_path)
+    _seat(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path))
+    with pytest.raises(SystemExit):
+        D.main()
+    lines = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
+    assert json.loads(lines[-1]) == {"issue": 28079, "verdict": "refused-target-unresolved",
+                                     "calls": 0}
+
+
 def test_a_named_twin_absent_from_origin_main_is_refused_too(monkeypatch, tmp_path):
     _repo_with(tmp_path)
     _seat(monkeypatch, tmp_path)

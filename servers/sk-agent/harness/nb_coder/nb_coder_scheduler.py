@@ -250,9 +250,20 @@ CONTENT_FAILURE_PREFIXES = (
 # and all five were refused-claim-* (MGS-25 not-verified, MGS-28/MGS-29/Search-11
 # check-not-scoped, Sudoku-05 held by po-2024). Sudoku-05 would block for as long as
 # po-2024 holds it.
+#
+# 28/11: the driver's SEAT refusals join them -- a wired path, a model credential or a
+# launch target that does not resolve here (`_preflight`). Refused before any worktree and
+# any model call, they judge nothing about the grain either, so they also keep the claim
+# (`_release_claim`): the remedy is the operator's launch, never the issue. Measured on
+# CoursIA#29058: a queue item without source_nb, calls 0, auto-[RELEASED], path frozen 3 days.
+SEAT_REFUSAL_VERDICTS = (
+    "refused-wiring-unresolved",
+    "refused-credential-unresolved",
+    "refused-target-unresolved",
+)
 ADMISSION_FAILURE_PREFIXES = (
     "refused-claim",
-)
+) + SEAT_REFUSAL_VERDICTS
 
 
 def failure_class(verdict: str | None) -> str:
@@ -1415,7 +1426,8 @@ class Scheduler:
 
         Never released: a foreign holder (late-claim refusals), our own [DELIVERED] or
         [RELEASED], an issue without markers, an issue another active grain of ours still
-        builds (lot issues carry several notebooks), or an unreadable thread.
+        builds (lot issues carry several notebooks), a launch the driver refused before
+        any call (SEAT_REFUSAL_VERDICTS), or an unreadable thread.
 
         Kept on a first content failure that left a resumable trace (26/11): the claim
         guard reads ANY [RELEASED] as a full close of the lane on the whole ISSUE and
@@ -1433,6 +1445,11 @@ class Scheduler:
                for k, e in self.active.items()):
             return self._event("claim-release-skipped", key=key, issue=issue,
                                reason="sibling-grain-active")
+        if (verdict or "").strip().startswith(SEAT_REFUSAL_VERDICTS):
+            # the launch was refused before any call: nothing judged the grain (see
+            # SEAT_REFUSAL_VERDICTS). A kept claim goes stale after the guard's 48 h.
+            return self._event("claim-release-skipped", key=key, issue=issue,
+                               reason="seat-refusal", verdict=verdict)
         trace = self.resumable_trace(key, item, verdict)
         if trace is not None:
             # the callee tolerates a key with no grain record (`.get(key, {})`); this write

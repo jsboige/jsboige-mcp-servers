@@ -506,3 +506,51 @@ def test_the_motif_clause_precedes_the_cause():
     note = S.release_note("verify-reject", "cell 33, major: «la dernière cellule»")
     head, motif, cause = note.split("; ", 2)
     assert motif == "motif: verify-reject" and "dernière" in cause and "dernière" not in motif
+
+
+# 28/11 — a SEAT refusal keeps the claim. CoursIA#29058: the queue item named no source_nb,
+# the driver refused before any call (refused-target-unresolved, calls 0), the verdict line
+# was missing from stdout, the grain reaped as a run failure and its claim was released —
+# the path frozen 3 days for a launch error. driver.log mixes the verdict line with
+# argparse's usage and error on stderr: the reap must find the line among them.
+
+class _RefusedDriver:
+    """A detached driver's log after `_preflight`: verdict line, then ap.error's stderr."""
+    def __init__(self, verdict):
+        self.verdict = verdict
+
+    def poll(self):
+        return S.ADOPTED_RC
+
+    def communicate(self, timeout=None):
+        return (json.dumps({"issue": 29058, "verdict": self.verdict, "calls": 0}) + "\n"
+                "usage: nb_coder_driver.py [-h] --issue ISSUE --notebook NOTEBOOK\n"
+                "                          [--verify-from VERIFY_FROM]\n"
+                "nb_coder_driver.py: error: X-Rust.ipynb is absent from origin/main\n"), ""
+
+
+@pytest.mark.parametrize("verdict", S.SEAT_REFUSAL_VERDICTS)
+def test_a_seat_refusal_keeps_the_claim(tmp_path, verdict):
+    claims = FakeClaims()
+    item = {"issue": 29058, "notebook": "SocialChoice/ChoixSocial-10-Rust.ipynb"}
+    sched = _sched(tmp_path, [item], lambda cmd: _RefusedDriver(verdict), claims)
+    sched.run()
+    assert claims.releases == [] and claims.reads == []
+    (skip,) = _events(sched, "claim-release-skipped")
+    assert skip["reason"] == "seat-refusal" and skip["verdict"] == verdict
+    (failed,) = _events(sched, "failed")
+    assert failed["verdict"] == verdict and failed["failure_class"] == "admission"
+
+
+def test_a_driver_that_prints_no_verdict_still_releases_as_before(tmp_path):
+    """The kept claim is bound to the refusal's own verdict, never to a missing one."""
+    class _Silent(_RefusedDriver):
+        def communicate(self, timeout=None):
+            return "Traceback (most recent call last):\nRuntimeError: boom\n", ""
+    claims = FakeClaims()
+    sched = _sched(tmp_path, [{"issue": 7, "notebook": "Dir/D.ipynb"}],
+                   lambda cmd: _Silent(""), claims)
+    sched.run()
+    assert len(claims.releases) == 1
+    (failed,) = _events(sched, "failed")
+    assert failed["verdict"] == "" and failed["failure_class"] == "run"
