@@ -362,3 +362,111 @@ def test_the_old_behavior_is_one_flag_away(tmp_path):
     sched.run()
     assert len(sched.claims.releases) == 1
     assert "resumable_trace" not in sched.state["grains"]["#27133:Dir/Search-11-Rust.ipynb"]
+
+
+# --- 28/11: the [RELEASED] note cites the cause read from the run's own record ------------
+# CoursIA#28944: the second verify-reject of a resumed Rust port posted `[RELEASED] … (nb_coder:
+# grain ended without a PR (verify-reject))` — no cell, no reason. The coordinator requires a
+# release without a PR to cite the verifier's rejecting line (c0177); it was posted by hand
+# (comment 7238434630). Shapes below are the record's real ones (o67b trace of #28944).
+
+SUDOKU = {"issue": 28944, "notebook": "MyIA.AI.Notebooks/Sudoku/Sudoku-06-AIMA-CSP-Rust.ipynb"}
+BASE = "nb_coder: grain ended without a PR (verify-reject)"
+REJECTED = {
+    "verdict": "verify-reject", "built_notebook": "nb_28944_built.ipynb",
+    "verify": {"agent": "critic-terra", "served_model": "gpt-6.1-terra", "verdict": "reject",
+               "findings": [
+                   {"cell": 12, "severity": "minor", "detail": "Libellé de section à reprendre."},
+                   {"cell": 33, "severity": "major",
+                    "detail": "Preuve forte — la cellule 33 affiche uniquement les durées Rust ;\n"
+                              "les sorties commitées donnent 9 672 ms en Python."},
+               ]},
+}
+
+
+def _resumed(tmp_path, rec, verdict):
+    """A revise_from launch on a COPY of the first round's trace (the salvage recipe): the
+    driver writes its record next to that copy, which is where the release must read it."""
+    copy = tmp_path / "o68" / "copy" / "issue-28944.json"
+    copy.parent.mkdir(parents=True)
+    copy.write_text(json.dumps(REJECTED), encoding="utf-8")
+    item = dict(SUDOKU, revise_from=str(copy))
+    claims = FakeClaims()
+    sched = _sched(tmp_path, [item], _leaving(rec, verdict, 1), claims)
+    sched.run()
+    (_, _, _, note), = claims.releases
+    return sched, note
+
+
+def test_a_second_verify_reject_cites_the_verifier_line(tmp_path):
+    sched, note = _resumed(tmp_path, REJECTED, "verify-reject")
+    assert note.startswith(BASE)                          # the prefix readers already match
+    assert ("verifier critic-terra (served gpt-6.1-terra): cell 33, major: "
+            "\u00abPreuve forte") in note                  # the MOST severe, not the first
+    assert note.endswith("(+1 other finding)")
+    released, = _events(sched, "claim-released")
+    assert released["cause"] and released["cause"] in note
+
+
+def test_the_cause_stays_on_the_marker_head_line(tmp_path):
+    """The guard writes `[RELEASED] lane L -- <note> -- paths: <nb>` and reads the clause on
+    that line only: a newline in the note would make the release issue-wide."""
+    long = dict(REJECTED, verify=dict(REJECTED["verify"], findings=[
+        {"cell": 4, "severity": "major", "detail": "ligne\n" * 400}]))
+    _, note = _resumed(tmp_path, long, "verify-reject")
+    assert "\n" not in note and "\r" not in note
+    assert len(note) <= len(BASE) + 3 + S.RELEASE_CAUSE_MAX
+
+
+def test_a_record_left_by_another_round_is_never_cited(tmp_path):
+    """A resumed driver that dies before writing leaves the previous record in place: its
+    verdict is not the one reaped, so nothing from it reaches the note."""
+    stale = dict(REJECTED, verdict="gates-failed:prose-counts")
+    _, note = _resumed(tmp_path, stale, "verify-reject")
+    assert note == BASE
+
+
+def test_a_plain_launch_reads_its_own_run_dir(tmp_path):
+    """No built notebook behind the failure: released at once, cause from the grain's run dir."""
+    rec = {"verdict": "gates-failed:prose-counts", "gates": [
+        {"gate": "secrets", "ok": True, "detail": {"cells": []}},
+        {"gate": "prose-counts", "ok": False, "detail": {"cells": [7], "claims": ["11 cellules"]}},
+    ]}
+    claims = FakeClaims()
+    sched = _sched(tmp_path, [SUDOKU], _leaving(rec, "gates-failed:prose-counts", 1), claims)
+    sched.run()
+    (_, _, _, note), = claims.releases
+    assert note.endswith('\u2014 gate prose-counts: {"cells": [7], "claims": ["11 cellules"]}')
+
+
+def test_a_non_content_failure_carries_no_cause(tmp_path):
+    rec = dict(REJECTED, verdict="call-failed: timeout")
+    claims = FakeClaims()
+    sched = _sched(tmp_path, [SUDOKU], _leaving(rec, "call-failed: timeout", 1), claims)
+    sched.run()
+    (_, _, _, note), = claims.releases
+    assert note == "nb_coder: grain ended without a PR (call-failed: timeout)"
+
+
+def test_release_cause_reads_an_execution_failure():
+    """Shape of o39b's Search-11 record: the error output is a repr'd list in outputs_tail."""
+    rec = {"verdict": "built-execution-failed", "execution": [
+        {"cell": 0, "ok": True},
+        {"cell": 1, "ok": False, "outputs_tail": "[{'output_type': 'error', 'ename': 'Error', "
+         "'evalue': 'expected one of `!`, `.`, `::`, `;`, found `System`', 'traceback': []}]"}]}
+    assert S.release_cause(rec, "built-execution-failed") == (
+        "cell 1 failed: expected one of `!`, `.`, `::`, `;`, found `System`")
+
+
+@pytest.mark.parametrize("rec,verdict", [
+    (None, "verify-reject"),
+    ("not a dict", "verify-reject"),
+    ({"verdict": "verify-reject", "verify": "garbled"}, "verify-reject"),
+    ({"verdict": "verify-reject", "verify": {"findings": ["x", 3]}}, "verify-reject"),
+    ({"verdict": "verify-reject", "verify": {"findings": []}}, "verify-reject"),
+    ({"verdict": "gates-failed:x", "gates": [{"gate": "a", "ok": True}]}, "gates-failed:x"),
+    ({"verdict": "built-execution-failed", "execution": "garbled"}, "built-execution-failed"),
+    (REJECTED, ""),
+])
+def test_release_cause_degrades_to_empty(rec, verdict):
+    assert S.release_cause(rec, verdict) == ""

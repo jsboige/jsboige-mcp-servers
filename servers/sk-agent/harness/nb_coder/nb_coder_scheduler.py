@@ -275,6 +275,69 @@ FAILURE_COUNTERS = {"content": "content_failed", "admission": "admission_failed"
 # turn; the scheduler now asks for it once, from the grain's own trace.
 VERIFY_RECOVERY_PREFIX = "verify-error"
 
+# The automatic [RELEASED] named the verdict alone (`verify-reject`): why the grain ended
+# without a PR stayed in a run record that no other lane can read. 28/11, CoursIA#28944:
+# the coordinator requires a release without a PR to cite the verifier's rejecting line,
+# and that line had to be posted by hand (comment 7238434630). The note now carries the
+# cause read from the run's own record. The claim guard writes the note on the marker's
+# head line, before its `-- paths:` clause, and reads that clause on the head line only:
+# a newline in the note would turn a path-scoped release into an issue-wide one, so the
+# cause is flattened to a single line and bounded.
+RELEASE_CAUSE_MAX = 240
+_SEVERITY_RANK = {"blocker": 0, "critical": 0, "major": 1, "minor": 2, "nit": 3}
+_EVALUE_RE = re.compile(r"""['"]evalue['"]\s*:\s*(['"])(.*?)(?<!\\)\1""")
+
+
+def _one_line(text, limit: int) -> str:
+    s = " ".join(str(text if text is not None else "").split())
+    return s if len(s) <= limit else s[:max(limit - 1, 0)].rstrip() + "…"
+
+
+def release_cause(rec, verdict: str) -> str:
+    """One line saying why a content failure ended without a PR, read from the run record:
+    the verifier's most severe finding, the first failed gate, or the first failed cell.
+    Empty when the record is not THIS run's (its verdict differs from the reaped one: a
+    resumed driver that died early leaves the previous round's record in place, and a
+    stale line must never be cited) or names no cause. Never raises."""
+    try:
+        if not isinstance(rec, dict) or not verdict or rec.get("verdict") != verdict:
+            return ""
+        v = rec.get("verify")
+        findings = v.get("findings") if isinstance(v, dict) else None
+        if verdict.startswith("verify-reject") and isinstance(findings, list):
+            ranked = [f for f in findings if isinstance(f, dict)]
+            if ranked:
+                top = min(ranked, key=lambda f: _SEVERITY_RANK.get(
+                    str(f.get("severity", "")).lower(), 9))
+                who = str(v.get("agent") or "verifier")
+                served = v.get("served_model") or v.get("model_used")
+                head = (f"verifier {who}" + (f" (served {served})" if served else "")
+                        + f": cell {top.get('cell', '?')}, {top.get('severity', '?')}")
+                more = len(ranked) - 1
+                tail = f" (+{more} other finding{'s' if more > 1 else ''})" if more else ""
+                room = RELEASE_CAUSE_MAX - len(head) - len(tail) - 4
+                return _one_line(f"{head}: «{_one_line(top.get('detail'), room)}»{tail}",
+                                 RELEASE_CAUSE_MAX)
+        gates = rec.get("gates")
+        if verdict.startswith("gates-failed") and isinstance(gates, list):
+            for g in gates:
+                if isinstance(g, dict) and g.get("ok") is False:
+                    detail = g.get("detail")
+                    if not isinstance(detail, str):
+                        detail = json.dumps(detail, ensure_ascii=False)
+                    return _one_line(f"gate {g.get('gate', '?')}: {detail}", RELEASE_CAUSE_MAX)
+        cells = rec.get("execution")
+        if verdict.startswith("built-execution-failed") and isinstance(cells, list):
+            for c in cells:
+                if isinstance(c, dict) and c.get("ok") is False:
+                    tail = str(c.get("outputs_tail") or "")
+                    m = _EVALUE_RE.search(tail)
+                    return _one_line(f"cell {c.get('cell', '?')} failed: "
+                                     f"{m.group(2) if m else tail}", RELEASE_CAUSE_MAX)
+    except Exception:
+        return ""
+    return ""
+
 
 
 class QueueError(ValueError):
@@ -1027,6 +1090,20 @@ class Scheduler:
             return None
         return p if p.is_file() else None
 
+    def launch_record(self, item: dict) -> Path | None:
+        """The verdict record THIS launch's driver wrote. A resumed item writes next to
+        the trace it names (driver_command sets --out-dir to that trace's directory, and
+        the driver renames the old record aside); any other launch writes in the grain's
+        own run dir, where run_trace() reads."""
+        explicit = item.get("revise_from") or item.get("verify_from")
+        if not explicit:
+            return self.run_trace(item)
+        try:
+            p = Path(explicit).parent / f"issue-{item['issue']}.json"
+        except Exception:
+            return None
+        return p if p.is_file() else None
+
     def driver_command(self, item: dict, resume_from: str | None = None) -> list[str]:
         a = self.args
         # A queue item may name the trace to resume itself (22/11 salvage: a content
@@ -1352,9 +1429,19 @@ class Scheduler:
         if last != ("CLAIMED", a.lane):
             return
         note = f"nb_coder: grain ended without a PR ({(verdict or 'no verdict')[:80]})"
+        # release_cause() cites only the three content verdicts that name a cause
+        # (verify-reject, gates-failed, built-execution-failed); any other is empty.
+        try:
+            rec_path = self.launch_record(item)
+            cause = (release_cause(json.loads(rec_path.read_text(
+                encoding="utf-8", errors="replace")), verdict) if rec_path else "")
+        except Exception:
+            cause = ""
+        if cause:
+            note = f"{note} — {cause}"
         rc, out = self.claims.release(issue, a.lane, item["notebook"], note)
         self._event("claim-released" if rc == 0 else "claim-release-failed", key=key,
-                    issue=issue, rc=rc, detail=(out or "").strip()[-300:])
+                    issue=issue, rc=rc, cause=cause, detail=(out or "").strip()[-300:])
 
     def _release_worktree(self, key: str, item: dict | None) -> None:
         """Remove a terminal grain's worktree once nothing in it is unique.
