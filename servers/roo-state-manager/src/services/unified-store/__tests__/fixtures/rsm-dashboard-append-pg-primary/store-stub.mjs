@@ -25,6 +25,7 @@
  * retirement from an unconfirmed null (`RSM_APPEND_TEST_RETIRED_MARK`).
  */
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const journal = (line) => {
@@ -195,10 +196,59 @@ function landConcurrentAppend(target) {
   }
 }
 
+/**
+ * #4915 (ai-01 follow-up, 28/11) — the DATA-gated mode.
+ *
+ * `RSM_APPEND_TEST_GATE=data` resolves the gate the way the real
+ * `resolvePrimaryGate` does: `getBackfillMarkerState('dashboard') === 'complete'`.
+ * The state comes from the marker double the CLI imports — read through the
+ * registry by PATH, so the two share one cache only if they resolved the SAME
+ * file. A CLI that warmed a different copy leaves this `'unknown'` and the
+ * gate CLOSED: that is the witness.
+ *
+ * The other modes keep their env-driven answer — the existing witnesses must
+ * not drift.
+ */
 export function isDashboardPgPrimary() {
+  if (process.env.RSM_APPEND_TEST_GATE === 'data') {
+    const state = readMarkerState();
+    const open = state === 'complete';
+    journal(`gate:${open ? 'open' : 'closed'}:${state}`);
+    return open;
+  }
   const open = process.env.RSM_APPEND_TEST_GATE === 'open';
   journal(`gate:${open ? 'open' : 'closed'}`);
   return open;
+}
+
+/**
+ * The marker double's cached state, read through the registry the double
+ * publishes (keyed by the double's own file path). Absent double → the gate
+ * reads as the real one does with no marker: `'unknown'`, i.e. CLOSED.
+ */
+function readMarkerState() {
+  const registry = globalThis.__rsmAppendTestMarkerRegistry;
+  if (!registry) return 'unknown';
+  const key = (p) => p.replace(/\//g, '\\').toLowerCase();
+  // The double lives at build/node_modules/@vibesync/core/dist/services/
+  // unified-store/pg-backfill-marker.js; the store stub sits at
+  // build/services/unified-store/.
+  const expected = key(
+    path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      'node_modules',
+      '@vibesync',
+      'core',
+      'dist',
+      'services',
+      'unified-store',
+      'pg-backfill-marker.js'
+    )
+  );
+  const entry = registry[expected];
+  return entry ? entry.state : 'unknown';
 }
 
 let attempts = 0;

@@ -222,7 +222,11 @@ const EXPECTED_OUTPUT = {
 };
 
 type Scenario = {
-  gate: 'open' | 'closed';
+  // 'open' | 'closed' — the gate is env-driven (the existing witnesses).
+  // 'data' — the gate is DATA-gated, as the real `resolvePrimaryGate` is: it
+  // reads the backfill marker's cached state, and only the CLI's warm-up can
+  // make it open (#4915 follow-up, 28/11).
+  gate: 'open' | 'closed' | 'data';
   pg: 'ok' | 'fail' | 'fail-once' | 'throw' | 'fail-again';
   writeFail?: boolean; // target is a DIRECTORY: unreadable file half AND a failing write
   // Re-review #4915 knobs (see the fixture docstrings).
@@ -246,6 +250,19 @@ type Scenario = {
   mirrorWriterModule?: 'stub' | 'absent' | 'broken';
   mirrorWriterDesignated?: boolean; // the stub's answer when the module is present (default true)
   mirrorWriter?: string; // ROOSYNC_DASHBOARD_MIRROR_WRITER as the child sees it (feeds the reason string)
+  // #4915 (ai-01 follow-up, 28/11) knobs.
+  // gate: 'data' → the gate is DATA-gated (the real resolvePrimaryGate): it
+  // reads the backfill marker's cached state, and only the CLI's warm-up can
+  // make it open. 'open'/'closed' stay env-driven (the existing witnesses).
+  // markerModule: 'absent' → a served build WITHOUT the bundled
+  // @vibesync/core (a pre-#4918 vintage): the warm-up cannot load.
+  markerModule?: 'absent';
+  // The marker's outcome: 'complete' (the marker is in PG) | 'absent' (no
+  // marker row, or a lookup that proved nothing).
+  marker?: 'complete' | 'absent';
+  // Journal the marker's own announcements (the default is silence, so the
+  // existing witnesses' exact journal assertions do not drift).
+  markerJournal?: boolean;
   seed?: string | null; // file state before the run (default SEED_FILE; null = no file)
 };
 
@@ -310,6 +327,30 @@ function runScenario(scenario: Scenario): Run {
     }
     copyFileSync(path.join(FIXTURES, 'fake-clock.mjs'), path.join(root, 'fake-clock.mjs'));
 
+    // #4915 (ai-01 follow-up, 28/11) — the backfill marker, at the path the
+    // CLI imports it from: the SERVED BUILD's bundled @vibesync/core copy
+    // (`node_modules/@vibesync/core/dist/services/unified-store/`). The store
+    // stub reads the SAME file's state, so the gate is data-driven exactly as
+    // the real one is: the CLI's warm-up is what makes it open.
+    //
+    // `markerModule: 'absent'` is the pre-#4918 vintage (a build without the
+    // bundled @vibesync/core): the CLI must degrade to the previous behaviour
+    // instead of failing at import time.
+    if (scenario.markerModule !== 'absent') {
+      const markerDir = path.join(
+        root,
+        'build',
+        'node_modules',
+        '@vibesync',
+        'core',
+        'dist',
+        'services',
+        'unified-store'
+      );
+      mkdirSync(markerDir, { recursive: true });
+      copyFileSync(path.join(FIXTURES, 'pg-backfill-marker-stub.mjs'), path.join(markerDir, 'pg-backfill-marker.js'));
+    }
+
     const journalPath = path.join(root, 'journal.log');
     if (scenario.writeFail) {
       mkdirSync(target, { recursive: true }); // a directory: readFile and writeFile must throw
@@ -342,6 +383,8 @@ function runScenario(scenario: Scenario): Run {
       RSM_APPEND_TEST_SYNC_IDS: scenario.syncIds ? '1' : '',
       RSM_APPEND_TEST_SYNC_STATUS: scenario.syncStatus ? '1' : '',
       RSM_APPEND_TEST_MIRROR_DESIGNATED: scenario.mirrorWriterDesignated === false ? '0' : '1',
+      RSM_APPEND_TEST_MARKER: scenario.marker ?? 'complete',
+      RSM_APPEND_TEST_MARKER_JOURNAL: scenario.markerJournal ? '1' : '0',
       ...(scenario.mirrorWriter === undefined
         ? {}
         : { ROOSYNC_DASHBOARD_MIRROR_WRITER: scenario.mirrorWriter }),
@@ -1386,4 +1429,103 @@ describe('#4596 — a PG success on a non-designated seat does not publish the m
     expect(run.file).toBe(STAMPED);
   }, 15000);
 });
+
+/**
+ * #4915 follow-up (ai-01, 28/11) — the gate is DATA-gated, and the marker it
+ * reads is resolved ASYNCHRONOUSLY.
+ *
+ * `resolvePrimaryGate` asks `getBackfillMarkerState('dashboard') === 'complete'`;
+ * that state lives in a cache warmed by `ensureBackfillMarkersFresh`. The MCP
+ * host warms it at startup, the send CLI warms it before it decides — the
+ * append CLI did NOT, so a one-shot process read `'unknown'`, which the gate
+ * treats as CLOSED: the CLI kept writing the G: file FIRST, unstamped, on a
+ * seat whose marker was complete. Every listener post then counted as a
+ * RESIDUAL write for #4131's Phase D instrument — the gate was structurally
+ * bypassed whatever the store held.
+ *
+ * These witnesses use `gate: 'data'` — the real resolution — and the marker
+ * double the CLI imports FROM THE SERVED BUILD's bundled @vibesync/core
+ * (the copy the store module itself resolves; the cache is per module
+ * instance). The gate opens ONLY if the CLI warmed THAT copy.
+ */
+describe('#4915 follow-up — the gate is DATA-gated: the CLI must warm the marker first', () => {
+  it('warms the marker before it reads the gate: the gate opens, PG goes first, the file is a stamped mirror', () => {
+    // The subject: the warm-up happens BEFORE the gate is consulted, and it
+    // warms the copy the gate reads. Without the warm-up the gate reads
+    // 'unknown' → CLOSED → the file is written first, unstamped.
+    const run = runScenario({ gate: 'data', pg: 'ok', marker: 'complete', markerJournal: true });
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toBe('');
+    expect(run.parsed).toEqual(EXPECTED_OUTPUT);
+    expect(run.file).toBe(STAMPED); // the stamp is what the Phase D instrument reads
+    expect(run.journal).toEqual([
+      'marker:complete', // the warm-up, BEFORE the lock is taken
+      LOCK,
+      'read:file',
+      'gate:open:complete', // the gate read the WARMED marker
+      sync(false, 1), // the file did NOT yet carry the id → PG went first
+      UNLOCK,
+      LOCK,
+      'path',
+      STAMP_LINE,
+      UNLOCK,
+    ]);
+  }, 15000);
+
+  it('a marker that proves nothing keeps the gate CLOSED: the file-first path, byte for byte', () => {
+    // The fail-safe: an unproven scope (no marker row, or a lookup that failed)
+    // resolves to the G: path. The warm-up must NOT open the gate on its own —
+    // and an escalation is never lost.
+    const run = runScenario({ gate: 'data', pg: 'ok', marker: 'absent', markerJournal: true });
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toBe('');
+    expect(run.parsed).toEqual(EXPECTED_OUTPUT);
+    expect(run.file).toBe(GOLDEN); // no stamp: the pre-existing bytes
+    expect(run.journal).toEqual([
+      'marker:absent',
+      LOCK,
+      'read:file',
+      'gate:closed:absent',
+      'markdown:none',
+      'path',
+      sync(true, 1), // the file carried the id → the file went first
+      UNLOCK,
+    ]);
+  }, 15000);
+
+  it('a served build WITHOUT the bundled marker degrades to the previous behaviour (and says so)', () => {
+    // A vintage predating the bundled @vibesync/core cannot load the marker:
+    // the CLI must fall back to the previous behaviour instead of failing at
+    // import time — the escalation is never lost, and the seat says why.
+    const run = runScenario({ gate: 'data', pg: 'ok', markerModule: 'absent' });
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toContain('module de marqueur absent du build servi');
+    expect(run.parsed).toEqual(EXPECTED_OUTPUT);
+    expect(run.file).toBe(GOLDEN); // no stamp: the gate stayed closed
+  }, 15000);
+
+  it('the warm-up does not touch the env-driven gates: the existing witnesses are unchanged', () => {
+    // The warm-up is a RESOLUTION, not a gate change: an explicitly closed
+    // gate stays closed, and the file-first bytes do not move.
+    const run = runScenario({ gate: 'closed', pg: 'ok', markerJournal: true });
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toBe('');
+    expect(run.file).toBe(GOLDEN);
+    expect(run.journal).toEqual([
+      'marker:complete', // the marker IS complete…
+      LOCK,
+      'read:file',
+      'gate:closed', // …and the explicit gate still wins
+      'markdown:none',
+      'path',
+      sync(true, 1),
+      UNLOCK,
+    ]);
+  }, 15000);
+});
+
 
