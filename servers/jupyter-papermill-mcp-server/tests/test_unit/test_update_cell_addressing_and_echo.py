@@ -13,6 +13,8 @@ behaviours added to make a fine addressing error detectable:
 * ``dry_run``, which validates the addressing without writing.
 """
 
+import hashlib
+
 import nbformat
 import pytest
 
@@ -175,6 +177,61 @@ async def test_trailing_newline_is_preserved_byte_for_byte(tmp_path):
 
     assert result["previous_source"] == "B"
     assert _read(tmp_path).cells[1].source == source
+
+
+@pytest.mark.asyncio
+async def test_echo_carries_the_sha256_of_the_overwritten_source(tmp_path):
+    service = await _seed_repro(tmp_path)
+
+    result = await service.update_cell("repro.ipynb", 1, 'print("B2")')
+
+    assert result["previous_sha256"] == hashlib.sha256(b"B").hexdigest()
+    assert result["new_sha256"] == hashlib.sha256(b'print("B2")').hexdigest()
+    assert result["previous_source_truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_echo_hash_identifies_the_cell_that_was_actually_overwritten(tmp_path):
+    """The whole point of the echo: with a stale index map, the hash says
+    which content was lost, so the caller can restore it."""
+    service = await _seed_repro(tmp_path)
+    await service.add_cell("repro.ipynb", "code", 'print("D")', index=1)
+
+    # The caller still believes the target cell sits at index 1.
+    stale = await service.update_cell("repro.ipynb", 1, 'print("WRONG")')
+
+    assert stale["id"] != "cfedaca8"
+    assert stale["previous_sha256"] == hashlib.sha256(b'print("D")').hexdigest()
+    assert stale["previous_sha256"] != hashlib.sha256(b"B").hexdigest()
+
+    # Addressing by id lands on the intended cell and says so.
+    addressed = await service.update_cell(
+        "repro.ipynb", cell_id="cfedaca8", source='print("B3")'
+    )
+    assert addressed["previous_sha256"] == hashlib.sha256(b"B").hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_long_previous_source_is_bounded_but_its_hash_is_not(tmp_path):
+    service = await _seed_repro(tmp_path)
+    long_source = "x" * 5000
+    await service.update_cell("repro.ipynb", 1, long_source)
+
+    result = await service.update_cell("repro.ipynb", 1, "short")
+
+    assert result["previous_source_truncated"] is True
+    assert len(result["previous_source"]) == 4000
+    assert result["previous_sha256"] == hashlib.sha256(long_source.encode()).hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_dry_run_echo_has_no_new_hash(tmp_path):
+    service = await _seed_repro(tmp_path)
+
+    result = await service.update_cell("repro.ipynb", 1, dry_run=True)
+
+    assert result["previous_sha256"] == hashlib.sha256(b"B").hexdigest()
+    assert result["new_sha256"] is None
 
 
 @pytest.mark.asyncio

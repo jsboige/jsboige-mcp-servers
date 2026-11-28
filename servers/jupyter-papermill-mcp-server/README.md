@@ -14,7 +14,7 @@ Un serveur MCP (Model Context Protocol) Python pour les opérations Jupyter Note
 - `remove_cell` - Supprimer une cellule d'un notebook
 - `update_cell` - Modifier une cellule d'un notebook
   - Adressage par `index` et/ou `cell_id` ; les deux ensemble doivent désigner la même cellule
-  - Résultat : écho de la cellule écrite (`index`, `id`, `previous_source`)
+  - Résultat : écho de la cellule écrite (`index`, `id`, `previous_source`, `previous_source_truncated`, `previous_sha256`, `new_sha256`)
   - `dry_run=True` : valide l'adressage sans écrire (#4969)
 - **`read_cells`** 🆕 - **Outil consolidé** pour lire des cellules (remplace `read_cell`, `read_cells_range`, `list_notebook_cells`)
   - Mode `single` : Lire une cellule spécifique
@@ -267,6 +267,10 @@ async def main():
     # fournis, ils doivent désigner la même cellule, sinon l'appel est refusé.
     # Le résultat écho la cellule réellement écrite : `index`, `id` et
     # `previous_source` — de quoi prouver ce qui a été écrasé.
+    # `previous_sha256` / `new_sha256` sont les empreintes de la source
+    # COMPLÈTE avant et après l'écriture : la preuve, là où le texte de
+    # `previous_source` est borné à 4000 caractères (au-delà,
+    # `previous_source_truncated` vaut True).
     updated = await client.call_tool(
         "update_cell",
         path="example.ipynb",
@@ -274,7 +278,9 @@ async def main():
         source="print('edited')"
     )
     # updated == {"index": 2, "id": "cfedaca8",
-    #             "previous_source": "print('original')", ...}
+    #             "previous_source": "print('original')",
+    #             "previous_source_truncated": False,
+    #             "previous_sha256": "…", "new_sha256": "…", ...}
 
     # `dry_run=True` valide l'adressage sans écrire (aucune `source` requise).
     preview = await client.call_tool(
