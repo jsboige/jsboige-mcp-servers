@@ -30,7 +30,22 @@ the backfill completeness marker:
 | `services/unified-store/pg-backfill-marker` | `servers/roo-state-manager/src/services/unified-store/pg-backfill-marker.ts` |
 | `services/unified-store/pg-read-gates` | `servers/roo-state-manager/src/services/unified-store/pg-read-gates.ts` |
 
-The remaining trunk modules (`shared-state-path`, `message-helpers`, `server-config`,
+Grain 4 added the shared-state resolver — its resolution from the environment,
+its fail-closed error and the one sanctioned store-subdirectory writer:
+
+| Module | Source before |
+|---|---|
+| `utils/shared-state-path` | `servers/roo-state-manager/src/utils/shared-state-path.ts` |
+
+The #1628 `.env` fallback did **not** move. It reads the server's own `.env`
+from two levels above its own file, so moved byte for byte it would have looked
+for a `packages/vibesync-core/.env` that does not exist, without any error. The
+RSM keeps a thin adapter at the old path (`src/utils/shared-state-path.ts`):
+it registers its reader through `registerDotenvFallback()` at import time and
+re-exports this module, so no import site changed. With no reader registered the
+module reads the environment only.
+
+The remaining trunk modules (`message-helpers`, `server-config`,
 `unified-store/*` stores, `openai`) stay in the RSM for later grains: their fan-in measured
 1000+ import sites, which is not reviewable as one change.
 

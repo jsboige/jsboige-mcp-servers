@@ -157,7 +157,7 @@ Outils à la racine de `tools/` : [`claudish-traffic.ts`](tools/claudish-traffic
 
 - [`server-helpers.ts`](utils/server-helpers.ts:1) — `truncateResult()`, `handleTouchMcpSettings()`, `handleExportConversationJson()`, `handleExportConversationCsv()`
 - [`logger.ts`](utils/logger.ts:1) — journalisation
-- [`shared-state-path.ts`](utils/shared-state-path.ts:1) — résolution du store partagé RooSync
+- [`shared-state-path.ts`](utils/shared-state-path.ts:1) — adaptateur de siège : repli `.env` (#1628) + ré-export de `@vibesync/core/utils/shared-state-path` (résolution du store partagé RooSync)
 - [`roo-storage-detector.ts`](utils/roo-storage-detector.ts:1) — détection du stockage Roo
 - [`secret-redaction.ts`](utils/secret-redaction.ts:1) — masquage des secrets
 

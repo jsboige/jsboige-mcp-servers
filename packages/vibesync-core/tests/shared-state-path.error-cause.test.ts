@@ -15,7 +15,7 @@
  */
 
 import { describe, test, expect } from 'vitest';
-import { SharedStoreInaccessibleError } from '../shared-state-path.js';
+import { SharedStoreInaccessibleError } from '../src/utils/shared-state-path.js';
 
 const PATH = 'G:\\Mon Drive\\Synchronisation\\RooSync\\.shared-state';
 
