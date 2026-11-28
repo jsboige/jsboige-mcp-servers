@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+# --- provenance (roo-extensions #4781 harness mutualisation) -----------------
+# NEW in this tree (27/11): no jsboige/vllm original. The failure class it pins (a stage-5
+# guard replay wedged by a grandchild that keeps the stdout pipe open) was measured on the
+# CoursIA grain MGS-28 (#27133), po-2028:claudish, 27/11, after the 22/11 cutover. This
+# tree is the source of truth; the vllm copy of the sibling tests stays frozen at
+# 7a09e1caec22441d9402ab25a222206c8905bfe1 — never re-copy it over this tree.
+# -----------------------------------------------------------------------------
 """Pins for `run_guard_bounded` -- the stage-5 guard runner must never wedge the driver.
 
 Founder incident (po-2028, 27/11): CoursIA#27133's MGS-28 grain committed its delivery
