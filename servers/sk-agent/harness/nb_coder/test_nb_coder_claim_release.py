@@ -371,7 +371,7 @@ def test_the_old_behavior_is_one_flag_away(tmp_path):
 # (comment 7238434630). Shapes below are the record's real ones (o67b trace of #28944).
 
 SUDOKU = {"issue": 28944, "notebook": "MyIA.AI.Notebooks/Sudoku/Sudoku-06-AIMA-CSP-Rust.ipynb"}
-BASE = "nb_coder: grain ended without a PR (verify-reject)"
+BASE = "nb_coder: grain ended without a PR (verify-reject); motif: verify-reject"
 REJECTED = {
     "verdict": "verify-reject", "built_notebook": "nb_28944_built.ipynb",
     "verify": {"agent": "critic-terra", "served_model": "gpt-6.1-terra", "verdict": "reject",
@@ -415,7 +415,7 @@ def test_the_cause_stays_on_the_marker_head_line(tmp_path):
         {"cell": 4, "severity": "major", "detail": "ligne\n" * 400}]))
     _, note = _resumed(tmp_path, long, "verify-reject")
     assert "\n" not in note and "\r" not in note
-    assert len(note) <= len(BASE) + 3 + S.RELEASE_CAUSE_MAX
+    assert len(note) <= len(BASE) + 2 + S.RELEASE_CAUSE_MAX
 
 
 def test_a_record_left_by_another_round_is_never_cited(tmp_path):
@@ -436,7 +436,8 @@ def test_a_plain_launch_reads_its_own_run_dir(tmp_path):
     sched = _sched(tmp_path, [SUDOKU], _leaving(rec, "gates-failed:prose-counts", 1), claims)
     sched.run()
     (_, _, _, note), = claims.releases
-    assert note.endswith('\u2014 gate prose-counts: {"cells": [7], "claims": ["11 cellules"]}')
+    assert note == ('nb_coder: grain ended without a PR (gates-failed:prose-counts); motif: '
+                    'gates-failed; gate prose-counts: {"cells": [7], "claims": ["11 cellules"]}')
 
 
 def test_a_non_content_failure_carries_no_cause(tmp_path):
@@ -445,7 +446,7 @@ def test_a_non_content_failure_carries_no_cause(tmp_path):
     sched = _sched(tmp_path, [SUDOKU], _leaving(rec, "call-failed: timeout", 1), claims)
     sched.run()
     (_, _, _, note), = claims.releases
-    assert note == "nb_coder: grain ended without a PR (call-failed: timeout)"
+    assert note == "nb_coder: grain ended without a PR (call-failed: timeout); motif: call-failed"
 
 
 def test_release_cause_reads_an_execution_failure():
@@ -470,3 +471,38 @@ def test_release_cause_reads_an_execution_failure():
 ])
 def test_release_cause_degrades_to_empty(rec, verdict):
     assert S.release_cause(rec, verdict) == ""
+
+
+# 28/11 — the release declares its motif. CoursIA's RELACHEE organ freezes a fresh [RELEASED]
+# for the WHOLE fleet unless its motif is positively identified (`motif: <code>` in the
+# marker block, code alone in its `;` clause, no historical word beside it); a bare
+# `(verify-reject)` never was, so every automatic release froze every lane for 3 days.
+# Measured against the organ at CoursIA origin/main 330e29d7eb: with the clause, a
+# verify-reject / built-structure-mismatch release freezes only the releasing lane.
+
+@pytest.mark.parametrize("verdict,code", [
+    ("verify-reject", "verify-reject"),
+    ("gates-failed:prose-counts", "gates-failed"),
+    ("built-structure-mismatch: 3 cells", "built-structure-mismatch"),
+    ("refused-claim-not-qualified:RELACHEE", "refused-claim-not-qualified"),
+    ("Stage2-Call-Failed", "stage2-call-failed"),
+])
+def test_the_motif_is_the_verdict_code_alone_in_its_clause(verdict, code):
+    clauses = [c.strip() for c in S.release_note(verdict, "cell 3, major: «x»").split(";")]
+    assert clauses[1] == f"motif: {code}"
+    assert len(clauses) == 3 and "\n" not in S.release_note(verdict, "cell 3, major: «x»")
+
+
+@pytest.mark.parametrize("verdict", ["", "   ", ":x", None])
+def test_no_code_no_motif(verdict):
+    note = S.release_note(verdict)
+    assert "motif" not in note
+    assert note.startswith("nb_coder: grain ended without a PR (")
+
+
+def test_the_motif_clause_precedes_the_cause():
+    """The cause quotes the verifier (free text, may say « dernière cellule ») — it must
+    never share the motif's clause, or the organ reads the code as cited in the past."""
+    note = S.release_note("verify-reject", "cell 33, major: «la dernière cellule»")
+    head, motif, cause = note.split("; ", 2)
+    assert motif == "motif: verify-reject" and "dernière" in cause and "dernière" not in motif

@@ -339,6 +339,28 @@ def release_cause(rec, verdict: str) -> str:
     return ""
 
 
+# The SCOPE of a [RELEASED] is read from its motif by CoursIA's RELACHEE organ
+# (scripts/coordination/tapis_relache*.py, #28440): a tool-failure motif (verify-reject,
+# built-structure-mismatch, stage2-call-failed, ...) freezes the path for the releasing lane
+# only, anything else for the whole fleet for 3 days. The motif counts only in a form the
+# organ identifies positively -- `motif: <code>` in the marker's block -- and the code must
+# not share its clause (`;`-separated) with a past-tense word. The bare `(verify-reject)`
+# the note carried was never identified: every automatic release froze its path for every
+# lane (measured 28/11 on CoursIA#28944 and #29058). The note now declares the verdict's
+# code as its motif, alone in its clause; the organ decides what that code's scope is.
+_MOTIF_CODE_RE = re.compile(r"[a-z0-9][\w-]*", re.IGNORECASE)
+
+
+def release_note(verdict: str, cause: str = "") -> str:
+    """The --release note: the verdict, its code as `motif:`, then the cause, one clause each."""
+    note = f"nb_coder: grain ended without a PR ({(verdict or 'no verdict')[:80]})"
+    m = _MOTIF_CODE_RE.match((verdict or "").strip())
+    if m:
+        note += f"; motif: {m.group(0).lower()}"
+    if cause:
+        note += f"; {cause}"
+    return note
+
 
 class QueueError(ValueError):
     pass
@@ -1428,7 +1450,6 @@ class Scheduler:
                                reason="marker-unread", detail=str(exc)[:200])
         if last != ("CLAIMED", a.lane):
             return
-        note = f"nb_coder: grain ended without a PR ({(verdict or 'no verdict')[:80]})"
         # release_cause() cites only the three content verdicts that name a cause
         # (verify-reject, gates-failed, built-execution-failed); any other is empty.
         try:
@@ -1437,8 +1458,7 @@ class Scheduler:
                 encoding="utf-8", errors="replace")), verdict) if rec_path else "")
         except Exception:
             cause = ""
-        if cause:
-            note = f"{note} — {cause}"
+        note = release_note(verdict, cause)
         rc, out = self.claims.release(issue, a.lane, item["notebook"], note)
         self._event("claim-released" if rc == 0 else "claim-release-failed", key=key,
                     issue=issue, rc=rc, cause=cause, detail=(out or "").strip()[-300:])
