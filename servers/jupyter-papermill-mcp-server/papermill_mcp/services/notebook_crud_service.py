@@ -540,9 +540,7 @@ class NotebookCRUDService:
         Returns:
             The echo fields
         """
-        if not isinstance(previous_source, str):
-            previous_source = ""
-
+        # A non-str source is an invariant break: let it raise, never hash "" as a false proof.
         truncated = len(previous_source) > PREVIOUS_SOURCE_ECHO_LIMIT
         echo: Dict[str, Any] = {
             "previous_source": (
