@@ -922,20 +922,61 @@ def test_belt_out_of_budget_or_without_a_reader_makes_no_call(monkeypatch, tmp_p
     assert not any(p.startswith(str(tmp_path)) for p in sys.path)
 
 
+def _local_import_closure(source, scripts):
+    """Every sibling module `source` imports, transitively — DERIVED, never a frozen list.
+
+    `check_lane_claim.py` started importing `pr_catalogue` on 26/11 (CoursIA `43317ff248`,
+    #28347); the belt test's copy list still named three files, so it answered
+    `unavailable: ModuleNotFoundError: No module named 'pr_catalogue'` on every seat that
+    HAS a checkout — and never in CI, which skips it. A derived closure cannot fall behind:
+    a new sibling import is followed with no edit here."""
+    import ast
+    seen, todo = [], [source]
+    while todo:
+        for node in ast.walk(ast.parse(todo.pop())):
+            if isinstance(node, ast.Import):
+                mods = [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                mods = [node.module.split(".")[0]]
+            else:
+                continue
+            for mod in mods:
+                candidate = scripts / f"{mod}.py"
+                if mod not in seen and candidate.is_file():
+                    seen.append(mod)
+                    todo.append(candidate.read_text(encoding="utf-8"))
+    return seen
+
+
+def test_the_belt_copy_list_is_derived_from_the_reader_imports(tmp_path):
+    """Pins the derivation itself, with no checkout — so CI sees it too. A transitive
+    sibling is followed, a stdlib name and an unimported sibling are not copied."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "sibling_a.py").write_text("import os\n", encoding="utf-8")
+    (scripts / "sibling_b.py").write_text("from sibling_a import x\n", encoding="utf-8")
+    (scripts / "not_imported.py").write_text("", encoding="utf-8")
+    got = sorted(_local_import_closure("import json\nfrom sibling_b import y\n", scripts))
+    assert got == ["sibling_a", "sibling_b"], got
+
+
 def test_belt_against_the_real_guard_reader(monkeypatch, tmp_path):
     """The stand-in above proves the plumbing; this one runs the REAL reader of a CoursIA
-    checkout (copied, so the test reads no git state), so a renamed symbol or a changed
-    `prs` seam fails HERE, on any seat that has the checkout, instead of answering
-    `unavailable` in production. Skipped where there is no checkout (CI)."""
+    checkout (copied, so the test reads no git state), so a renamed symbol, a changed
+    `prs` seam or a NEW sibling import fails HERE, on any seat that has the checkout,
+    instead of answering `unavailable` in production. Skipped where there is no checkout
+    (CI). The copy list is the reader's own import closure, not a list to remember."""
     import os
     import shutil
     repo = Path(os.environ.get("NBCODER_TEST_COURSIA_REPO", "D:/dev/CoursIA"))
-    names = ("check_lane_claim.py", "grain_tag.py", "claim_cap_advice.py")
-    if not all((repo / "scripts" / name).is_file() for name in names):
+    reader = repo / "scripts" / "check_lane_claim.py"
+    if not reader.is_file():
         pytest.skip("no CoursIA checkout on this seat")
+    names = ["check_lane_claim"] + _local_import_closure(
+        reader.read_text(encoding="utf-8"), repo / "scripts")
     (tmp_path / "scripts").mkdir()
     for name in names:
-        shutil.copyfile(repo / "scripts" / name, tmp_path / "scripts" / name)
+        shutil.copyfile(repo / "scripts" / f"{name}.py", tmp_path / "scripts" / f"{name}.py")
     pages = [[_belt_pr(1, f"lane {BELT_LANE} -- ours\n\nCloses #27130"),
               _belt_pr(28250, "Lot 2.\n\n[DELIVERED] lane myia-po-2024:CoursIA-2 -- five ports\n\n"
                               "Closes #27130"),
@@ -946,7 +987,7 @@ def test_belt_against_the_real_guard_reader(monkeypatch, tmp_path):
     try:
         belt = nbcd.occupation_belt(tmp_path, 27130, BELT_LANE, LOT2)
     finally:
-        for name in ("grain_tag", "claim_cap_advice"):     # the guard's siblings, cached
+        for name in names:                      # the guard and every sibling, cached
             sys.modules.pop(name, None)
     assert belt["status"] == "ok" and belt["citing"] == 1, belt
     assert [(f["number"], f["lane"], f["touches_notebook"], f["source"])
