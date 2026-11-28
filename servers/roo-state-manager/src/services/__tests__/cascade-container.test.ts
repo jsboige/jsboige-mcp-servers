@@ -180,3 +180,154 @@ describe('readCascadeContainer — CONSUMER (ce que le parseur a ACCEPTÉ)', () 
         expect(reading.coverage).toBe('ok');
     });
 });
+
+/**
+ * #4968 — un siège occupé ne se lit pas par la queue des logs.
+ *
+ * La ligne `[Failover]` n'est émise QU'UNE FOIS, au démarrage (~1,6 s après,
+ * mesuré sur ai-01 le 29/10). Sur le hub, qui écrit ~500 lignes/min, elle
+ * quitte la queue de 400 lignes en moins d'une minute : tout `confirm` rendu
+ * ensuite lisait un consommateur « muet » qui avait parlé (verdict
+ * `consumer-muted` sur un consommateur opérationnel).
+ *
+ * Ces tests rejouent le symptôme MESURÉ : 2 102 lignes au moment de la
+ * lecture, ligne du parseur en 4ᵉ position.
+ */
+describe('readCascadeContainer — CONSUMER sur un siège occupé (#4968)', () => {
+    /** La ligne réelle du 27/11 (po-2025), verbatim. */
+    const FAILOVER_LINE =
+        '2026-11-27T21:37:58.847Z [claudish] [Failover] configured=4 armed=[haiku@myia-po-2027→Swift 1.5 local (vllm-myia), sonnet@myia-po-2026→GPT-6.1 Terra (po-2025)] auto=on';
+
+    const STARTED_AT_MS = Date.parse(STARTED_AT);
+    const LINES_PER_MINUTE = 500;
+
+    interface LogEntry {
+        /** Horodatage de l'ENTRÉE de journal — ce que docker filtre. */
+        at: number;
+        text: string;
+    }
+
+    /** Journal d'un siège occupé : la ligne du parseur en 4ᵉ position, ~2 100 lignes ensuite. */
+    function busySeatLog(failover: string | null, noise = 2_100, base = STARTED_AT_MS): LogEntry[] {
+        const entries: LogEntry[] = [
+            { at: base, text: '[claudish] proxy starting' },
+            { at: base + 100, text: '[claudish] env loaded' },
+            { at: base + 200, text: '[claudish] routes ready' },
+        ];
+        if (failover !== null) entries.push({ at: base + 1_600, text: failover });
+        const step = 60_000 / LINES_PER_MINUTE;
+        for (let i = 0; i < noise; i++) {
+            entries.push({ at: base + 2_000 + i * step, text: `[claudish] POST /v1/messages 200 #${i}` });
+        }
+        return entries;
+    }
+
+    /**
+     * Runner docker qui SAIT filtrer comme docker : queue (`--tail N`) et
+     * fenêtre (`--since`/`--until`). Une queue qui ne sait pas filtrer
+     * rendrait le test incapable de distinguer les deux lectures.
+     */
+    function busyRunner(
+        log: LogEntry[],
+        started: Result,
+        windowFails = false,
+    ): CascadeCommandRun & { calls: string[][] } {
+        const calls: string[][] = [];
+        const run = (cmd: string, args: string[], _timeoutMs: number): Result => {
+            calls.push([cmd, ...args]);
+            if (args[0] === 'exec') return ok(procEnviron(RUNNING_ENV));
+            if (args[0] === 'inspect') {
+                const fmt = args[1] === '--format' ? args[2] : '';
+                if (fmt.includes('StartedAt')) return started;
+                return fail('unexpected inspect');
+            }
+            if (args[0] === 'logs') {
+                const tailAt = args.indexOf('--tail');
+                if (tailAt !== -1) {
+                    const n = Number.parseInt(args[tailAt + 1], 10);
+                    return ok(log.slice(-n).map((e) => e.text).join('\n'));
+                }
+                const sinceAt = args.indexOf('--since');
+                const untilAt = args.indexOf('--until');
+                if (sinceAt === -1 || untilAt === -1) return fail('unexpected logs args');
+                if (windowFails) return fail('Cannot connect to the Docker daemon');
+                const since = Date.parse(args[sinceAt + 1]);
+                const until = Date.parse(args[untilAt + 1]);
+                const kept = log.filter((e) => e.at >= since && e.at <= until);
+                return ok(kept.map((e) => e.text).join('\n'));
+            }
+            return fail(`unexpected: ${args.join(' ')}`);
+        };
+        const withCalls = run as CascadeCommandRun & { calls: string[][] };
+        withCalls.calls = calls;
+        return withCalls;
+    }
+
+    test('la fixture reproduit le symptôme mesuré : la queue de 400 lignes a perdu la ligne', () => {
+        const log = busySeatLog(FAILOVER_LINE);
+        const whole = log.map((e) => e.text).join('\n');
+        const tail = log.slice(-400).map((e) => e.text).join('\n');
+        expect(whole).toContain('[Failover] configured=4');
+        expect(tail).not.toContain('[Failover] configured=');
+    });
+
+    test('la FENÊTRE de démarrage lit le parseur, que la queue avait perdu', () => {
+        const run = busyRunner(busySeatLog(FAILOVER_LINE), ok(STARTED_AT));
+        const reading = readCascadeContainer({ container: 'claudish', run });
+
+        expect(reading.consumer?.configured).toBe(4);
+        expect(reading.consumer?.auto).toBe('on');
+        expect(reading.consumer?.armed).toEqual([
+            'haiku@myia-po-2027→Swift 1.5 local (vllm-myia)',
+            'sonnet@myia-po-2026→GPT-6.1 Terra (po-2025)',
+        ]);
+        // La lecture porte sur le DÉMARRAGE, pas sur la queue.
+        // calls = [cmd, ...args] → ['docker','logs','--since',<début>,'--until',<fin>,<conteneur>]
+        const logsCall = run.calls.find((c) => c[2] === '--since');
+        expect(logsCall).toBeDefined();
+        expect(logsCall?.[3]).toBe(STARTED_AT);
+        expect(logsCall?.[5]).toBe('2026-10-30T04:02:00.000Z');
+    });
+
+    test('MUTANT — sans date de démarrage, la queue seule rend un consommateur MUET', () => {
+        // Le même journal, lu en queue : la ligne du parseur est hors fenêtre.
+        const run = busyRunner(busySeatLog(FAILOVER_LINE), fail('inspect indisponible'));
+        const reading = readCascadeContainer({ container: 'claudish', run });
+
+        expect(reading.startedAt).toBeNull();
+        expect(reading.consumer).toBeNull();
+        expect(run.calls.some((c) => c[2] === '--tail' && c[3] === '400')).toBe(true);
+    });
+
+    test('MUTANT — une date illisible retombe sur la queue (jamais une exception)', () => {
+        const run = busyRunner(busySeatLog(FAILOVER_LINE), ok('pas-une-date'));
+        const reading = readCascadeContainer({ container: 'claudish', run });
+
+        expect(reading.coverage).toBe('ok');
+        expect(run.calls.some((c) => c[2] === '--tail')).toBe(true);
+        expect(run.calls.some((c) => c[2] === '--since')).toBe(false);
+    });
+
+    test('une fenêtre ILLISIBLE retombe sur la queue : la perte du mécanisme ne vaut pas muet', () => {
+        // Conteneur démarré il y à peine : la ligne du parseur est DANS la queue aussi.
+        const run = busyRunner(busySeatLog(FAILOVER_LINE, 20), ok(STARTED_AT), true);
+        const reading = readCascadeContainer({ container: 'claudish', run });
+
+        expect(reading.consumer?.configured).toBe(4);
+        const logsCalls = run.calls.filter((c) => c[0] === 'docker' && c[1] === 'logs');
+        expect(logsCalls).toHaveLength(2);
+        expect(logsCalls[0][2]).toBe('--since');
+        expect(logsCalls[1][2]).toBe('--tail');
+    });
+
+    test('MUTANT — une ligne du boot PRÉCÉDENT dans la queue ne vaut pas consommateur', () => {
+        // `docker restart` conserve le journal : le boot d'avant a parlé, celui-ci est muet.
+        const previousBoot: LogEntry[] = [{ at: STARTED_AT_MS - 60_000, text: FAILOVER_LINE }];
+        const run = busyRunner([...previousBoot, ...busySeatLog(null, 20)], ok(STARTED_AT));
+        const reading = readCascadeContainer({ container: 'claudish', run });
+
+        // La fenêtre du boot COURANT est lisible et ne porte aucune ligne : muet.
+        expect(reading.consumer).toBeNull();
+        expect(run.calls.filter((c) => c[0] === 'docker' && c[1] === 'logs')).toHaveLength(1);
+    });
+});
