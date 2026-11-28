@@ -78,6 +78,21 @@
  * (`ROOSYNC_DASHBOARD_MIRROR_REPAIR=0`). Scoped to keys that still have a file:
  * a key present in PG with NO file at all is not materialised here.
  *
+ * ONE WRITER (#4596). The fleet lock above serialises the repair in TIME; it
+ * does not designate a publisher, so every seat still wrote the same Drive
+ * item in turn — the condition that produced the ` (N)` conflict copies
+ * (07/11 23:50Z, whole-file batch rewrites by two accounts). The mirror is an
+ * EXPORT, so it takes ONE publisher: `ROOSYNC_DASHBOARD_MIRROR_WRITER`
+ * (`dashboard-mirror-writer.ts`, default `myia-ai-01`, `*` hands it back to
+ * every seat). Both PG→file writers honour it — the repair and the
+ * materialization — and a non-designated seat returns
+ * `mirrorRepairSkipped: 'not-designated-writer'` BEFORE asking for the fleet
+ * lock (a seat that will not write has no business holding it either). The
+ * pg-flags / writer seams keep their own reasons first: an explicit kill-switch
+ * or a non-PG-primary seat is reported as such. The two paths where the file is
+ * the only surface stay unguarded, on purpose: the PG-failure fallback and the
+ * file→PG import pass.
+ *
  * MAIN-pass lock (#4850). The pass itself — one `dashboards` readdir then a
  * read+parse per keyed file — ran unlocked in every dual-write RSM process on
  * a host: 32 identical passes on ai-01, all started in the same reboot hour
@@ -120,6 +135,7 @@ import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
+import { isDesignatedMirrorWriter, reconcileLockMachineId } from './dashboard-mirror-writer.js';
 import { createLogger } from '@vibesync/core/utils/logger';
 import { isGdriveConflictCopyFile } from '../roosync/DashboardMirrorService.js';
 
@@ -239,7 +255,10 @@ export interface DashboardReconcileResult {
   /**
    * Why the mirror repair did not run this pass. `'not-pg-primary'` = the file
    * is still the truth on this seat (repairing it from PG would be backwards);
-   * `'no-writer'` = no `writeMirror` seam was injected; `'disabled'` = the
+   * `'not-designated-writer'` = this seat is not the one
+   * ROOSYNC_DASHBOARD_MIRROR_WRITER names (#4596) — decided BEFORE the fleet
+   * lock, so a non-designated seat never asks for it; `'no-writer'` = no
+   * `writeMirror` seam was injected; `'disabled'` = the
    * ROOSYNC_DASHBOARD_MIRROR_REPAIR=0 kill-switch; `'lock-held'` = another
    * process of the fleet holds the repair lock; `'lock-degraded'` = the lock
    * acquire THREW and the repair (a write) refuses to run unlocked. Absent =
@@ -247,6 +266,7 @@ export interface DashboardReconcileResult {
    */
   mirrorRepairSkipped?:
     | 'not-pg-primary'
+    | 'not-designated-writer'
     | 'no-writer'
     | 'disabled'
     | 'lock-held'
@@ -435,9 +455,18 @@ export function isMainPassLockEnabled(): boolean {
   return process.env.ROOSYNC_DASHBOARD_RECONCILE_MAIN_PASS_LOCK !== '0';
 }
 
-/** Machine identity — same spelling as the holder payloads of the other locks. */
+/**
+ * Machine identity of the LOCK ROWS — the historical hostname spelling,
+ * deliberately frozen. The #4596 election may follow the operator's
+ * declaration (`ROOSYNC_MACHINE_ID`, the stamps' vocabulary); these keys may
+ * not: a host without `.env`, an older-vintage host or a host reading another
+ * `.env` would otherwise stop contending on the same `…:<machine>` row and
+ * stop sharing the #4850 cadence stamp with its own machine's other hosts.
+ * Election ≠ serialisation — the verdict elects a publisher, the key
+ * serialises the pass.
+ */
 function reconcileMachineId(): string {
-  return process.env.COMPUTERNAME ?? process.env.HOSTNAME ?? 'unknown';
+  return reconcileLockMachineId();
 }
 
 /**
@@ -864,6 +893,14 @@ export async function reconcileDashboardsFromGDrive(
     result.mirrorRepairSkipped = 'disabled';
   } else if (!isDashboardPgPrimary()) {
     result.mirrorRepairSkipped = 'not-pg-primary';
+  } else if (!isDesignatedMirrorWriter()) {
+    // #4596 — ONE publisher for the mirror. Decided here, ahead of the lock
+    // take and ahead of the `no-writer` wiring reason: every non-designated
+    // seat of the fleet must report the same word, or the 24 h measurement
+    // (criterion 2 of the issue) cannot tell a guarded seat from a miswired
+    // one. `mirrorArmed` stays false, so the repair above AND the
+    // materialization pass below are both held by this single branch.
+    result.mirrorRepairSkipped = 'not-designated-writer';
   } else if (typeof options.writeMirror !== 'function') {
     result.mirrorRepairSkipped = 'no-writer';
   } else {

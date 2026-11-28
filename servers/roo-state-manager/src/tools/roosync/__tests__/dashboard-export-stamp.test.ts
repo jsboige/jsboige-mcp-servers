@@ -88,6 +88,11 @@ describe('#4131 G-MES — le marqueur d\'export sur chaque chemin d\'écriture',
     delete process.env.UNIFIED_STORE_DUAL_WRITE;
     delete process.env.UNIFIED_STORE_PG_URL;
     delete process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR;
+    // #4596 — ce fichier teste le MARQUEUR d'export, pas la désignation : sans
+    // ce réglage la suite tournerait sur un siège non désigné, où le miroir
+    // n'est plus écrit du tout (refus couvert par `dashboard-pg-primary.test.ts`
+    // § « #4596 »). `*` rend le siège écrivain, comme en production sur ai-01.
+    process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = '*';
     mockReadDashboardFromPg.mockReset().mockResolvedValue(null);
     mockReadDashboardFromPgUngated.mockReset().mockResolvedValue(null);
     mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
@@ -110,6 +115,7 @@ describe('#4131 G-MES — le marqueur d\'export sur chaque chemin d\'écriture',
     delete process.env.UNIFIED_STORE_DUAL_WRITE;
     delete process.env.UNIFIED_STORE_PG_URL;
     delete process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR;
+    delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
     vi.clearAllMocks();
   });
 

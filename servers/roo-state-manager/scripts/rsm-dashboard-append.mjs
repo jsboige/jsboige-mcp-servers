@@ -130,6 +130,21 @@
  *   DIFFERS from it objects, an unchanged one does not, and the mirror is
  *   written only when no objection survives the carry.
  *
+ * Mirror writer (#4596 — RX169 option a). The file a PG success writes is an
+ * EXPORT of PG, and one Drive item takes ONE publisher:
+ * `ROOSYNC_DASHBOARD_MIRROR_WRITER` (default `myia-ai-01`, `*` = every seat,
+ * read at call time). On a seat the variable does not name, the success path
+ * writes NO file and answers `gdriveSkipped: true` + `gdriveSkippedReason`
+ * (exit 0: PG holds the message) — decided before the file half is read. The
+ * verdict comes from the served build (`dashboard-mirror-writer.js`), the
+ * module the reconcile daemon uses too, so the CLI and the daemon can never
+ * disagree on who publishes. A vintage without that module (pre-#4596) keeps
+ * the previous behaviour: the mirror is written. NOT guarded, on purpose: the
+ * gate-closed path and the PG-failure fallback (the file is then the only
+ * surface). `gdriveSkippedReason` names why a MIRROR was skipped; the refused
+ * rewrite (PG failed and the file half cannot be checked) names its own reason
+ * in `fileRewriteSkipped`.
+ *
  * Exit codes: 0 posted — at least one surface holds the message (a PG-sync
  * miss on the file-first path is a WARN, not an error: the GDrive write
  * stands and the journal reconcile converges it; a failed MIRROR under the
@@ -334,6 +349,57 @@ function mirrorObjection(state, fileHalf, statusBase = state) {
   return null;
 }
 
+// #4596 — the designated mirror writer, from the SERVED build: the module the
+// reconcile daemon consults too, so a seat has ONE verdict. Loaded lazily and
+// only on the PG-success path — a vintage that predates the guard has no such
+// module, and the CLI then keeps its previous behaviour (the mirror is written)
+// instead of failing at import time.
+let mirrorWriterGuard = null;
+async function loadMirrorWriterGuard() {
+  if (mirrorWriterGuard !== null) return mirrorWriterGuard;
+  try {
+    const mod = await import(buildUrl('services/unified-store/dashboard-mirror-writer.js'));
+    if (typeof mod.isDesignatedMirrorWriter !== 'function') throw new Error('export absent');
+    mirrorWriterGuard = {
+      designated: mod.isDesignatedMirrorWriter() === true,
+      writer: String(mod.dashboardMirrorWriter()),
+      envName: String(mod.MIRROR_WRITER_ENV),
+    };
+    // Review round 3 (ai-01, 27/11): a WRITING seat whose two names disagree
+    // says so — the refusal already names `writer` in the skip reason, the
+    // write said nothing. One process serves one append, so this is said at
+    // each mirrored append; a build without the export (pre-round-3) keeps
+    // its silence.
+    if (mirrorWriterGuard.designated && typeof mod.mirrorWriterDivergence === 'function') {
+      const divergence = mod.mirrorWriterDivergence();
+      if (divergence !== undefined) {
+        console.error(
+          `INFO: [MIRROR-WRITER #4596] ce siège écrit le miroir sous un nom que son hostname ne confirme pas — ` +
+            `élu par ${divergence.electedBy}, déclaré ${divergence.seat}, host ${divergence.host} ; ` +
+            (divergence.electedBy === 'declared'
+              ? 'nominal pour un conteneur de la machine désignée, sinon la ligne ROOSYNC_MACHINE_ID a été recopiée'
+              : 'la déclaration ROOSYNC_MACHINE_ID de ce siège est fausse')
+        );
+      }
+    }
+  } catch (err) {
+    // Independent review 27/11: the open fallback on "the module itself is
+    // absent" is deliberate (pinned by the harness) and stays silent — a host
+    // still serving a pre-#4596 build must not start writing warnings. Any
+    // OTHER failure is a broken artifact and must not read like that first
+    // case: `code` names the class of the failure (none = no `code` at all,
+    // e.g. the export check above), never a secret.
+    const code = err !== null && typeof err === 'object' && 'code' in err ? String(err.code) : 'none';
+    const message = err !== null && typeof err === 'object' && 'message' in err ? String(err.message) : '';
+    const moduleAbsent = code === 'ERR_MODULE_NOT_FOUND' && message.includes('dashboard-mirror-writer');
+    if (!moduleAbsent) {
+      console.error(`[MIRROR-WRITER #4596] garde non chargée — repli OUVERT (code=${code})`);
+    }
+    mirrorWriterGuard = { designated: true, writer: null, envName: null };
+  }
+  return mirrorWriterGuard;
+}
+
 const machineId = machineArg.trim().toLowerCase();
 // #4090: --dashboard selects the fleet surface; absent it stays the machine
 // escalation key by construction (#3761). Message ids stay machine-prefixed
@@ -476,7 +542,14 @@ try {
         // half) holds the message — whereas a mirror written from the
         // pre-attempt state erases a file-only append and stamps the result as
         // an export of PG.
-        if (!relocked) {
+        // #4596 — the publisher check comes first: on a seat the variable does
+        // not name the file half is not even read, nothing on disk depends on
+        // it. The lock above was still re-taken: the row this process holds is
+        // released by the `finally` below, under the identity that owns it now.
+        const mirrorWriter = await loadMirrorWriterGuard();
+        if (!mirrorWriter.designated) {
+          mirrorSkip = `siège non désigné pour le miroir GDrive (#4596, ${mirrorWriter.envName}=${mirrorWriter.writer})`;
+        } else if (!relocked) {
           mirrorSkip = 'verrou append non repris (un autre détenteur écrit la clé)';
         } else {
           // Pre-review 26/11 constat 1: read on THIS path too — the first read
@@ -647,6 +720,7 @@ try {
       totalMessages: next.intercom.totalMessages,
       pgSynced: true,
       gdriveSkipped: true, // the GDrive mirror was NOT written at this append; PG holds the message
+      gdriveSkippedReason: mirrorSkip, // why (#4596): a non-designated seat names the variable
     };
     if (statusCarry !== null) {
       // The file's newer status was at stake at this append: true = it was

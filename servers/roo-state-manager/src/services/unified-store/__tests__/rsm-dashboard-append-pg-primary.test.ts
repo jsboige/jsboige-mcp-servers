@@ -240,6 +240,12 @@ type Scenario = {
   syncIds?: boolean;
   // …and the STATUS it carries (follow-up: the carry reports the FILE's status).
   syncStatus?: boolean;
+  // #4596 knobs.
+  // absent = pre-#4596 served build (the guard must fail OPEN, silently).
+  // broken = the module exists without the guard (fail OPEN too, but SAYING so).
+  mirrorWriterModule?: 'stub' | 'absent' | 'broken';
+  mirrorWriterDesignated?: boolean; // the stub's answer when the module is present (default true)
+  mirrorWriter?: string; // ROOSYNC_DASHBOARD_MIRROR_WRITER as the child sees it (feeds the reason string)
   seed?: string | null; // file state before the run (default SEED_FILE; null = no file)
 };
 
@@ -289,6 +295,19 @@ function runScenario(scenario: Scenario): Run {
       path.join(FIXTURES, 'dashboard-markdown-stub.mjs'),
       path.join(root, 'build', 'tools', 'roosync', 'dashboard-markdown.js')
     );
+    // #4596 — the served mirror-writer module. Its ABSENCE is a scenario of its
+    // own: a host still serving a pre-#4596 build must keep writing the mirror.
+    if (scenario.mirrorWriterModule === 'broken') {
+      copyFileSync(
+        path.join(FIXTURES, 'dashboard-mirror-writer-broken.mjs'),
+        path.join(root, 'build', 'services', 'unified-store', 'dashboard-mirror-writer.js')
+      );
+    } else if (scenario.mirrorWriterModule !== 'absent') {
+      copyFileSync(
+        path.join(FIXTURES, 'dashboard-mirror-writer-stub.mjs'),
+        path.join(root, 'build', 'services', 'unified-store', 'dashboard-mirror-writer.js')
+      );
+    }
     copyFileSync(path.join(FIXTURES, 'fake-clock.mjs'), path.join(root, 'fake-clock.mjs'));
 
     const journalPath = path.join(root, 'journal.log');
@@ -301,7 +320,13 @@ function runScenario(scenario: Scenario): Run {
     }
 
     const env: NodeJS.ProcessEnv = { ...process.env };
-    for (const k of Object.keys(env)) if (k.startsWith('UNIFIED_STORE_')) delete env[k];
+    for (const k of Object.keys(env)) {
+      if (k.startsWith('UNIFIED_STORE_')) delete env[k];
+    }
+    // #4596 — the verdict under test is the stub's; the ambient value of the
+    // real variable (a developer's shell, a fleet seat running this suite)
+    // must not leak into the child.
+    delete env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
     Object.assign(env, {
       RSM_APPEND_TEST_JOURNAL: journalPath,
       RSM_APPEND_TEST_GATE: scenario.gate,
@@ -316,6 +341,10 @@ function runScenario(scenario: Scenario): Run {
       RSM_APPEND_TEST_ABSENT: scenario.absentFirst ? 'first' : '',
       RSM_APPEND_TEST_SYNC_IDS: scenario.syncIds ? '1' : '',
       RSM_APPEND_TEST_SYNC_STATUS: scenario.syncStatus ? '1' : '',
+      RSM_APPEND_TEST_MIRROR_DESIGNATED: scenario.mirrorWriterDesignated === false ? '0' : '1',
+      ...(scenario.mirrorWriter === undefined
+        ? {}
+        : { ROOSYNC_DASHBOARD_MIRROR_WRITER: scenario.mirrorWriter }),
     });
 
     const res = spawnSync(
@@ -472,7 +501,7 @@ describe('#4915 gate open + PG ok — PG first, G: is a stamped mirror', () => {
 
     expect(run.status).toBe(0);
     expect(run.stdout.trim()).not.toBe('');
-    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true });
+    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true, gdriveSkippedReason: expect.any(String) });
     expect(run.stderr).toContain('WARN');
     expect(run.stderr).toContain('miroir');
     expect(run.stderr).toContain('illisible');
@@ -742,7 +771,7 @@ describe('ms#1919 (2) — a LATE PG success never rewrites nor stamps a stale mi
     expect(run.status).toBe(0);
     // The file is exactly what the other writer left: untouched, unstamped.
     expect(run.file).toBe(CONCURRENT_FILE);
-    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true });
+    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true, gdriveSkippedReason: expect.any(String) });
     expect(run.stderr).toContain('WARN');
     expect(run.stderr).toContain('miroir');
     expect(run.stderr).toContain('ajout');
@@ -768,7 +797,7 @@ describe('ms#1919 (2) — a LATE PG success never rewrites nor stamps a stale mi
 
     expect(run.status).toBe(0);
     expect(run.file).toBe(FILE_ONLY_SEED); // untouched
-    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true });
+    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true, gdriveSkippedReason: expect.any(String) });
     expect(run.stderr).toContain('ajout');
     expect(run.journal).toEqual([
       LOCK,
@@ -787,7 +816,7 @@ describe('ms#1919 (2) — a LATE PG success never rewrites nor stamps a stale mi
 
     expect(run.status).toBe(0);
     expect(run.file).toBe(SEED_FILE); // untouched
-    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true });
+    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true, gdriveSkippedReason: expect.any(String) });
     expect(run.stderr).toContain('miroir');
     expect(run.journal).toEqual([
       LOCK,
@@ -820,6 +849,7 @@ describe('ms#1919 pre-review — the two constats on the previous head', () => {
       totalMessages: 1,
       pgSynced: true,
       gdriveSkipped: true,
+      gdriveSkippedReason: expect.any(String),
     });
     expect(run.stderr).toContain('miroir');
     expect(run.stderr).toContain('ajout');
@@ -1022,7 +1052,14 @@ describe('ms#1919 follow-up — the file’s newer status is REPORTED into PG, n
 
     expect(run.status).toBe(0);
     expect(run.file).toBe(STATUS_CHANGED_FILE); // untouched, unstamped
-    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true, fileStatusCarried: false });
+    // #4596: every `gdriveSkipped` answer names its reason — here the status
+    // objection, then the failed carry.
+    expect(run.parsed).toEqual({
+      ...EXPECTED_OUTPUT,
+      gdriveSkipped: true,
+      fileStatusCarried: false,
+      gdriveSkippedReason: expect.stringMatching(/^le fichier porte un statut plus récent.* ; report du statut vers PG en échec \(/),
+    });
     expect(syncStatusLines(run.journal)).toEqual([syncStatus(OLD_STATUS), syncStatus(CHANGED_STATUS)]);
     expect(run.stderr).toContain('report');
     expect(run.stderr).toContain('échec');
@@ -1056,7 +1093,13 @@ describe('ms#1919 follow-up — the file’s newer status is REPORTED into PG, n
 
     expect(run.status).toBe(0);
     expect(run.file).toBe(FILE_ONLY_SEED); // exactly what the other writer left
-    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true, fileStatusCarried: true });
+    // #4596: the reason is the SECOND objection — the one asked after the carry.
+    expect(run.parsed).toEqual({
+      ...EXPECTED_OUTPUT,
+      gdriveSkipped: true,
+      fileStatusCarried: true,
+      gdriveSkippedReason: 'le fichier porte un ajout absent de l’état écrit dans PG',
+    });
     expect(syncStatusLines(run.journal)).toEqual([syncStatus(OLD_STATUS), syncStatus(CHANGED_STATUS)]);
     expect(run.stderr).toContain('ajout absent');
     expect(run.stderr).toContain('statut plus récent du fichier');
@@ -1096,7 +1139,14 @@ describe('ms#1919 follow-up — the file’s newer status is REPORTED into PG, n
 
     expect(run.status).toBe(0);
     expect(run.file).toBe(BACKDATED_STATUS_FILE); // untouched, unstamped
-    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true, fileStatusCarried: true });
+    // #4596: the status objection, and NOTHING after it — anchored at both ends,
+    // so a failed carry (its own suffix) can never satisfy this assertion.
+    expect(run.parsed).toEqual({
+      ...EXPECTED_OUTPUT,
+      gdriveSkipped: true,
+      fileStatusCarried: true,
+      gdriveSkippedReason: expect.stringMatching(/^le fichier porte un statut plus récent.*\(intercom identique\)$/),
+    });
     expect(syncStatusLines(run.journal)).toEqual([syncStatus(OLD_STATUS), syncStatus(CHANGED_STATUS)]);
     expect(run.stderr).toContain('statut plus récent');
     expect(run.stderr).not.toContain('ERREUR');
@@ -1131,7 +1181,12 @@ describe('ms#1919 follow-up — the file’s newer status is REPORTED into PG, n
 
     expect(run.status).toBe(0);
     expect(run.file).toBe(STATUS_CHANGED_FILE);
-    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true, fileStatusCarried: true });
+    expect(run.parsed).toEqual({
+      ...EXPECTED_OUTPUT,
+      gdriveSkipped: true,
+      fileStatusCarried: true,
+      gdriveSkippedReason: 'verrou append non repris après le report du statut (un autre détenteur écrit la clé)', // #4596
+    });
     expect(run.stderr).toContain('verrou');
     expect(run.journal).toEqual([
       LOCK,
@@ -1212,3 +1267,123 @@ describe('ms#1919 re-review (web1) — a refused rewrite still owes PG the base 
     ]);
   }, 15000);
 });
+
+// ── #4596 — one designated writer for the Drive mirror (RX169 option a) ─────
+describe('#4596 — a PG success on a non-designated seat does not publish the mirror', () => {
+  it('writes NO file, names the variable, and never reads the file half', () => {
+    // The verdict itself (unset ⇒ ai-01, `*`, case folding) is pinned against
+    // the real module in roosync-dashboard-reconcile-mirror-writer.test.ts;
+    // here we pin what the CLI DOES with "no": PG holds the message (exit 0),
+    // the file keeps its bytes, and the reason is machine-readable.
+    const run = runScenario({
+      gate: 'open',
+      pg: 'ok',
+      mirrorWriterDesignated: false,
+      mirrorWriter: 'myia-ai-01',
+    });
+
+    expect(run.status).toBe(0);
+    expect(run.file).toBe(SEED_FILE); // untouched, unstamped
+    expect(run.parsed).toEqual({
+      ...EXPECTED_OUTPUT,
+      gdriveSkipped: true,
+      gdriveSkippedReason: expect.stringContaining('ROOSYNC_DASHBOARD_MIRROR_WRITER'),
+    });
+    expect(run.stderr).toContain('WARN');
+    expect(run.stderr).toContain('siège non désigné');
+    expect(run.stderr).toContain('ROOSYNC_DASHBOARD_MIRROR_WRITER=myia-ai-01');
+    expect(run.stderr).not.toContain('ERREUR');
+    // Decided BEFORE any read of the file half: no second `read:file`, no
+    // markdown build, no stamp. The re-taken lock is still released.
+    expect(run.journal).toEqual([
+      LOCK,
+      'read:file',
+      'gate:open',
+      sync(false, 1),
+      UNLOCK,
+      LOCK,
+      'path',
+      UNLOCK,
+    ]);
+    expect(pgSyncLines(run.journal)).toEqual([sync(false, 1)]); // PG went first, once
+  }, 15000);
+
+  it('a status landing during the attempt is not CARRIED either: the verdict precedes the file half', () => {
+    // The seam of ms#1946 and #4596. ms#1946 reports a newer file status into
+    // PG — but that branch starts by READING the file half, which #4596 decides
+    // to skip on a non-designated seat BEFORE any read (the test above: that
+    // seat writes no file at all, so the file's status is not this seat's).
+    // Pinned: no second read, and ONE status line in PG — the primary attempt's
+    // (the base's status). The carry would add a second one, carrying the FILE's.
+    const run = runScenario({
+      gate: 'open',
+      pg: 'ok',
+      concurrent: 'status',
+      seed: STATUS_SEED,
+      syncStatus: true,
+      mirrorWriterDesignated: false,
+      mirrorWriter: 'myia-ai-01',
+    });
+
+    expect(run.status).toBe(0);
+    expect(run.file).toBe(STATUS_CHANGED_FILE); // exactly what the status writer left
+    expect(run.parsed).toEqual({
+      ...EXPECTED_OUTPUT,
+      gdriveSkipped: true,
+      gdriveSkippedReason: expect.stringContaining('ROOSYNC_DASHBOARD_MIRROR_WRITER'),
+    }); // no `fileStatusCarried`: the carry branch was never reached
+    expect(run.stderr).toContain('siège non désigné');
+    expect(run.stderr).not.toContain('reporté'); // nothing was carried
+    expect(run.stderr).not.toContain('ERREUR');
+    expect(syncStatusLines(run.journal)).toEqual([syncStatus(OLD_STATUS)]); // the primary attempt only: no carry
+    expect(run.journal).toEqual([
+      LOCK,
+      'read:file',
+      'gate:open',
+      sync(false, 1),
+      syncStatus(OLD_STATUS), // the primary attempt's own status sync, nothing else
+      'concurrent:status', // a status only: no message lands
+      UNLOCK,
+      LOCK,
+      'path',
+      UNLOCK, // the mirror is skipped before the file half is read
+    ]);
+  }, 15000);
+
+  it('a served build that predates the guard (module absent) keeps writing the mirror', () => {
+    // Deployment order matters: a host still serving a pre-#4596 build must
+    // not lose its mirror because the CLI learned about a module it cannot
+    // find. Fail-OPEN, and the output carries no skip field at all.
+    const run = runScenario({ gate: 'open', pg: 'ok', mirrorWriterModule: 'absent' });
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toBe('');
+    expect(run.parsed).toEqual(EXPECTED_OUTPUT);
+    expect(run.file).toBe(STAMPED);
+    expect(run.journal).toEqual([
+      LOCK,
+      'read:file',
+      'gate:open',
+      sync(false, 1),
+      UNLOCK,
+      LOCK,
+      'path',
+      STAMP_LINE,
+      UNLOCK,
+    ]);
+  }, 15000);
+
+  it('a served module that exists WITHOUT the guard fails open too, and says so (independent review 27/11)', () => {
+    // A broken artifact must not read like the deliberate "module absent"
+    // case above: same fallback (the mirror is written, no skip field), but
+    // the journal of the seat carries the line — `code` names the class, and
+    // the export check throws without one.
+    const run = runScenario({ gate: 'open', pg: 'ok', mirrorWriterModule: 'broken' });
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toContain('[MIRROR-WRITER #4596] garde non chargée — repli OUVERT (code=none)');
+    expect(run.parsed).toEqual(EXPECTED_OUTPUT);
+    expect(run.file).toBe(STAMPED);
+  }, 15000);
+});
+

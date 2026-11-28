@@ -79,6 +79,17 @@ import {
 } from '../../services/unified-store/roosync-dashboard-store.js';
 import type { ArchivePgGap } from '../../services/unified-store/types.js';
 import { isPgFlagOn, pgFlagState } from '@vibesync/core/services/unified-store/pg-flags';
+import {
+  dashboardMirrorWriter,
+  isDesignatedMirrorWriter,
+  mirrorWriterDivergence,
+  mirrorWriterMachineId,
+  reconcileLockMachineId,
+  MIRROR_WRITER_ALL,
+  MIRROR_WRITER_ENV,
+  MIRROR_SKIP_REASON_NOT_DESIGNATED,
+  MIRROR_SKIP_REASON_APPEND_MIRROR_OFF,
+} from '../../services/unified-store/dashboard-mirror-writer.js';
 import { isDashboardReadPgEnabled } from '@vibesync/core/services/unified-store/pg-read-gates';
 // #4608 — état de condensation durable par clé (roosync_store_meta) : passe
 // morte, issue de passe, horloge de station au-dessus du seuil et contrôle
@@ -3026,6 +3037,13 @@ export interface WriteVerifyResult {
    * kill-switch `UNIFIED_STORE_DASHBOARD_APPEND_MIRROR` rétablit l'écriture.
    */
   gdriveSkipped?: true;
+  /**
+   * #4596 — pourquoi le miroir a été sauté, en une valeur stable
+   * (`not-designated-writer` / `append-mirror-off`). Posé par les mêmes sites
+   * que `gdriveSkipped`, et remonté tel quel dans `writeVerification` : un
+   * refus ne se déduit pas de l'état ambiant, il se lit dans le résultat.
+   */
+  gdriveSkippedReason?: string;
 }
 
 /**
@@ -3255,6 +3273,35 @@ function logForkSuspicion(key: string, filePath: string, wv: WriteVerifyResult):
     detail: wv.forkDetail,
     forkPath: wv.forkPath,
     remediation: 'DriveFS local probablement wedgé — relire le canonique, redémarrer DriveFS/VS Code de la machine, puis re-poster si absent (intercom-protocol §append expiré)'
+  });
+}
+
+/**
+ * #4596 — review round 3 (ai-01, 27/11). Les chemins de REFUS nomment déjà
+ * `seat` et `host` ; le chemin qui ÉCRIT ne disait rien quand les deux noms du
+ * siège divergent. Un siège désigné dont la déclaration et le hostname ne
+ * disent pas la même machine le dit ici, à CHAQUE écriture du miroir — le
+ * journal tourne (10 Mo par fichier, 7 jours de rétention), une seule ligne au
+ * démarrage de l'hôte repartirait au silence dès la rotation. Rien à dire sur
+ * un siège dont les deux noms s'accordent : la ligne n'existe que sur un siège
+ * qui a quelque chose à expliquer. `declared` : cas nominal d'un conteneur de
+ * la machine désignée, et aussi le cas d'un hôte étranger dont le `.env` a
+ * recopié la ligne — le coût écrit dans l'en-tête de `dashboard-mirror-writer`.
+ * `hostname` : la machine désignée par son nom, avec une déclaration fausse
+ * qui estampille aussi ses messages.
+ */
+function logMirrorWriterDivergence(key: string): void {
+  const divergence = mirrorWriterDivergence();
+  if (divergence === undefined) return;
+  logger.info('[MIRROR-WRITER #4596] ce siège écrit le miroir sous un nom que son hostname ne confirme pas', {
+    key,
+    writer: divergence.writer,
+    electedBy: divergence.electedBy,
+    seat: divergence.seat,
+    host: divergence.host,
+    note: divergence.electedBy === 'declared'
+      ? 'nominal pour un conteneur de la machine désignée ; sinon la ligne ROOSYNC_MACHINE_ID de ce siège a été recopiée — la corriger'
+      : 'la déclaration ROOSYNC_MACHINE_ID de ce siège est fausse : le hostname l’a élu, et la déclaration estampille ses messages — la corriger'
   });
 }
 
@@ -3533,6 +3580,28 @@ async function runGdriveFullWriteHalf(
   }, writeStartedAtMs, landedIds);
 }
 
+// #4596 — review round 3 (mineur, ai-01 27/11) : `mirrorRepairExport` était un
+// booléen — tout appelant TypeScript pouvait lever la désignation en posant
+// `true` « pour réparer ». L'habilitation est un type à marque : `true` ne
+// compile plus, et la seule porte est `mirrorRepairExportGrant()`.
+const mirrorRepairExportBrand: unique symbol = Symbol('dashboard.mirrorRepairExport');
+
+/** #4596 — « la désignation a été décidée plus haut » : cf. `writeDashboardFile`. */
+export interface MirrorRepairExportGrant {
+  readonly [mirrorRepairExportBrand]: true;
+}
+
+/**
+ * #4596 — the capability carried by the reconcile's repair export
+ * (`repairDashboardMirrorFromPg`, the only production holder): its seat was
+ * decided by the `mirrorArmed` branch BEFORE the fleet lock was asked, and
+ * this export's file is its deliverable. Not a flag any caller may raise.
+ */
+export function mirrorRepairExportGrant(): MirrorRepairExportGrant {
+  const grant: MirrorRepairExportGrant = { [mirrorRepairExportBrand]: true };
+  return grant;
+}
+
 /**
  * Écrit un dashboard dans le stockage au format Markdown avec frontmatter YAML
  */
@@ -3546,7 +3615,21 @@ export async function writeDashboardFile(
   // idempotent, mais surtout : si PG flanche entre les deux, le fallback
   // GDrive-first de CETTE fonction throwrait « aucune surface » alors que le
   // message est déjà publié côté PG — le throw serait mensonger).
-  internal?: { pgPrimaryPreWritten?: boolean; mirrorExportAt?: string }
+  // #4596 — `mirrorRepairExport` : cet appel EST l'export de réparation du
+  // reconcile (`repairDashboardMirrorFromPg`), dont le siège a déjà été décidé
+  // par la branche `mirrorArmed`/`isDesignatedMirrorWriter()` du module de
+  // réconciliation, AVANT l'acquisition du verrou de flotte. Re-tester la
+  // désignation ici ne renforcerait rien : cela rendrait injoignable le contrat
+  // de cette fonction, dont le FICHIER est le livrable (une moitié GDrive
+  // dégradée doit thrower, cf. `dashboard-mirror-repair.test.ts`) — un siège non
+  // désigné rendrait « réparé » sans avoir rien écrit. L'habilitation dit que
+  // la décision a eu lieu plus haut, elle ne dispense de rien — et le type
+  // l'empêche d'être posée par un booléen (review round 3).
+  internal?: {
+    pgPrimaryPreWritten?: boolean;
+    mirrorExportAt?: string;
+    mirrorRepairExport?: MirrorRepairExportGrant;
+  }
 ): Promise<WriteVerifyResult> {
   // #3584 — masquer AVANT toute persistance : ce choke point alimente à la fois le
   // fichier partagé et le miroir PostgreSQL (`dualWriteDashboardSync` ci-dessous), et
@@ -3639,6 +3722,43 @@ export async function writeDashboardFile(
       }
     }
     if (pgMirrorMode) {
+      // #4596 — 5ᵉ point gardé (review ai-01 du 27/11 05:11Z). Cette branche
+      // est la surface NON-append : la passe de condensation détachée, write,
+      // merge, archive, retire, cross-post et l'alerte de troncature y écrivent
+      // le fichier, depuis n'importe quel siège. Le verrou de flotte sérialise
+      // dans le temps, il n'élit personne — c'est le même défaut que les quatre
+      // autres points. PG tient déjà l'écriture vérifiée : le fichier n'est
+      // qu'un export, il appartient à l'écrivain désigné. Décidé AVANT tout
+      // travail Drive. Non gardé : le repli sur échec PG ci-dessus, où le
+      // fichier est la seule surface — et l'export de réparation du reconcile
+      // (`mirrorRepairExport`), dont la désignation est tenue par sa branche
+      // `mirrorArmed` : re-tester ici rendrait son contrat de throw injoignable.
+      if (!isDesignatedMirrorWriter() && internal?.mirrorRepairExport === undefined) {
+        logger.info('[MIRROR-EXPORT #4596] miroir fichier non écrit — ce siège n’est pas l’écrivain désigné du miroir', {
+          key,
+          writer: dashboardMirrorWriter(),
+          // Review 27/11 — the seat as THIS guard reads it, under both of its
+          // names: a seat neither of which is the writer must be able to see
+          // why in its own journal, not only in a result field.
+          seat: mirrorWriterMachineId(),
+          host: reconcileLockMachineId(),
+          restoreWith: `${MIRROR_WRITER_ENV}=${MIRROR_WRITER_ALL}`
+        });
+        wv = {
+          forkSuspected: false,
+          gdriveSkipped: true,
+          gdriveSkippedReason: MIRROR_SKIP_REASON_NOT_DESIGNATED,
+        };
+        // #3774 critère 2 — même verdict que les autres chemins : la relecture
+        // du store (primaire) qualifie l'atterrissage de l'écriture.
+        wv = mergeStoreVerification(wv, await verifyWriteVisibleInStore(key, landedIds));
+        if (wv.forkSuspected) logForkSuspicion(key, filePath, wv);
+        return wv;
+      }
+      // #4596 — review round 3 : le siège écrit. Si ses deux noms divergent
+      // (dont via l'habilitation de réparation, qui passe la garde ci-dessus),
+      // c'est dit ici, à chaque écriture du miroir — pas seulement au refus.
+      logMirrorWriterDivergence(key);
       // #4131 G-MES — ici seulement, le fichier est le miroir d'une écriture PG
       // déjà tenue : le marqueur est posé à l'instant du write (la fenêtre PG
       // peut avoir duré — l'écart mtime↔stamp doit rester celui de l'export).
@@ -3872,7 +3992,15 @@ async function appendDashboardIncremental(
   // (écriture en arrière-plan) reste atteignable par le kill-switch ; il ne
   // peut être choisi que là où le miroir était déjà différé, jamais ailleurs.
   const appendMirrorEnabled = isDashboardAppendMirrorEnabled();
-  const deferFileMirror = fileMirrorDeferrable && appendMirrorEnabled;
+  // #4596 — ONE publisher for the mirror. An operator who turned the per-append
+  // mirror back on asked for a mirror, not for a second writer on the same
+  // Drive item: on a seat that is not the designated one the request is
+  // honoured the same way the default is — the file is left to the publisher.
+  // Never acts alone: it folds into `skipFileMirror`, which already requires
+  // that PG took THIS append and that no reader depends on the file; a PG
+  // failure still falls back to the file-first path below, unguarded.
+  const mirrorWriterDesignated = isDesignatedMirrorWriter();
+  const deferFileMirror = fileMirrorDeferrable && appendMirrorEnabled && mirrorWriterDesignated;
   // #4131 G-B lot 2 — PG-PREMIER SOUS VERROU append : le verrou existe pour
   // sérialiser la course read→write last-writer-wins ; la surface primaire
   // doit donc être sérialisée comme l'était le fichier (le journal PG est
@@ -3926,8 +4054,27 @@ async function appendDashboardIncremental(
   // autoritaire de CET append. Si PG n'a pas pris (store en échec, siège sans
   // store), le fichier redevient la surface et il est écrit comme avant —
   // jamais de message perdu au nom d'un défaut.
-  const skipFileMirror = fileMirrorDeferrable && !appendMirrorEnabled && pgPrimaryOk;
-  if (skipFileMirror) {
+  const skipFileMirror =
+    fileMirrorDeferrable && (!appendMirrorEnabled || !mirrorWriterDesignated) && pgPrimaryOk;
+  // #4596 — review round 3 : quand cet append ÉCRIT réellement le miroir (le
+  // mode rallumé par un opérateur, sur le siège désigné, PG tenant l'append),
+  // la divergence des deux noms du siège est dite — à chaque miroir écrit,
+  // comme sur le chemin non-append. Un append dont le fichier est la seule
+  // surface (PG en échec) n'écrit pas un miroir et ne dit rien.
+  if (fileMirrorDeferrable && appendMirrorEnabled && mirrorWriterDesignated && pgPrimaryOk) {
+    logMirrorWriterDivergence(key);
+  }
+  if (skipFileMirror && appendMirrorEnabled) {
+    // #4596 — only the explicit request reaches this line: the default path
+    // keeps its own #4131 log below, unchanged on every seat.
+    logger.info('[GDRIVE-EXPORT #4596] miroir fichier non écrit à cet append — ce siège n’est pas l’écrivain désigné du miroir', {
+      key,
+      writer: dashboardMirrorWriter(),
+      seat: mirrorWriterMachineId(),
+      host: reconcileLockMachineId(),
+      restoreWith: `${MIRROR_WRITER_ENV}=${MIRROR_WRITER_ALL}`
+    });
+  } else if (skipFileMirror) {
     logger.info('[GDRIVE-EXPORT #4131] miroir fichier non écrit à cet append — G: est un export périodique, réparé depuis PG (#3230)', {
       key,
       restoreWith: `${DASHBOARD_APPEND_MIRROR_ENV}=0`
@@ -4300,7 +4447,16 @@ async function appendDashboardIncremental(
     // #4131 G-DASH — état NOMINAL du nouveau défaut, pas une panne : le
     // fichier suivra au prochain tick d'export. L'appelant le voit pour ne pas
     // conclure « fichier à jour » d'un succès.
-    wv = { ...wv, gdriveSkipped: true };
+    // #4596 — la raison suit le verdict jusque dans le résultat MCP (review
+    // ai-01 : le CLI la portait déjà, le résultat MCP non) : un miroir rallumé
+    // par l'opérateur mais refusé faute d'élection n'est pas le défaut #4131.
+    wv = {
+      ...wv,
+      gdriveSkipped: true,
+      gdriveSkippedReason: appendMirrorEnabled && !mirrorWriterDesignated
+        ? MIRROR_SKIP_REASON_NOT_DESIGNATED
+        : MIRROR_SKIP_REASON_APPEND_MIRROR_OFF,
+    };
   }
 
   if (pgPrimaryOk) {
