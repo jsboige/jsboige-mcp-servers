@@ -434,9 +434,20 @@ function parseStepExcludeRaw(raw: string): { entries: CascadeStepExclusion[]; en
  * Les noms PRÉFIXÉS sont couverts (`ANTHROPIC_API_KEY=`, `DB_PASSWORD=`,
  * `AWS_SECRET_ACCESS_KEY=`, `HF_TOKEN=`) : un `.env` complet glissé dans un
  * champ string autorisé doit être rejeté, pas accepté.
+ *
+ * `sk-` (#1957) : la FORME du jeton fait autorité dans la couche de masquage
+ * partagée (`@vibesync/core/utils/secret-redaction`, ms#1619 — préfixe non
+ * précédé d'une LETTRE, sinon `task-`/`disk-`/`risk-` étaient pris pour une
+ * clé). Ce motif porte la MÊME borne gauche et n'en garde qu'un écart, VOULU :
+ * le seuil est `16` ici contre `20` au masquage, donc un jeton de 16 à 19
+ * caractères est refusé à l'écriture alors que le masqueur le laisse tel quel
+ * — le rejet est plus strict que le masquage. `cascade-payload.test.ts`
+ * (§ « parité #1957 ») pinne la propriété « tout ce que le masqueur masque est
+ * refusé ici » : une correction de borne qui n'atterrirait que d'un côté y
+ * échoue. Les autres familles de jetons ne sont PAS couvertes par cette parité.
  */
 const SECRET_PATTERNS: Array<{ re: RegExp; name: string }> = [
-    { re: /\bsk-[A-Za-z0-9_-]{16,}/, name: 'clé API sk-…' },
+    { re: /(?<![A-Za-z])sk-[A-Za-z0-9_-]{16,}/, name: 'clé API sk-…' },
     { re: /\bghp_[A-Za-z0-9]{20,}/, name: 'token GitHub' },
     { re: /\bgho_[A-Za-z0-9]{20,}/, name: 'token GitHub OAuth' },
     { re: /\bgithub_pat_[A-Za-z0-9_]{20,}/, name: 'token GitHub fine-grained' },
