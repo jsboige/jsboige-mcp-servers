@@ -1016,7 +1016,24 @@ describe('VectorIndexer', () => {
 
 		// ─── cleanupOldVectors (L1355-1450) — age-based vector cleanup ───
 		describe('cleanupOldVectors', () => {
-			test('returns deletedCount:0 and skips scroll/delete when count is 0 (L1392-1394)', async () => {
+			// #4928: the live count is a cardinality estimate, so it can read 0 or
+			// low while candidates exist — only the scroll loop decides.
+			test('live: an estimated count of 0 does not gate the deletion — scroll decides', async () => {
+				vi.useRealTimers();
+				vi.resetModules();
+				const { cleanupOldVectors } = await import('../VectorIndexer.js');
+				mockCount.mockResolvedValue({ count: 0 });
+				mockScroll.mockResolvedValue({ points: [{ id: 'p1' }], next_page_offset: null });
+				mockDelete.mockResolvedValue(undefined);
+				const result = await cleanupOldVectors(90);
+				expect(result.deletedCount).toBe(1);
+				expect(mockDelete).toHaveBeenCalledWith(
+					expect.any(String),
+					expect.objectContaining({ points: ['p1'], wait: true }),
+				);
+			});
+
+			test('live: an empty scroll deletes nothing and skips the delete call', async () => {
 				vi.useRealTimers();
 				vi.resetModules();
 				const { cleanupOldVectors } = await import('../VectorIndexer.js');
@@ -1025,8 +1042,26 @@ describe('VectorIndexer', () => {
 				expect(result.deletedCount).toBe(0);
 				expect(result.cutoffDate).toMatch(/^\d{4}-/); // ISO
 				expect(result.workspaceFilter).toBeUndefined();
-				expect(mockScroll).not.toHaveBeenCalled();
+				expect(mockScroll).toHaveBeenCalledTimes(1);
 				expect(mockDelete).not.toHaveBeenCalled();
+			});
+
+			test('live path asks for an estimate, dry run keeps the exact count (#4928)', async () => {
+				vi.useRealTimers();
+				vi.resetModules();
+				const { cleanupOldVectors } = await import('../VectorIndexer.js');
+				mockCount.mockResolvedValue({ count: 3 });
+				await cleanupOldVectors(90, false);
+				expect(mockCount).toHaveBeenLastCalledWith(
+					expect.any(String),
+					expect.objectContaining({ exact: false }),
+				);
+				mockScroll.mockResolvedValue({ points: [], next_page_offset: null });
+				await cleanupOldVectors(90, true);
+				expect(mockCount).toHaveBeenLastCalledWith(
+					expect.any(String),
+					expect.objectContaining({ exact: true }),
+				);
 			});
 
 			test('dryRun counts candidates without deleting (L1396-1399)', async () => {

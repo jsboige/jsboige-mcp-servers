@@ -191,8 +191,13 @@ describe('VectorIndexer', () => {
       const result = await cleanupOldVectors(90);
 
       expect(result.deletedCount).toBe(0);
-      expect(mockQdrantClient.count).toHaveBeenCalled();
-      expect(mockQdrantClient.scroll).not.toHaveBeenCalled();
+      // #4928: the live count is an estimate and never gates the deletion — the
+      // scroll loop decides, and here finds nothing.
+      expect(mockQdrantClient.count).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ exact: false })
+      );
+      expect(mockQdrantClient.scroll).toHaveBeenCalledTimes(1);
       expect(mockQdrantClient.delete).not.toHaveBeenCalled();
     });
 

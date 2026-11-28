@@ -2189,8 +2189,11 @@ export async function countPointsByHostOs(hostOs: string): Promise<number> {
                 // count then opens a 12-15 min read-path block (32 of 49 blocks measured
                 // on ai-01). The result only feeds verifyQdrantConsistency's log, compared
                 // against a 25% tolerance, so a cheap cardinality estimate costs log
-                // precision, not correctness. Kept exact: the wipe guard (resetCollection)
-                // and the cleanup candidate count, whose 0 short-circuits the deletion.
+                // precision, not correctness. The estimate is only a per-host count
+                // while `host_os` carries a payload index; without one the engine
+                // answers "unknown" = half the segment (measured on ai-01, 28/11:
+                // 8,964,150 for any host). Kept exact: the wipe guard (resetCollection)
+                // and the cleanup dry run.
                 exact: false
             });
         }, `Qdrant count pour host_os=${hostOs}`);
@@ -2322,21 +2325,22 @@ export async function cleanupOldVectors(
 
     const filter = { must: mustConditions };
 
-    // Count candidates first
+    // #4928: on the live path this number is only a progress denominator, so it
+    // asks for a cardinality ESTIMATE (exact: false) — an exact count traverses
+    // every segment and was the first defective request in 32 of 49 read-path
+    // blocks on ai-01. The estimate never gates the deletion: the scroll loop
+    // decides what exists. A dry run answers "how many would be deleted", so it
+    // keeps the exact count.
     const countResult = await retryWithBackoff(async () => {
         const qdrant = getQdrantClient();
         return await qdrant.count(COLLECTION_NAME, {
             filter,
-            exact: true
+            exact: dryRun
         });
     }, `Qdrant cleanup count (age>${maxAgeDays}d)`);
 
     const candidateCount = countResult.count;
     networkMetrics.qdrantCalls++;
-
-    if (candidateCount === 0) {
-        return { deletedCount: 0, cutoffDate: cutoffIso, workspaceFilter };
-    }
 
     if (dryRun) {
         console.log(`[DRY RUN] ${candidateCount} vecteurs seraient supprimés (antérieurs à ${cutoffIso}${workspaceFilter ? `, workspace=${workspaceFilter}` : ''})`);
@@ -2387,7 +2391,7 @@ export async function cleanupOldVectors(
             networkMetrics.qdrantCalls++;
             totalDeleted += idsToDelete.length;
 
-            console.log(`✓ Cleanup batch: ${idsToDelete.length} vecteurs supprimés (total: ${totalDeleted}/${candidateCount})`);
+            console.log(`✓ Cleanup batch: ${idsToDelete.length} vecteurs supprimés (total: ${totalDeleted}/~${candidateCount} estimés)`);
 
             if (!scrolled.next_page_offset) {
                 hasMore = false;
