@@ -179,6 +179,15 @@ class TurnController:
     #: Mid-turn condensation metrics collected during the turn — surfaced
     #: on the response envelope by ``_finish_turn``.
     mid_turn_condensations: list[dict[str, Any]] = field(default_factory=list)
+    #: Reads the conversation thread's messages (set by the manager). Read
+    #: once, at the first live rewrite — see :meth:`reconciled_thread`.
+    thread_messages: Callable[[], list[Any] | None] | None = None
+    #: First live rewrite of the turn: the request history the condenser
+    #: rewrote, the identities the thread held then, and the request's
+    #: instruction message (built by SK per invoke, never a thread message).
+    live_history: Any = None
+    live_thread_ids: frozenset[int] | None = None
+    live_instructions: Any = None
     #: SK request index of the first round that ran a tool for real —
     #: requests before it only rebuilt journaled rounds (restart replay).
     first_real_request: int | None = None
@@ -187,6 +196,61 @@ class TurnController:
     #: round's tools complete concurrently (asyncio.gather) and each runs
     #: the post-execution hook; only the first raises the watermark.
     last_checked_round: int = -1
+
+    # -- thread write-back after a live rewrite ------------------------------
+
+    def note_live_rewrite(self, chat_history: Any, head: Any) -> None:
+        """Record the first mid-turn rewrite of the request history.
+
+        ``head`` is the history's first message as it stood before the
+        passes ran. The thread is read here, at the first rewrite: SK
+        drains a non-streaming turn into its thread only after the whole
+        tool loop, so the thread still holds exactly what preceded the
+        turn.
+        """
+        if self.live_history is not None or self.thread_messages is None:
+            return
+        current = self.thread_messages()
+        if current is None:
+            return  # no thread to read: never guess what preceded the turn
+        thread_ids = frozenset(id(m) for m in current)
+        self.live_history = chat_history
+        self.live_thread_ids = thread_ids
+        role = getattr(getattr(head, "role", None), "value", None)
+        self.live_instructions = (
+            head if head is not None and id(head) not in thread_ids and role == "system"
+            else None
+        )
+
+    def reconciled_thread(self, thread_messages: list[Any]) -> list[Any] | None:
+        """The thread a turn rewritten mid-flight must leave, or None.
+
+        SK drains the turn into its thread BY INDEX, from the request
+        history's length before the model was called
+        (``ChatCompletionAgent._drain_mutated_messages(history, start_idx,
+        thread)``, SK 1.39-1.47). The live condenser shortens that same list
+        in place, so the drained slice starts inside the turn, or past its
+        end: the turn's first messages never reach the thread, a tool result
+        can land there without its call, a call without its result
+        (measured 28/11, o66b CoursIA#28976: MiniMax HTTP 400 "tool result's
+        tool id(...) not found (2013)" on the conversation's next call).
+
+        The condensed request history is the one coherent record of the
+        turn — the passes keep every call with its results. The thread
+        becomes that history without the request's instruction message,
+        followed by what SK appended to the thread outside the request
+        history (the turn's final answer).
+        """
+        if self.live_history is None or self.live_thread_ids is None:
+            return None
+        live = list(getattr(self.live_history, "messages", None) or [])
+        live_ids = {id(m) for m in live}
+        head = [m for m in live if m is not self.live_instructions]
+        answers = [
+            m for m in thread_messages
+            if id(m) not in live_ids and id(m) not in self.live_thread_ids
+        ]
+        return head + answers
 
     # -- round accounting ---------------------------------------------------
 
@@ -355,6 +419,8 @@ def install_turn_filter(kernel) -> None:
         # same watermark as admission guarantees exactly one run per round
         # however many tools the round fans out to.
         if controller.mid_turn_condense is not None:
+            live_msgs = getattr(context.chat_history, "messages", None) or []
+            head = live_msgs[0] if live_msgs else None
             try:
                 mid_metrics = await controller.mid_turn_condense(context.chat_history)
             except Exception:
@@ -366,6 +432,7 @@ def install_turn_filter(kernel) -> None:
                 mid_metrics = None
             if mid_metrics:
                 controller.mid_turn_condensations.append(mid_metrics)
+                controller.note_live_rewrite(context.chat_history, head)
         refusal = await controller.check_admission(rounds_done)
         if refusal is not None:
             context.terminate = True
