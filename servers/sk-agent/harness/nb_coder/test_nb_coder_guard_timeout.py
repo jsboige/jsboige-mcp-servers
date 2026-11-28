@@ -38,8 +38,12 @@ walk -- "not found" (128) -- so the row says "child already exited", never a kil
 happen.
 """
 import importlib.util
+import os
+import re
 import time
 from pathlib import Path
+
+import pytest
 
 _spec = importlib.util.spec_from_file_location(
     "nb_coder_integrate",
@@ -126,6 +130,7 @@ GUARD_THAT_EXITS_AND_LEAVES_A_CHILD = (
 )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="taskkill walks from a LIVE parent: Windows only")
 def test_a_guard_that_already_exited_is_not_reported_as_killed():
     # Measured 28/11, 10 of 10 trials: `taskkill /T` answers 128 "not found" for a pid that is
     # gone -- it walks the tree from a LIVE parent. The first version turned that into
@@ -141,6 +146,22 @@ def test_a_guard_that_already_exited_is_not_reported_as_killed():
         "TimeoutExpired after 2s (child already exited, pipe abandoned after 2.0s): "
 
 
+@pytest.mark.skipif(os.name == "nt", reason="the POSIX process group; Windows has its twin above")
+def test_an_exited_guard_s_orphan_still_falls_with_its_group():
+    # The same shape on POSIX ends the other way, and the CI said so (ms#1950, Linux, 28/11:
+    # `('tree', None)`): the guard runs in its own session, its unreaped zombie keeps the
+    # group id, and `killpg` reaches the orphan in that group -- the pipe closes.
+    proc = nbci.run_guard_bounded(["-c", GUARD_THAT_EXITS_AND_LEAVES_A_CHILD], cwd=Path.cwd(),
+                                  timeout=2, grace=5)
+    note = nbci._timed_out_note(proc, 2)
+    assert proc.timed_out is True
+    assert (proc.kill_how, proc.kill_detail) == ("tree", None), note
+    assert proc.pipe_abandoned is False and proc.grace_wait_s < 5, note
+    m = re.fullmatch(NOTE_RE.format(timeout=2), note)
+    assert m and (m["kill"], m["detail"], m["how"]) == ("tree killed", None, "closed"), note
+
+
+@pytest.mark.skipif(os.name != "nt", reason="forces the taskkill fallback; POSIX twin below")
 def test_a_live_child_whose_tree_kill_failed_falls_alone_and_says_what_the_kill_command_did(
         monkeypatch):
     # The fallback path itself, forced on a LIVE child (the real one needs taskkill to fail,
@@ -163,6 +184,29 @@ def test_a_live_child_whose_tree_kill_failed_falls_alone_and_says_what_the_kill_
     assert nbci._timed_out_note(proc, 1) == \
         f"TimeoutExpired after 1s (child killed only [taskkill exit 1: pid {asked[0]} refusé], " \
         "pipe abandoned after 2.0s): "
+
+
+@pytest.mark.skipif(os.name == "nt", reason="forces the killpg fallback; Windows twin above")
+def test_a_live_child_whose_group_kill_failed_falls_alone_and_says_what_killpg_raised(
+        monkeypatch):
+    # The POSIX fallback, forced the same way: `killpg` refused, only the child falls, the
+    # grandchild (12 s, then gone by itself) keeps the pipe, and the row carries the exception.
+    asked = []
+
+    def _refused_group_kill(pgid, sig):
+        asked.append((pgid, sig))
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(nbci.os, "killpg", _refused_group_kill)
+    proc = nbci.run_guard_bounded(["-c", GUARD_WITH_GRANDCHILD_SHORT], cwd=Path.cwd(),
+                                  timeout=1, grace=2)
+    detail = "killpg PermissionError: [Errno 1] Operation not permitted"
+    assert proc.timed_out is True
+    assert len(asked) == 1, "the group kill is asked once"
+    assert (proc.kill_how, proc.kill_detail) == ("child", detail)
+    assert proc.pipe_abandoned is True and 1.9 <= proc.grace_wait_s < 10
+    assert nbci._timed_out_note(proc, 1) == \
+        f"TimeoutExpired after 1s (child killed only [{detail}], pipe abandoned after 2.0s): "
 
 
 def test_a_fallback_that_said_something_lands_in_the_row_prefix():

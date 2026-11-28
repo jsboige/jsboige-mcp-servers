@@ -184,7 +184,9 @@ def _kill_guard_tree(proc: subprocess.Popen) -> tuple[str, str | None]:
                          survives is exactly the case where the pipe outlives the grace;
       * ``"exited"``  -- the child was ALREADY gone, so nothing was killed and an orphan
                          holds the pipe (Windows, measured 10 of 10 trials on 28/11: a guard
-                         that spawns a grandchild and returns before the deadline);
+                         that spawns a grandchild and returns before the deadline). Never on
+                         POSIX: the unreaped child keeps its group id, so ``killpg`` still
+                         reaches the orphan and the answer is ``"tree"`` (Linux CI, 28/11);
       * ``"nothing"`` -- even the child did not fall."""
     if os.name == "nt":
         if proc.poll() is not None:
