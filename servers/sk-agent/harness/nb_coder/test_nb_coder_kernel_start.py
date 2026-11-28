@@ -72,3 +72,39 @@ def test_an_unparsed_answer_counts_as_a_failed_start(monkeypatch, tmp_path):
                                    {"kernel_id": "k-3"}])
     assert asyncio.run(nbcd.start_kernel(None, "rust", tmp_path)) == "k-3"
     assert len(calls) == 3
+
+
+# ---------------------------------------------------------------- env override (#1913)
+def test_kernel_start_attempts_default_is_the_historical_three(monkeypatch):
+    monkeypatch.delenv("NBCODER_KERNEL_START_ATTEMPTS", raising=False)
+    assert nbcd._kernel_start_attempts_from_env() == 3
+
+
+def test_kernel_start_attempts_read_the_env_and_refuse_garbage(monkeypatch):
+    monkeypatch.setenv("NBCODER_KERNEL_START_ATTEMPTS", "5")
+    assert nbcd._kernel_start_attempts_from_env() == 5
+    monkeypatch.setenv("NBCODER_KERNEL_START_ATTEMPTS", "x")
+    with pytest.raises(ValueError, match="must be an integer"):
+        nbcd._kernel_start_attempts_from_env()
+    monkeypatch.setenv("NBCODER_KERNEL_START_ATTEMPTS", "0")
+    with pytest.raises(ValueError, match=">= 1"):
+        nbcd._kernel_start_attempts_from_env()
+
+
+def test_the_module_loads_the_overridden_count(monkeypatch):
+    # A fresh instance of the driver loaded under the env: the constant itself is overridden
+    # (a separate instance, never a reload of the shared module).
+    import importlib.util
+    monkeypatch.setenv("NBCODER_KERNEL_START_ATTEMPTS", "4")
+    spec = importlib.util.spec_from_file_location(
+        "nbcd_env_probe", Path(__file__).resolve().parent / "nb_coder_driver.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.KERNEL_START_ATTEMPTS == 4
+
+
+def test_start_kernel_honours_the_overridden_count(monkeypatch, tmp_path):
+    calls, sleeps = _fake(monkeypatch, [TIMEOUT] * 10)
+    monkeypatch.setattr(nbcd, "KERNEL_START_ATTEMPTS", 2)
+    assert asyncio.run(nbcd.start_kernel(None, "rust", tmp_path)) is None
+    assert len(calls) == 2 and len(sleeps) == 1

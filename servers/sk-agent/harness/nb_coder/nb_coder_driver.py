@@ -5271,7 +5271,28 @@ async def start_kernel(pm: ClientSession, kernel_name: str, working_dir: Path) -
     return None
 
 
-KERNEL_START_ATTEMPTS = 3
+def _kernel_start_attempts_from_env(default: int = 3) -> int:
+    """The kernel-start retry count (#1913): ``NBCODER_KERNEL_START_ATTEMPTS`` overrides it, so
+    a seat whose evcxr kernel start is slower than ai-01's can raise it without editing the
+    shared harness. Unset keeps the historical 3. A non-integer or a value < 1 is refused
+    loud — the driver must not start with a retry bound it cannot honour. The refusal fires
+    when the driver module is imported, so it blocks every entry point that imports it
+    (kernel start included), not only the kernel start. It is an env var,
+    not a driver CLI flag, because a new driver option would first have to be threaded
+    through nb_coder_invoke.py's closed parameter set (INVOCATION.md §5)."""
+    raw = os.environ.get("NBCODER_KERNEL_START_ATTEMPTS", "").strip()
+    if not raw:
+        return default
+    try:
+        n = int(raw)
+    except ValueError:
+        raise ValueError(f"NBCODER_KERNEL_START_ATTEMPTS must be an integer, got {raw!r}") from None
+    if n < 1:
+        raise ValueError(f"NBCODER_KERNEL_START_ATTEMPTS must be >= 1, got {n}")
+    return n
+
+
+KERNEL_START_ATTEMPTS = _kernel_start_attempts_from_env()
 KERNEL_START_BACKOFF_S = 5.0
 _kernel_retry_sleep = asyncio.sleep
 
