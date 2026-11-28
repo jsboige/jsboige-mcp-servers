@@ -295,7 +295,9 @@ def test_guard_replayed_only_when_the_entry_exists(tmp_path, monkeypatch):
     class _P:
         returncode, stdout, stderr = 0, "", ""
 
-    monkeypatch.setattr(nbci.subprocess, "run", lambda cmd, **kw: (seen.append(cmd), _P())[1])
+    # The guards go through the bounded runner (jsboige-mcp-servers#1950): it is the seam to
+    # fake, and it receives the script argv WITHOUT the interpreter run_guard_bounded prepends.
+    monkeypatch.setattr(nbci, "run_guard_bounded", lambda cmd, **kw: (seen.append(cmd), _P())[1])
     names = [g["guard"] for g in nbci.replay_guards(tmp_path, RS)]
     assert "rust-conformance" not in names
     (tmp_path / nbci.conformance_file(RS)).parent.mkdir(parents=True)
@@ -303,7 +305,7 @@ def test_guard_replayed_only_when_the_entry_exists(tmp_path, monkeypatch):
     seen.clear()
     guards = nbci.replay_guards(tmp_path, RS)
     assert guards[-1]["guard"] == "rust-conformance"
-    assert seen[-1][1:] == [nbci.CONFORMANCE_CHECKER, "--entry", "demo-01-thing.yaml"]
+    assert seen[-1] == [nbci.CONFORMANCE_CHECKER, "--entry", "demo-01-thing.yaml"]
     assert "rust-conformance" not in [g["guard"] for g in nbci.replay_guards(tmp_path)]
 
 

@@ -61,9 +61,12 @@ import csv
 import difflib
 import io
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
+import time
 import unicodedata
 from pathlib import Path
 
@@ -96,6 +99,165 @@ NAV_LINE_MARKERS = ("precedent", "précédent", "suivant", "suivante", "next",
 LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
 
 GUARD_TIMEOUT_S = 900
+
+# How long the post-deadline read may wait once the guard tree has been killed.
+GUARD_KILL_GRACE_S = 30
+
+# Characters a guard row keeps of the guard's output (the END of it, see _tail_with_prefix).
+GUARD_TAIL_CAP = 400
+
+
+def _tail_with_prefix(prefix: str, out: str, cap: int = GUARD_TAIL_CAP) -> str:
+    """``prefix`` followed by the END of ``out``, inside ``cap`` characters.
+
+    The last lines of a guard's output are its verdict, so the prefix must eat the head,
+    never the tail (28/11 review: ``(prefix + tail)[:cap]`` cut the end of the output)."""
+    budget = cap - len(prefix)
+    if budget <= 0:
+        return prefix[:cap]
+    return prefix + (out or "")[-budget:]
+
+
+# How ``_kill_guard_tree`` reports what it managed to kill, and the words the row uses for it.
+# "exited" is the shape measured on 28/11 (10 of 10 trials): the guard child has ALREADY fallen
+# when the deadline fires and a grandchild keeps the inherited pipe -- `taskkill /T` then answers
+# 128 "not found", because it walks the tree from a LIVE parent. Nothing is killed, and the row
+# must not say otherwise.
+KILL_HOW = {"tree": "tree killed", "child": "child killed only",
+            "exited": "child already exited", "nothing": "nothing killed"}
+
+# Characters a failed kill command's own message keeps in a row. taskkill speaks the locale's
+# console code page: decoded as "oem", flattened onto one line.
+KILL_DETAIL_CAP = 120
+
+
+def _kill_detail(text: str) -> str:
+    """One capped line: what a failed kill command SAID, fit for a row prefix."""
+    flat = " ".join((text or "").split())
+    return flat if len(flat) <= KILL_DETAIL_CAP else flat[:KILL_DETAIL_CAP - 1] + "…"
+
+
+def _timed_out_note(proc: subprocess.CompletedProcess, timeout: float) -> str:
+    """What the deadline and the post-kill read actually MEASURED, as the row's prefix.
+
+    The post-kill read usually returns in well under a second once the tree is killed;
+    saying "pipe abandoned after 30s" then would claim a hang that did not happen
+    (28/11 review). ``kill_how``, ``kill_detail``, ``pipe_abandoned`` and ``grace_wait_s``
+    are set by ``run_guard_bounded`` from the kill and the read themselves. A tree kill that
+    fell back carries the kill command's own words: an unexplained ``child`` was measured
+    once in a busy CI selection (28/11) and never under load (30 of 30 trials), so the next
+    occurrence must explain itself instead of being re-investigated."""
+    waited = getattr(proc, "grace_wait_s", None)
+    if waited is None:
+        read = "post-kill read unmeasured"
+    elif getattr(proc, "pipe_abandoned", False):
+        read = f"pipe abandoned after {waited}s"
+    else:
+        read = f"pipe closed after {waited}s"
+    killed = KILL_HOW.get(getattr(proc, "kill_how", None), "kill unmeasured")
+    why = getattr(proc, "kill_detail", None)
+    if why:
+        killed = f"{killed} [{why}]"
+    return f"TimeoutExpired after {timeout:g}s ({killed}, {read}): "
+
+
+def _taskkill_tree(pid: int) -> tuple[int | None, str]:
+    """``taskkill /F /T`` on one pid, as ``(exit code, what it said)``. Never raises."""
+    try:
+        done = subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                              capture_output=True, timeout=GUARD_KILL_GRACE_S,
+                              stdin=subprocess.DEVNULL)
+        said = done.stderr or done.stdout or b""
+        return done.returncode, _kill_detail(
+            f"taskkill exit {done.returncode}: " + said.decode("oem", "replace"))
+    except Exception as e:
+        return None, _kill_detail(f"{type(e).__name__}: {e}")
+
+
+def _kill_guard_tree(proc: subprocess.Popen) -> tuple[str, str | None]:
+    """Kill a guard child AND its descendants, so nothing keeps its pipe open.
+
+    Returns what it managed to kill and, when the tree kill fell back, what the kill command
+    said about it:
+      * ``"tree"``    -- the tree kill succeeded;
+      * ``"child"``   -- the tree kill failed and only the child fell: a grandchild that
+                         survives is exactly the case where the pipe outlives the grace;
+      * ``"exited"``  -- the child was ALREADY gone, so nothing was killed and an orphan
+                         holds the pipe (Windows, measured 10 of 10 trials on 28/11: a guard
+                         that spawns a grandchild and returns before the deadline). Never on
+                         POSIX: the unreaped child keeps its group id, so ``killpg`` still
+                         reaches the orphan and the answer is ``"tree"`` (Linux CI, 28/11);
+      * ``"nothing"`` -- even the child did not fall."""
+    if os.name == "nt":
+        if proc.poll() is not None:
+            return "exited", None
+        rc, said = _taskkill_tree(proc.pid)
+        if rc == 0:
+            return "tree", None
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return "tree", None
+        except Exception as e:
+            said = _kill_detail(f"killpg {type(e).__name__}: {e}")
+    try:
+        proc.kill()
+        return "child", said
+    except Exception as e:
+        return "nothing", _kill_detail(f"{said}; kill {type(e).__name__}: {e}")
+
+
+def run_guard_bounded(cmd: list[str], *, cwd, timeout: float = GUARD_TIMEOUT_S,
+                      grace: float = GUARD_KILL_GRACE_S) -> subprocess.CompletedProcess:
+    """Run a guard script so a grandchild holding its pipe can never wedge the driver.
+
+    ``subprocess.run(..., timeout=T)`` is NOT enough on Windows (po-2028, 27/11): at the
+    deadline CPython kills the CHILD and then re-calls ``communicate()`` with NO timeout.
+    A grandchild that inherited the stdout handle keeps the pipe open, so that second read
+    blocks FOREVER -- the caller sees a live process, zero children (the child was already
+    killed), one thread parked in a pipe read and no further write on disk. It happened in
+    stage 5 of a delivery: CoursIA#27133's MGS-28 commit was made at 06:51:27Z, the guard
+    replay began, and 45 min later the driver was still parked with the branch never
+    pushed. The notebook was built AND approved; the PR had to be pushed by hand.
+
+    Three defences, each addressing one half of that shape:
+      * ``stdin=DEVNULL`` -- a guard that prompts reads EOF instead of waiting on us;
+      * ``stderr=STDOUT`` -- one pipe instead of two, halving the handles a descendant can
+        inherit (and keep open past the child's death);
+      * a BOUNDED second read after killing the whole TREE (``taskkill /T`` on Windows,
+        ``killpg`` elsewhere). A pipe still held past the grace is abandoned, never waited
+        on: an unread guard tail is a missing datapoint, a wedged grain is a lost PR.
+    """
+    popen_kw = {}
+    if os.name != "nt":
+        popen_kw["start_new_session"] = True   # own process group, killable as a whole
+    proc = subprocess.Popen(
+        [sys.executable, *cmd], cwd=str(cwd),
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", **popen_kw)
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(cmd, proc.returncode, out or "", "")
+    except subprocess.TimeoutExpired:
+        killed, why = _kill_guard_tree(proc)
+        read_t0 = time.monotonic()
+        try:
+            out, _ = proc.communicate(timeout=grace)
+            abandoned = False
+        except subprocess.TimeoutExpired:
+            out = ""      # the pipe outlived the tree: give up, never block
+            abandoned = True
+        done = subprocess.CompletedProcess(cmd, None, out or "", "")
+        done.timed_out = True
+        # What the kill and the post-kill read MEASURED, so the report can say it instead
+        # of assuming the worst case (28/11 review). ``kill_detail`` is None unless the tree
+        # kill fell back.
+        done.kill_how = killed
+        done.kill_detail = why
+        done.pipe_abandoned = abandoned
+        done.grace_wait_s = round(time.monotonic() - read_t0, 1)
+        return done
+
 
 # The guards the CI raises on a new notebook, replayed with the exact
 # commands the lot-1 review comments published (CoursIA#27803 c.1).
@@ -976,14 +1138,19 @@ def reseal_pair(worktree: Path, pair_name: str, lane: str) -> dict:
     out = {"pair": pair_name, "forced": False}
 
     def _run(*extra: str) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            [sys.executable, "scripts/notebook_tools/check_twin_parity.py",
+        return run_guard_bounded(
+            ["scripts/notebook_tools/check_twin_parity.py",
              *extra, "--pair", pair_name]
             + (["--by", lane] if "--update" in extra else []),
-            cwd=str(worktree), capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=GUARD_TIMEOUT_S)
+            cwd=worktree, timeout=GUARD_TIMEOUT_S, grace=GUARD_KILL_GRACE_S)
 
     proc = _run("--update")
+    if getattr(proc, "timed_out", False):
+        # A timed-out seal is not a "no-op that --force might fix": re-running the same
+        # 900 s guard twice more would spend 30 min to reach the same wall (27/11).
+        return out | {"ok": False, "rc": None, "timed_out": True, "audit_files": [],
+                      "tail": _tail_with_prefix(_timed_out_note(proc, GUARD_TIMEOUT_S),
+                                                proc.stdout or "")}
     audit = _status(worktree, TWIN_PAIRS_DIR.as_posix())
     if proc.returncode == 0 and audit:
         dropped = drop_superseded_attestations(worktree, pair_name, lane, audit)
@@ -2215,16 +2382,18 @@ def replay_guards(worktree: Path, notebook: str | None = None) -> list[dict]:
     out = []
     for name, cmd in guards:
         try:
-            proc = subprocess.run([sys.executable, *cmd], cwd=str(worktree),
-                                  capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace",
-                                  timeout=GUARD_TIMEOUT_S)
-            out.append({"guard": name, "cmd": " ".join(["python", *cmd]),
-                        "rc": proc.returncode,
-                        "tail": (proc.stdout or proc.stderr or "")[-400:]})
-        except (subprocess.TimeoutExpired, OSError) as e:
-            out.append({"guard": name, "cmd": " ".join(["python", *cmd]),
-                        "rc": None, "tail": f"{type(e).__name__}: {e}"[:400]})
+            proc = run_guard_bounded(cmd, cwd=worktree, timeout=GUARD_TIMEOUT_S,
+                                     grace=GUARD_KILL_GRACE_S)
+        except OSError as e:                      # sys.executable unusable: recorded, not fatal
+            out.append({"guard": name, "cmd": " ".join(["python", *cmd]), "rc": None,
+                        "tail": f"{type(e).__name__}: {e}"[:GUARD_TAIL_CAP], "timed_out": False})
+            continue
+        tail = (proc.stdout or "")[-GUARD_TAIL_CAP:]
+        timed_out = bool(getattr(proc, "timed_out", False))
+        if timed_out:
+            tail = _tail_with_prefix(_timed_out_note(proc, GUARD_TIMEOUT_S), proc.stdout or "")
+        out.append({"guard": name, "cmd": " ".join(["python", *cmd]),
+                    "rc": proc.returncode, "tail": tail, "timed_out": timed_out})
     return out
 
 
