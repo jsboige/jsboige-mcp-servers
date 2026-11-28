@@ -617,6 +617,20 @@ function splitChain(value: string): string[] {
 }
 
 /**
+ * Une valeur VIDE ne porte aucune information de cascade : vide ≡ absent.
+ *
+ * `docker compose` déclare `CLAUDISH_FAILOVER_*_NOTE` et `*_RESET` avec un
+ * défaut vide (`${VAR:-}`) : TOUT conteneur créé depuis ce compose les porte
+ * vides, alors que le canon ne rend que les clés INFORMATIVES
+ * (`renderCascadeEnv`). Une clé présente-vide n'est pas une valeur — c'est
+ * l'absence de valeur.
+ */
+function blankAsNull(value: string | null): string | null {
+    if (value === null) return null;
+    return value.trim() === '' ? null : value;
+}
+
+/**
  * Compare les valeurs attendues et les valeurs du siège, clé par clé.
  *
  * Deux propriétés exigées par #4427 :
@@ -624,6 +638,16 @@ function splitChain(value: string): string[] {
  *     dont un élément change est un `modified` à cardinalité constante ;
  *   - une clé absente d'un côté et présente de l'autre est un `added` /
  *     `removed` (les listes de valeurs n'ont pas de cardinalité comparable).
+ *
+ * Troisième propriété (mesurée sur le siège po-2024 le 28/11/2026) : **vide ≡
+ * absent**. Une clé présente-vide côté siège et absente du canon n'est PAS une
+ * divergence. Compter cette paire comme un `removed` rendait un verdict
+ * `needs-recreate` qu'aucun recreate ne peut lever — le compose redéclare la
+ * clé vide à l'identique —, soit une demande de coupe de service pour un état
+ * que le geste demandé reproduit. Seule une valeur NON VIDE du siège, absente
+ * du canon, reste un `removed` : c'est une vraie divergence, et le recreate la
+ * corrige. Quand le canon exige une valeur, la valeur VIDE du siège reste
+ * rapportée telle quelle dans le changement (`before`).
  */
 export function compareCascadeEnv(
     sourceEnv: Record<string, string>,
@@ -636,7 +660,7 @@ export function compareCascadeEnv(
     for (const key of [...keys].sort()) {
         const before = Object.prototype.hasOwnProperty.call(seatEnv, key) ? seatEnv[key] : null;
         const after = Object.prototype.hasOwnProperty.call(sourceEnv, key) ? sourceEnv[key] : null;
-        if (before === after) {
+        if (blankAsNull(before) === blankAsNull(after)) {
             unchanged += 1;
             continue;
         }

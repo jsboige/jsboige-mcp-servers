@@ -494,9 +494,84 @@ describe('#4427 PR2 — comparaison de VALEURS (pas de comptes)', () => {
         expect(comparison.changes).toHaveLength(0);
         expect(comparison.unchanged).toBe(1);
     });
+
+    // Vide ≡ absent — mesuré sur le siège po-2024 le 28/11/2026 : le compose
+    // déclare `CLAUDISH_FAILOVER_*_NOTE` / `*_RESET` avec un défaut vide
+    // (`${VAR:-}`), le canon ne rend que les clés informatives. Six clés
+    // présentes-vides valaient six `removed`, donc un verdict `needs-recreate`
+    // qu'aucun recreate ne peut lever, alors que les 18 clés du canon étaient
+    // identiques octet pour octet entre le `.env` et le conteneur.
+    test('présente-VIDE côté siège, absente du canon : PAS une divergence (vide ≡ absent)', () => {
+        const comparison = compareCascadeEnv(
+            {},
+            {
+                [`${CASCADE_ENV_PREFIX}HAIKU_RESET`]: '',
+                [`${CASCADE_ENV_PREFIX}SONNET_RESET`]: '   ',
+                [`${CASCADE_ENV_PREFIX}OPUS_NOTE`]: '',
+            },
+        );
+        expect(comparison.changes).toHaveLength(0);
+        expect(comparison.unchanged).toBe(3);
+    });
+
+    test('canon + clés vides du compose : aligned — les clés que le canon PORTE restent comparées', () => {
+        const source = freshSource();
+        const container = { ...source.env };
+        for (const role of ['FABLE', 'HAIKU', 'OPUS', 'SONNET']) {
+            for (const suffix of ['_RESET', '_NOTE']) {
+                const key = `${CASCADE_ENV_PREFIX}${role}${suffix}`;
+                if (!(key in container)) container[key] = '';
+            }
+        }
+        expect(Object.keys(container).length).toBeGreaterThan(Object.keys(source.env).length);
+        expect(compareCascadeEnv(source.env, container).changes).toHaveLength(0);
+
+        // Une clé VIDÉE que le canon porte reste une divergence : le compose
+        // ne doit pas pouvoir masquer une valeur perdue.
+        container[`${CASCADE_ENV_PREFIX}SONNET_RESET`] = '';
+        expect(compareCascadeEnv(source.env, container).changes).toHaveLength(1);
+    });
+
+    test('présente-VIDE côté siège, valeur EXIGÉE par le canon : divergence réelle, before rapporté vide', () => {
+        const comparison = compareCascadeEnv(
+            { [`${CASCADE_ENV_PREFIX}HAIKU`]: 'alpha@one>beta@two' },
+            { [`${CASCADE_ENV_PREFIX}HAIKU`]: '' },
+        );
+        expect(comparison.changes).toHaveLength(1);
+        expect(comparison.changes[0].kind).toBe('modified');
+        expect(comparison.changes[0].before).toBe('');
+        expect(comparison.changes[0].after).toBe('alpha@one>beta@two');
+    });
+
+    test('NON VIDE côté siège, absente du canon : toujours un removed — un recreate la corrige', () => {
+        const comparison = compareCascadeEnv(
+            {},
+            { [`${CASCADE_ENV_PREFIX}SONNET_RESET`]: '2026-08-25T22:28:00Z' },
+        );
+        expect(comparison.changes).toHaveLength(1);
+        expect(comparison.changes[0].kind).toBe('removed');
+        expect(comparison.changes[0].before).toBe('2026-08-25T22:28:00Z');
+    });
 });
 
 describe('#4427 PR2 — plan d\'application (borné, non destructif)', () => {
+    test('clé VIDE hors canon dans le .env du siège : ni écriture ni raison (faux needs-apply)', () => {
+        const source = freshSource();
+        const seat = { ...source.env, [`${CASCADE_ENV_PREFIX}OPUS_RESET`]: '' };
+        const plan = planCascadeApply(source, seat);
+        expect(plan.changes).toHaveLength(0);
+        expect(plan.reasons).toHaveLength(0);
+        expect(plan.applicable).toBe(false);
+
+        // Garde-fou : la même clé NON VIDE reste rapportée — le siège porte
+        // une valeur que la source ne veut plus.
+        const stale = planCascadeApply(source, {
+            ...source.env,
+            [`${CASCADE_ENV_PREFIX}OPUS_RESET`]: '2026-08-25T22:28:00Z',
+        });
+        expect(stale.reasons.join(' ')).toContain(`${CASCADE_ENV_PREFIX}OPUS_RESET`);
+    });
+
     test('écrit UNIQUEMENT des clés de cascade — jamais un secret du siège', () => {
         const plan = planCascadeApply(freshSource(), parseCascadeEnv(SEAT_ENV_TEXT));
         for (const write of plan.writes) {
