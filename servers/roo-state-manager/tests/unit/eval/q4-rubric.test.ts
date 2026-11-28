@@ -127,6 +127,58 @@ describe('#2609 q4 rubric (a): two passages from two conversations in the top 3'
   });
 });
 
+describe('#4939 q4 rubric (a): a harness-injected turn is not a human decision passage', () => {
+  // The compaction summary carries the coordination vocabulary the rule tests
+  // for ("arbitrage", "décision") and is well above the passage floor: ONLY the
+  // harness rule can exclude it. That is the point of the witness.
+  const COMPACTION_SUMMARY =
+    'This session is being continued from a previous conversation that ran out of context. '
+    + 'The summary below covers the earlier portion of the conversation. The arbitrations read '
+    + 'from the evidence files are unchanged, and the decision on the cadence remains open.';
+  // Same shape, but a HUMAN sentence that happens to name the compaction: it
+  // does not open with a harness envelope, so it stays prose.
+  const PROSE_NAMING_COMPACTION =
+    'La compaction du contexte ne change rien à l arbitrage du 27/11 : la décision reste '
+    + 'l option (a), et la mesure du budget d archives a été reprise depuis le fichier de preuve.';
+
+  afterEach(() => {
+    delete process.env.SEMANTIC_HARNESS_TURN_MALUS;
+  });
+
+  test('a compaction summary never counts, by the fallback classifier', () => {
+    expect(COMPACTION_SUMMARY.length).toBeGreaterThanOrEqual(PASSAGE_FLOOR_CHARS);
+    expect(COMPACTION_SUMMARY).toMatch(/arbitration|décision|decision/i);
+    expect(isHumanDecisionPassage({ snippet: COMPACTION_SUMMARY, chunk_type: 'message_exchange' })).toBe(false);
+  });
+
+  test('a compaction summary never counts, by the kind the engine carried', () => {
+    expect(isHumanDecisionPassage({
+      snippet: DECISION_PASSAGE,
+      chunk_type: 'message_exchange',
+      harness_turn_kind: 'compaction_summary',
+    })).toBe(false);
+  });
+
+  test('a human sentence naming the compaction still counts (the negative witness)', () => {
+    expect(PROSE_NAMING_COMPACTION.length).toBeGreaterThanOrEqual(PASSAGE_FLOOR_CHARS);
+    expect(isHumanDecisionPassage({ snippet: PROSE_NAMING_COMPACTION, chunk_type: 'message_exchange' })).toBe(true);
+  });
+
+  test('rollback: the switch covers the whole handling — the rule counts it again', () => {
+    process.env.SEMANTIC_HARNESS_TURN_MALUS = '0';
+    expect(isHumanDecisionPassage({ snippet: COMPACTION_SUMMARY, chunk_type: 'message_exchange' })).toBe(true);
+  });
+
+  test('rollback: the carried kind is not honoured either (the policy is whole or absent)', () => {
+    process.env.SEMANTIC_HARNESS_TURN_MALUS = '0';
+    expect(isHumanDecisionPassage({
+      snippet: DECISION_PASSAGE,
+      chunk_type: 'message_exchange',
+      harness_turn_kind: 'compaction_summary',
+    })).toBe(true);
+  });
+});
+
 describe('#2609 scenario 4 is a set of wordings (RX133)', () => {
   test('holds 3 or 4 wordings with distinct scenario ids and distinct queries', () => {
     expect(CROSS_CONVERSATION_QUERIES.length).toBeGreaterThanOrEqual(3);

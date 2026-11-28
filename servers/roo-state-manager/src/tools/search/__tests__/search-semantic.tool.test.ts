@@ -83,7 +83,7 @@ vi.mock('../../../services/unified-store/reader-factory.js', () => ({
 	getUnifiedStoreReader: () => mockUnifiedStoreReader
 }));
 
-import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput, classifyHarnessTurn, passageQualityFactor, requestFormFactor, composePassageSlots, isPassageGroup, PASSAGE_SLOT_FLOOR_CHARS } from '../search-semantic.tool.js';
+import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput, classifyHarnessTurn, passageQualityFactor, requestFormFactor, composePassageSlots, isPassageGroup, collectAdjacentPassageCandidates, PASSAGE_SLOT_FLOOR_CHARS } from '../search-semantic.tool.js';
 import type { StoredConversation } from '../../../services/unified-store/types.js';
 import { splitChunkId } from '../../../services/task-indexer/ChunkExtractor.js';
 
@@ -4083,6 +4083,106 @@ describe('#4939 harness-injected user turns', () => {
 
 		const parsed = JSON.parse(getTextContent(result));
 		expect(parsed.results).toHaveLength(1);
+	});
+
+	// ---- the three gaps the ai-01 review named (28/11, CHANGES_REQUESTED) ----
+
+	test('a harness turn is not a passage — it never takes a reserved slot', () => {
+		const mkChunk = (snippet: string, score: number, over: Record<string, unknown> = {}) => ({
+			score, relevance: 'good', snippet,
+			chunk_type: 'message_exchange' as any, role: 'user' as const, relative_time: 'now',
+			message_position: undefined, tool_name: undefined, has_error: undefined,
+			...over,
+		});
+		const mkGroup = (taskId: string, snippet: string, score: number, over: Record<string, unknown> = {}) => ({
+			taskId, task_title: taskId, workspace: undefined, host_os: 'h1',
+			best_score: score, relevance: 'good', source: undefined, model: undefined,
+			chunks: [mkChunk(snippet, score, over)],
+		} as any);
+
+		const harness = mkGroup('h1', COMPACTION_SUMMARY, 0.75, { harness_turn_kind: 'compaction_summary' });
+		expect(isPassageGroup(harness)).toBe(false);
+		expect(isPassageGroup(mkGroup('p1', DECISION_PROSE, 0.9))).toBe(true);
+
+		// It sits BELOW the window and is not promoted into it, while a real
+		// passage below the window would have been.
+		const groups = [
+			mkGroup('p1', DECISION_PROSE, 0.90), mkGroup('p2', DECISION_PROSE, 0.85),
+			mkGroup('f1', 'court', 0.80), harness,
+		];
+		const stats = composePassageSlots(groups, 3, 3);
+		expect(stats.groups_promoted).toBe(0);
+		expect(groups.slice(0, 3).map(g => g.taskId)).toEqual(['p1', 'p2', 'f1']);
+	});
+
+	test('an adjacent compaction summary is not promoted as the representative', async () => {
+		const fakeQdrant = {
+			scroll: async () => ({
+				points: [{
+					payload: {
+						message_index: 2, role: 'user', chunk_index: 1,
+						content: COMPACTION_SUMMARY, timestamp: '2026-11-28T00:00:00Z',
+					},
+				}],
+			}),
+		};
+		const targets = [{
+			taskId: 't1', task_title: 't1', workspace: undefined, host_os: 'h1',
+			best_score: 0.5, relevance: 'good', source: undefined, model: undefined,
+			chunks: [{
+				score: 0.5, relevance: 'weak', snippet: 'Demande courte de l’utilisateur, sans passage.',
+				chunk_type: 'message_exchange' as any, role: 'user' as const, relative_time: 'now',
+				message_position: undefined, message_index: 1, tool_name: undefined, has_error: undefined,
+			}],
+		} as any];
+
+		const stash = new Map<any, any>();
+		const promoted = await collectAdjacentPassageCandidates(targets, 1, fakeQdrant as any, 'coll', stash);
+		expect(promoted).toBe(0);
+		expect(stash.size).toBe(0);
+	});
+
+	test('the rollback switch covers the WHOLE handling — the kind is not carried any more', async () => {
+		process.env.SEMANTIC_HARNESS_TURN_MALUS = '0';
+		mockQdrantClient.query.mockResolvedValue([
+			{ score: 0.9, payload: { task_id: 'task-compaction', chunk_type: 'message_exchange', content: COMPACTION_SUMMARY, host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'arbitrage' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results[0].best_score).toBeCloseTo(0.9, 8);
+		// Nothing is carried: the slot composition and the rubric see an ordinary turn.
+		expect(parsed.results[0].chunks?.[0]?.harness_turn_kind).toBeUndefined();
+		expect(parsed.current_machine.harness_turn_malus).toMatchObject({ applied: 0, enabled: false });
+	});
+
+	test('a harness turn pays only ONE scale — the request ramp is skipped too', async () => {
+		// A scheduled prompt that ALSO reads as a request form (short, ends on a
+		// politeness token): with the policy on, it is one defect and pays one
+		// scale; with the policy off, it is prose again and pays the request ramp.
+		const REQUEST_FORM_PROMPT = 'Run this single MCP tool call and report the result: show me please';
+
+		mockQdrantClient.query.mockResolvedValue([
+			{ score: 0.9, payload: { task_id: 'task-sched', chunk_type: 'message_exchange', content: REQUEST_FORM_PROMPT, host_os: 'h1' } }
+		]);
+		const on = JSON.parse(getTextContent(await searchTasksByContentTool.handler(
+			{ search_query: 'resultat' }, makeCache(), mockEnsureCache, defaultFallback
+		)));
+		expect(on.current_machine.harness_turn_malus).toMatchObject({ applied: 1, by_kind: { scheduled_prompt: 1 } });
+		expect(on.current_machine.request_malus).toBeUndefined();
+
+		process.env.SEMANTIC_HARNESS_TURN_MALUS = '0';
+		const off = JSON.parse(getTextContent(await searchTasksByContentTool.handler(
+			{ search_query: 'resultat' }, makeCache(), mockEnsureCache, defaultFallback
+		)));
+		expect(off.current_machine.request_malus).toMatchObject({ applied: 1 });
+		expect(off.current_machine.harness_turn_malus).toMatchObject({ applied: 0, enabled: false });
 	});
 });
 

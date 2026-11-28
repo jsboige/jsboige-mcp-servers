@@ -547,9 +547,39 @@ export function classifyHarnessTurn(content: string): HarnessTurnKind | null {
     return null;
 }
 
+/**
+ * #4939: the POLICY-aware form — what the engine actually applies.
+ *
+ * The rollback switch covers the WHOLE handling, not only the malus: with
+ * `SEMANTIC_HARNESS_TURN_MALUS=0` a harness turn is an ordinary turn again —
+ * no malus, no ramp skip, no carried kind, no passage slot, no rubric
+ * exclusion. `classifyHarnessTurn` stays PURE (a classifier is testable
+ * without an environment); every consumer of the POLICY — the ranking, the
+ * adjacent-turn pre-pass, the slot composition, both rubrics — goes through
+ * this one function, so the rollback cannot be half-applied.
+ */
+export function effectiveHarnessTurnKind(content: string): HarnessTurnKind | null {
+    if (!isHarnessTurnMalusEnabled()) return null;
+    return classifyHarnessTurn(content);
+}
+
+/**
+ * #4939: the POLICY applied to a chunk that may CARRY the kind the engine
+ * recognised (`harness_turn_kind`).
+ *
+ * The carried kind is honoured only when the policy is on: the rollback switch
+ * covers the whole handling, so a chunk labelled by an earlier run is not
+ * excluded either when the switch is off. Without this, the rubric would honour
+ * a carried label while the engine had already stopped producing it — the
+ * rollback would be half-applied in the very place where it is read.
+ */
+export function effectiveHarnessTurnKindOf(carried: string | null | undefined, content: string): HarnessTurnKind | null {
+    if (!isHarnessTurnMalusEnabled()) return null;
+    return (carried as HarnessTurnKind | null | undefined) ?? classifyHarnessTurn(content);
+}
+
 function applyHarnessTurnMalus(score: number, content: string): { score: number; kind: HarnessTurnKind | null } {
-    if (!isHarnessTurnMalusEnabled()) return { score, kind: null };
-    const kind = classifyHarnessTurn(content);
+    const kind = effectiveHarnessTurnKind(content);
     return kind ? { score: score * HARNESS_TURN_MALUS_FACTOR, kind } : { score, kind: null };
 }
 
@@ -1555,7 +1585,7 @@ async function attachConversationContext(groups: GroupedTask[], qdrant: any, col
  * Gated by the same kill-switch as the lever (never called when
  * SEMANTIC_PASSAGE_SLOTS=0) and by SEARCH_CONTEXT_EXPANSION=0.
  */
-async function collectAdjacentPassageCandidates(
+export async function collectAdjacentPassageCandidates(
     targets: GroupedTask[],
     shortfall: number,
     qdrant: any,
@@ -1599,21 +1629,27 @@ async function collectAdjacentPassageCandidates(
             }
             // Prefer the longer qualifying neighbor; both directions are the
             // same distance from the anchor, so length is the only criterion.
-            let best: { message_index: number; payload: any; excerpt: string } | undefined;
+            let best: { message_index: number; payload: any; excerpt: string; harnessKind: HarnessTurnKind | null } | undefined;
             for (const mi of [anchor + 1, anchor - 1]) {
                 const turn = byMessage.get(mi);
                 if (!turn) continue;
                 const role = String(turn.payload?.role ?? 'unknown');
                 if (role !== 'user' && role !== 'assistant') continue;
                 const excerpt = excerptFromStart(String(turn.payload?.content ?? ''), CONTEXT_EXPANSION_EXCERPT_CHARS);
+                // #4939: the excerpt is cut FROM THE START (`excerptFromStart`), so
+                // the anchored classifier applies to it — a neighbouring compaction
+                // summary must not be promoted as the group's representative, and
+                // the stored chunk must carry the kind it was judged by.
+                const harnessKind = effectiveHarnessTurnKind(excerpt);
                 if (!isPassageChunk({
                     snippet: excerpt,
                     chunk_type: 'message_exchange',
                     role,
                     tool_continuation_status: 'not_tool_result',
+                    harness_turn_kind: harnessKind,
                 } as GroupedTask['chunks'][number])) continue;
                 if (!best || excerpt.length > best.excerpt.length) {
-                    best = { message_index: mi, payload: turn.payload, excerpt };
+                    best = { message_index: mi, payload: turn.payload, excerpt, harnessKind };
                 }
             }
             if (!best) continue;
@@ -1623,6 +1659,7 @@ async function collectAdjacentPassageCandidates(
                 relevance: rep?.relevance ?? group.relevance,
                 snippet: best.excerpt,
                 machine_output_kind: null,
+                harness_turn_kind: best.harnessKind,
                 tool_continuation_status: 'not_tool_result',
                 chunk_type: 'message_exchange',
                 role: String(best.payload?.role ?? 'unknown'),
@@ -2195,7 +2232,9 @@ export const searchTasksByContentTool = {
                 const machineKind = classifyMachineOutput(result.payload?.chunk_type, fullContent);
                 // #4939: classified once, from the same full content, before both
                 // scales — the coarse `chunk_type` cannot see these envelopes.
-                const harnessKind = classifyHarnessTurn(fullContent);
+                // The POLICY form: with the rollback switch off, a harness turn
+                // is an ordinary turn again on every scale (score, ramps, kind).
+                const harnessKind = effectiveHarnessTurnKind(fullContent);
                 // A harness turn is a different KIND of evidence, exactly like machine
                 // output: it pays its own ×0.85 and skips the thinness and request
                 // ramps, so one defect never stacks two scales.

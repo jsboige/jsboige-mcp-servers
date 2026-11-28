@@ -18,7 +18,7 @@
  * request classifier.
  */
 
-import { classifyMachineOutput, classifyHarnessTurn } from '../../src/tools/search/search-semantic.tool.js';
+import { classifyMachineOutput, effectiveHarnessTurnKindOf } from '../../src/tools/search/search-semantic.tool.js';
 
 /** Epic #2609 rubric (a): a passage is at least this long; a shorter chunk is a fragment or a bare request. */
 export const PASSAGE_FLOOR_CHARS = 100;
@@ -61,7 +61,7 @@ export function isHumanDecisionPassage(chunk: RubricChunk | undefined): boolean 
   const snippet = chunk?.snippet ?? '';
   return snippet.length >= PASSAGE_FLOOR_CHARS
     && (chunk?.machine_output_kind ?? classifyMachineOutput(chunk?.chunk_type, snippet)) === null
-    && (chunk?.harness_turn_kind ?? classifyHarnessTurn(snippet)) === null
+    && effectiveHarnessTurnKindOf(chunk?.harness_turn_kind, snippet) === null
     && chunk?.tool_continuation_status !== 'unknown'
     && DECISION_VOCABULARY.test(snippet);
 }
