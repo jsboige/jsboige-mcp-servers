@@ -321,3 +321,34 @@ de la feuille. Pour une feuille **ouverte**, trois cas :
 
 Tests : `test_nb_coder_unfold.py` (`Seat`), `test_nb_coder_feeder.py` (`ReopenSeat`),
 `test_nb_coder_leaf_check.py` (`test_a_reopen_comment_names_the_lane_that_reopened_the_leaf`).
+
+## 8. Spec à blanc d'un grain de jumeau — `nb_coder_blank_spec.py`
+
+Le corps de l'issue d'un grain **est** sa spec (mandat user 20/11). Ce générateur l'écrit sans
+modèle, à partir du carnet source lu sur un ref (`origin/main` par défaut), et **mesure** tout ce
+qu'il en dit sur le blob qu'il cite :
+
+- l'inventaire des cellules de code, première ligne **verbatim**, archétype indicatif
+  (`force_solved` > `force_exo` ou motif « exercice » > `force_pre` ou import en tête > calcul) ;
+- l'ALÉA : les cellules qui tirent au hasard et les graines **littérales** de la source
+  (`default_rng(42)`, `seed(7)`, `manual_seed(0)`, `random_state=5`) ;
+- les figures : cellules à `plt.` ou à sortie `image/png` (SVG attendu), ou la phrase mesurée
+  « la source ne trace aucune figure » ;
+- les bibliothèques sans équivalent BCL / std (scipy `entropy`/`rel_entr`, cvxpy, mpmath, networkx,
+  torch…) : « réimplémentation fidèle, jamais une substitution » ;
+- la fratrie : jumeaux du même langage déjà dans le dossier (`ls-tree`), ou « premier de sa série ».
+
+Refus mesurés (entrée non écrite, sortie 2) : cible déjà sur le ref ; en mode C#, jumeau Rust
+présent ; en mode Rust, jumeau C# **absent** (prérequis du portage Rust, levable par
+`allow_no_csharp` avec le motif dans les notes).
+
+```bash
+python -X utf8 nb_coder_blank_spec.py --repo <checkout CoursIA> --specs specs.json --out <dossier>
+```
+
+`specs.json` est une liste d'entrées, ou `{"defaults": {...}, "specs": [...]}`. Une note est une
+chaîne, ou une clause nommée `{"clause": "readme_defer", "prs": [29124], "path": "…/README.md"}`
+(clauses : `no_twin`, `readme_defer`, `culture`, `py_repr`, `prose_run`, `ortools`, `nav`,
+`executed`, `printed`). La sortie est un **brouillon** que la lane relit avant de créer l'issue ;
+`grain_tag.py` du dépôt est rejoué sur chaque corps quand il existe. Tests :
+`test_nb_coder_blank_spec.py` (carnets synthétiques, plus un dépôt git jetable pour le lecteur réel).
