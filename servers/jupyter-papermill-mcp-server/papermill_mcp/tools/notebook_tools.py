@@ -301,7 +301,10 @@ def register_notebook_tools(app: FastMCP) -> None:
         Si les deux sont fournis, ils doivent designer la meme cellule.
 
         Le resultat renvoie la cellule reellement visee : `index`, `id` et
-        `previous_source`. Un appelant qui garde une carte d'index peut ainsi
+        `previous_source` (borne a 4000 caracteres, au-dela
+        `previous_source_truncated` vaut True), avec les empreintes
+        `previous_sha256` et `new_sha256` de la source complete avant et apres
+        l'ecriture. Un appelant qui garde une carte d'index peut ainsi
         prouver ce qu'il a ecrase au lieu de le perdre silencieusement.
 
         Args:

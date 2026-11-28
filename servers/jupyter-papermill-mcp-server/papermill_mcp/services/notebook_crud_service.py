@@ -5,6 +5,7 @@ Handles basic Create, Read, Update, Delete operations for notebooks and cells.
 Extracted from notebook_service.py for better modularity.
 """
 
+import hashlib
 import logging
 import os
 import threading
@@ -16,6 +17,11 @@ import nbformat
 from ..utils.file_utils import FileUtils
 
 logger = logging.getLogger(__name__)
+
+# The echo of the overwritten source is bounded so a large cell cannot flood
+# the caller's context; the sha256 of the FULL source is what proves what was
+# there, and it is never truncated (#4969).
+PREVIOUS_SOURCE_ECHO_LIMIT = 4000
 
 
 class NotebookCRUDService:
@@ -418,11 +424,11 @@ class NotebookCRUDService:
         Update a cell in a notebook, addressed by index and/or cell id.
 
         #4969: the result echoes the cell that was actually written (index, id,
-        previous source). A caller holding a stale index map can then compare
-        what it expected against what it overwrote instead of losing content
-        silently. Addressing by ``cell_id`` is immune to index shifts caused by
-        an insertion or a removal between two calls; passing both is accepted
-        only when they designate the same cell.
+        previous source, previous/new sha256). A caller holding a stale index
+        map can then compare what it expected against what it overwrote
+        instead of losing content silently. Addressing by ``cell_id`` is immune
+        to index shifts caused by an insertion or a removal between two calls;
+        passing both is accepted only when they designate the same cell.
 
         Args:
             path: Path to the notebook file
@@ -464,16 +470,21 @@ class NotebookCRUDService:
                         "update_cell requires 'source' when dry_run is False"
                     )
 
+                echo = self._echo_of_cell(
+                    previous_source,
+                    new_source=None if dry_run else source,
+                )
+
                 if dry_run:
                     result = {
                         "path": str(path),
                         "index": resolved_index,
                         "updated_index": resolved_index,
                         "id": written_id,
-                        "previous_source": previous_source,
                         "cell_count": len(notebook.cells),
                         "dry_run": True,
                         "success": True,
+                        **echo,
                     }
                 else:
                     # Update cell using FileUtils
@@ -489,10 +500,10 @@ class NotebookCRUDService:
                         "index": resolved_index,
                         "updated_index": resolved_index,
                         "id": written_id,
-                        "previous_source": previous_source,
                         "cell_count": len(notebook.cells),
                         "dry_run": False,
                         "success": True,
+                        **echo,
                     }
 
             logger.info(
@@ -504,6 +515,51 @@ class NotebookCRUDService:
         except Exception as e:
             logger.error(f"Error updating cell in notebook {path}: {e}")
             raise
+
+    @staticmethod
+    def _echo_of_cell(
+        previous_source: str, new_source: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Build the echo of the cell that was addressed (#4969).
+
+        The echo is what lets a caller prove what it overwrote without
+        re-reading the notebook: ``previous_source`` is the source that was
+        there before the write, bounded to
+        ``PREVIOUS_SOURCE_ECHO_LIMIT`` characters (with
+        ``previous_source_truncated`` telling the caller that it was cut), and
+        ``previous_sha256`` / ``new_sha256`` are the sha256 of the FULL
+        previous source and of the source just written.
+
+        The hashes are the proof; the truncated text is the readable part.
+
+        Args:
+            previous_source: Source of the cell before the write
+            new_source: Source just written, or None in a dry run
+
+        Returns:
+            The echo fields
+        """
+        # A non-str source is an invariant break: let it raise, never hash "" as a false proof.
+        truncated = len(previous_source) > PREVIOUS_SOURCE_ECHO_LIMIT
+        echo: Dict[str, Any] = {
+            "previous_source": (
+                previous_source[:PREVIOUS_SOURCE_ECHO_LIMIT] if truncated else previous_source
+            ),
+            "previous_source_truncated": truncated,
+            "previous_sha256": hashlib.sha256(
+                previous_source.encode("utf-8")
+            ).hexdigest(),
+        }
+
+        if new_source is not None:
+            echo["new_sha256"] = hashlib.sha256(
+                new_source.encode("utf-8")
+            ).hexdigest()
+        else:
+            echo["new_sha256"] = None
+
+        return echo
 
     @staticmethod
     def _resolve_cell_address(
