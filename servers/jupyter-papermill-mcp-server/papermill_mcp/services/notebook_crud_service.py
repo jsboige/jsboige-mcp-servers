@@ -408,50 +408,159 @@ class NotebookCRUDService:
     async def update_cell(
         self,
         path: Union[str, Path],
-        index: int,
-        source: str,
+        index: Optional[int] = None,
+        source: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        cell_id: Optional[str] = None,
+        dry_run: bool = False,
     ) -> Dict[str, Any]:
         """
-        Update a cell in a notebook.
+        Update a cell in a notebook, addressed by index and/or cell id.
+
+        #4969: the result echoes the cell that was actually written (index, id,
+        previous source). A caller holding a stale index map can then compare
+        what it expected against what it overwrote instead of losing content
+        silently. Addressing by ``cell_id`` is immune to index shifts caused by
+        an insertion or a removal between two calls; passing both is accepted
+        only when they designate the same cell.
 
         Args:
             path: Path to the notebook file
-            index: Index of cell to update
-            source: New cell content
+            index: Index of cell to update (required unless cell_id is given)
+            source: New cell content (required unless dry_run is True)
             metadata: Optional new metadata
+            cell_id: ``id`` of the cell to update (alternative or complement
+                to ``index``)
+            dry_run: Validate the addressing and return the echo without
+                writing anything
 
         Returns:
-            Dictionary with operation result
+            Dictionary with operation result and the echo of the target cell
+
+        Raises:
+            ValueError: Neither index nor cell_id given, unknown cell_id, or
+                no source in a non dry-run call
+            IndexError: Index out of range, or index and cell_id disagree
         """
         try:
             resolved_path = self.resolve_path(path)
             path = Path(resolved_path)
-            logger.info(f"Updating cell {index} in notebook: {path}")
+            logger.info(
+                f"Updating cell (index={index}, cell_id={cell_id}, dry_run={dry_run}) "
+                f"in notebook: {path}"
+            )
 
             with self._lock_for(resolved_path):
                 # Read existing notebook
                 notebook = FileUtils.read_notebook(path)
 
-                # Update cell using FileUtils
-                notebook = FileUtils.update_cell(notebook, index, source, metadata)
+                resolved_index = self._resolve_cell_address(notebook, index, cell_id)
+                cell = notebook.cells[resolved_index]
+                previous_source = cell.get("source", "")
+                written_id = cell.get("id")
 
-                # Write back to file
-                FileUtils.write_notebook(notebook, path)
+                if not dry_run and source is None:
+                    raise ValueError(
+                        "update_cell requires 'source' when dry_run is False"
+                    )
 
-                result = {
-                    "path": str(path),
-                    "updated_index": index,
-                    "cell_count": len(notebook.cells),
-                    "success": True,
-                }
+                if dry_run:
+                    result = {
+                        "path": str(path),
+                        "index": resolved_index,
+                        "updated_index": resolved_index,
+                        "id": written_id,
+                        "previous_source": previous_source,
+                        "cell_count": len(notebook.cells),
+                        "dry_run": True,
+                        "success": True,
+                    }
+                else:
+                    # Update cell using FileUtils
+                    notebook = FileUtils.update_cell(
+                        notebook, resolved_index, source, metadata
+                    )
 
-            logger.info(f"Successfully updated cell {index}")
+                    # Write back to file
+                    FileUtils.write_notebook(notebook, path)
+
+                    result = {
+                        "path": str(path),
+                        "index": resolved_index,
+                        "updated_index": resolved_index,
+                        "id": written_id,
+                        "previous_source": previous_source,
+                        "cell_count": len(notebook.cells),
+                        "dry_run": False,
+                        "success": True,
+                    }
+
+            logger.info(
+                f"Successfully {'validated' if dry_run else 'updated'} cell "
+                f"{resolved_index} (id={written_id})"
+            )
             return result
 
         except Exception as e:
             logger.error(f"Error updating cell in notebook {path}: {e}")
             raise
+
+    @staticmethod
+    def _resolve_cell_address(
+        notebook, index: Optional[int], cell_id: Optional[str]
+    ) -> int:
+        """
+        Resolve the addressed cell to a concrete index (#4969).
+
+        Args:
+            notebook: Parsed notebook
+            index: Requested index, or None
+            cell_id: Requested cell id, or None
+
+        Returns:
+            The index of the targeted cell
+
+        Raises:
+            ValueError: No address given, or cell_id not found
+            IndexError: Index out of range, or index/cell_id disagree
+        """
+        if index is None and cell_id is None:
+            raise ValueError(
+                "update_cell requires either 'index' or 'cell_id'"
+            )
+
+        total = len(notebook.cells)
+        resolved = index
+
+        if cell_id is not None:
+            id_index = next(
+                (
+                    position
+                    for position, cell in enumerate(notebook.cells)
+                    if cell.get("id") == cell_id
+                ),
+                None,
+            )
+            if id_index is None:
+                available = [
+                    cell.get("id") for cell in notebook.cells[:10] if cell.get("id")
+                ]
+                raise ValueError(
+                    f"Cell id {cell_id!r} not found in notebook "
+                    f"({total} cells, first ids: {available})"
+                )
+            if index is not None and index != id_index:
+                raise IndexError(
+                    f"Addressing mismatch: cell id {cell_id!r} is at index "
+                    f"{id_index}, but index={index} was requested; refusing "
+                    f"to guess which one to overwrite"
+                )
+            resolved = id_index
+
+        if resolved < 0 or resolved >= total:
+            raise IndexError(f"Cell index {resolved} out of range (0-{total-1})")
+
+        return resolved
 
     async def list_notebooks(
         self, directory: Union[str, Path], recursive: bool = False
