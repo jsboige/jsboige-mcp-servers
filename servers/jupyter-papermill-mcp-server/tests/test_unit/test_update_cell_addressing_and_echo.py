@@ -267,7 +267,8 @@ async def test_the_hash_is_over_the_utf8_encoding_of_the_source(tmp_path):
 @pytest.mark.asyncio
 async def test_an_empty_previous_source_is_reported_as_such(tmp_path):
     """An empty cell that gets overwritten is not 'nothing to report': the
-    empty source has a fingerprint of its own, distinct from a missing one."""
+    empty source has a fingerprint of its own, and the echo carries it like
+    any other source."""
     service = await _seed_repro(tmp_path)
     await service.update_cell("repro.ipynb", 1, "")
 
