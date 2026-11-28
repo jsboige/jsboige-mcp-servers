@@ -922,6 +922,53 @@ def test_belt_out_of_budget_or_without_a_reader_makes_no_call(monkeypatch, tmp_p
     assert not any(p.startswith(str(tmp_path)) for p in sys.path)
 
 
+def _guard_siblings(guard: Path) -> tuple[str, ...]:
+    """The guard's module-level sibling imports, DERIVED from the guard itself.
+
+    The list used to be written by hand (`grain_tag`, `claim_cap_advice`), so a guard
+    that gains a sibling import broke this test with a bare `ModuleNotFoundError` --
+    measured on `pr_catalogue` (CoursIA, 24/11): the belt answered `unavailable` and the
+    guard was never exercised, on every seat that carries a CoursIA checkout (CI skips
+    the test, so the CI stayed green while the seat was red).
+
+    Derived here: the sibling is whatever the guard imports at module level from its own
+    directory. A stdlib import (`json`, `datetime`) has no `scripts/<name>.py` and is
+    filtered out by the existence test; a dotted import (`scripts.ci.…`) is a package
+    path, not a sibling, and is skipped.
+    """
+    import ast
+    tree = ast.parse(guard.read_text(encoding="utf-8"))
+    names: list[str] = []
+    for node in tree.body:                      # module level only: a lazy import is not
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.level != 0 or not node.module:
+            continue
+        module = node.module
+        if "." in module or module == "__future__" or module in names:
+            continue
+        if (guard.parent / f"{module}.py").is_file():
+            names.append(module)
+    return tuple(names)
+
+
+def test_guard_siblings_are_derived_from_the_guard(tmp_path):
+    """The derivation, on a guard that gains a sibling: the new one is found, the stdlib
+    one is not, and the list does not depend on a hand-written tuple."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "grain_tag.py").write_text("x = 1\n", encoding="utf-8")
+    (scripts / "pr_catalogue.py").write_text("y = 2\n", encoding="utf-8")
+    guard = scripts / "check_lane_claim.py"
+    guard.write_text(
+        "import json\n"
+        "from grain_tag import extract_lane\n"
+        "from pr_catalogue import est_catalogue\n"
+        "from scripts.ci.emit_dead_scope_warnings import _missing_comma_tokens\n",
+        encoding="utf-8")
+    assert _guard_siblings(guard) == ("grain_tag", "pr_catalogue")
+
+
 def test_belt_against_the_real_guard_reader(monkeypatch, tmp_path):
     """The stand-in above proves the plumbing; this one runs the REAL reader of a CoursIA
     checkout (copied, so the test reads no git state), so a renamed symbol or a changed
@@ -930,12 +977,14 @@ def test_belt_against_the_real_guard_reader(monkeypatch, tmp_path):
     import os
     import shutil
     repo = Path(os.environ.get("NBCODER_TEST_COURSIA_REPO", "D:/dev/CoursIA"))
-    names = ("check_lane_claim.py", "grain_tag.py", "claim_cap_advice.py")
-    if not all((repo / "scripts" / name).is_file() for name in names):
+    guard = repo / "scripts" / "check_lane_claim.py"
+    if not guard.is_file():
         pytest.skip("no CoursIA checkout on this seat")
+    siblings = _guard_siblings(guard)
     (tmp_path / "scripts").mkdir()
-    for name in names:
-        shutil.copyfile(repo / "scripts" / name, tmp_path / "scripts" / name)
+    shutil.copyfile(guard, tmp_path / "scripts" / guard.name)
+    for module in siblings:
+        shutil.copyfile(repo / "scripts" / f"{module}.py", tmp_path / "scripts" / f"{module}.py")
     pages = [[_belt_pr(1, f"lane {BELT_LANE} -- ours\n\nCloses #27130"),
               _belt_pr(28250, "Lot 2.\n\n[DELIVERED] lane myia-po-2024:CoursIA-2 -- five ports\n\n"
                               "Closes #27130"),
@@ -946,8 +995,8 @@ def test_belt_against_the_real_guard_reader(monkeypatch, tmp_path):
     try:
         belt = nbcd.occupation_belt(tmp_path, 27130, BELT_LANE, LOT2)
     finally:
-        for name in ("grain_tag", "claim_cap_advice"):     # the guard's siblings, cached
-            sys.modules.pop(name, None)
+        for module in siblings:                  # the guard's siblings, cached
+            sys.modules.pop(module, None)
     assert belt["status"] == "ok" and belt["citing"] == 1, belt
     assert [(f["number"], f["lane"], f["touches_notebook"], f["source"])
             for f in belt["findings"]] == [(28250, "myia-po-2024:CoursIA-2", True, "belt")]
