@@ -741,17 +741,194 @@ def test_same_issue_grains_are_not_serialized_by_the_scheduler(tmp_path):
     assert sched.tick()["launched"] == 2
 
 
-def test_implicit_occupation_deferral_is_retried_not_failed(tmp_path):
+def _parked(tmp_path, verdict="deferred-by-claim-implicit-occupation:#28852,#28861"):
+    """One grain launched once and PARKED on the occupation its verdict names (28/11,
+    CoursIA#27133 MGS-24: two PRs of myia-po-2028:claudish disjoint from the notebook)."""
     clock = {"t": 1000.0}
-    spawn = SpawnRecorder(verdict="deferred-by-claim-implicit-occupation:#27691",
-                          rc=1, done_after=0)
+    spawn = SpawnRecorder(verdict=verdict, rc=1, done_after=0)
     sched = make_sched(tmp_path, [item(1)], spawn=spawn)
     sched.clock = lambda: clock["t"]
-    sched.tick()
+    sched.tick()                                  # launch
     clock["t"] += 10
+    sched.tick()                                  # reap -> parked
+    return sched, clock, spawn, sched.state["grains"]["#1:Dir/N1.ipynb"]
+
+
+def _events(sched, kind):
+    path = sched.state_dir / "scheduler.jsonl"
+    return [json.loads(l) for l in path.read_text().splitlines()
+            if json.loads(l)["kind"] == kind]
+
+
+def test_implicit_occupation_parks_the_grain_instead_of_burning_launches(tmp_path):
+    """Measured 28/11 on CoursIA#27133 (MGS-24): the guard's IMPLICIT leg names another
+    lane's open PRs (#28852 MGS-28, #28861 MGS-25) whose files are DISJOINT from the
+    notebook. The ordinary backoff re-launched the driver six times in 30 minutes -- 3-4
+    min of guard enumeration each, the same answer every time -- and the sixth exhausted
+    the launches: `attempts-exhausted`, grain `failed`, nothing judged, against an
+    occupation that had already lasted a day. A wait whose end is another lane's event
+    is PARKED: the launch is refunded, and no timer launches the grain again."""
+    sched, clock, spawn, g = _parked(tmp_path)
+    assert g["status"] == "deferred"          # not failed
+    assert g["occupation_wait"] is True
+    assert g["occupation_prs"] == [28852, 28861]
+    assert g["attempts"] == 0, "the launch that met the occupation is refunded"
+    assert g["not_before"] == 1010.0 + S.IMPLICIT_OCCUPATION_PROBE_S
+    clock["t"] = g["not_before"] + 5 * S.IMPLICIT_OCCUPATION_PROBE_S
+    assert sched.tick()["launched"] == 0, "a parked grain is never launched on a timer"
+    assert len(spawn.calls) == 1
+    assert len(_events(sched, "occupation-parked")) == 1
+    assert _events(sched, "occupation-parked")[0]["prs"] == ["#28852", "#28861"]
+
+
+def test_a_parked_grain_never_exhausts_its_launches(tmp_path):
+    """The sweep that makes an exhausted deferral terminal skips a parked grain: its
+    launches were refunded, and its wait has no end of its own to run out of."""
+    sched, clock, spawn, g = _parked(tmp_path)
+    sched.args.max_attempts = 0
+    sched.state["grains"]["#1:Dir/N1.ipynb"]["attempts"] = 7
     sched.tick()
-    g = sched.state["grains"]["#1:Dir/N1.ipynb"]
-    assert g["status"] == "deferred" and g["not_before"] > clock["t"]
+    assert sched.state["grains"]["#1:Dir/N1.ipynb"]["status"] == "deferred"
+    assert not _events(sched, "attempts-exhausted")
+
+
+def test_an_occupation_that_names_no_pr_keeps_the_ordinary_backoff(tmp_path):
+    """Nothing can be waited on when the verdict names no PR: the deferral stays the
+    ordinary one (deferred, launched again after backoff), never a park without a key."""
+    sched, clock, spawn, g = _parked(tmp_path, verdict="deferred-by-claim-implicit-occupation:")
+    assert g["status"] == "deferred" and not g.get("occupation_wait")
+    assert g["attempts"] == 1, "nothing was refunded: there was no PR to wait on"
+
+
+def _pr_states(monkeypatch, states):
+    """The PR-state reader as the probe calls it: one entry per call, in order."""
+    seen = []
+
+    def fake(number):
+        seen.append(number)
+        return states[number]
+    monkeypatch.setattr(S, "pull_request_state", fake)
+    return seen
+
+
+def test_a_parked_grain_is_reoffered_when_the_named_prs_close(tmp_path, monkeypatch):
+    """The occupation ends when the PRs close (merged or abandoned): the park clears, the
+    launches it burnt are refunded, and the guard alone judges the next launch."""
+    sched, clock, spawn, g = _parked(tmp_path)
+    seen = _pr_states(monkeypatch, {28852: "closed", 28861: "closed"})
+    now = 1010.0 + S.IMPLICIT_OCCUPATION_PROBE_S + 1
+    sched._occupation_probe(now=now)
+    assert seen == [28852, 28861]
+    assert g["occupation_wait"] is False and g["occupation_prs"] == []
+    assert g["not_before"] == now and g["attempts"] == 0
+    assert len(_events(sched, "occupation-cleared")) == 1
+    clock["t"] = now + 1
+    sched.clock = lambda: clock["t"]
+    assert sched.tick()["launched"] == 1, "the grain is launched again for the guard to judge"
+
+
+def test_one_pr_still_open_keeps_the_park(tmp_path, monkeypatch):
+    sched, clock, spawn, g = _parked(tmp_path)
+    seen = _pr_states(monkeypatch, {28852: "closed", 28861: "open"})
+    now = 1010.0 + S.IMPLICIT_OCCUPATION_PROBE_S + 1
+    sched._occupation_probe(now=now)
+    assert seen == [28852, 28861]
+    assert g["occupation_wait"] is True and g["occupation_prs"] == [28852, 28861]
+    assert g["not_before"] == now + S.IMPLICIT_OCCUPATION_PROBE_S
+    assert not _events(sched, "occupation-cleared")
+    assert _events(sched, "occupation-holds")[0]["prs"] == {"#28852": "closed", "#28861": "open"}
+
+
+def test_an_unread_pr_state_keeps_the_park(tmp_path, monkeypatch):
+    """A read GitHub does not answer is not a closed PR: the park holds, and the reader
+    stops at the first unread state instead of spending the rest of its budget."""
+    sched, clock, spawn, g = _parked(tmp_path)
+    seen = _pr_states(monkeypatch, {28852: None, 28861: "closed"})
+    now = 1010.0 + S.IMPLICIT_OCCUPATION_PROBE_S + 1
+    sched._occupation_probe(now=now)
+    assert seen == [28852]
+    assert g["occupation_wait"] is True and g["occupation_prs"] == [28852, 28861]
+    assert not _events(sched, "occupation-cleared")
+    assert _events(sched, "occupation-holds")[0]["prs"] == {"#28852": "unknown"}
+
+
+def test_a_hung_state_read_keeps_the_park_and_the_scheduler(tmp_path, monkeypatch):
+    """Review of this PR (myia-po-2028:claudish, replayed on the PR head): the reader's
+    docstring said "raises nothing", but a `gh` hung past CLAIM_READ_TIMEOUT_S raises
+    TimeoutExpired, and the probe called it with no try. The exception left tick(), and
+    run() catches nothing, so the scheduler exited with its running grains orphaned.
+    A hung read is a FAILED READ: the park holds and the scheduler survives it."""
+    sched, clock, spawn, g = _parked(tmp_path)
+
+    def hung(argv, **kw):
+        raise S.subprocess.TimeoutExpired(argv, S.CLAIM_READ_TIMEOUT_S)
+    monkeypatch.setattr(S.subprocess, "run", hung)
+    assert S.pull_request_state(28852) is None
+    clock["t"] = g["not_before"] + 1
+    sched.tick()                                # the probe runs inside: must not raise
+    assert g["occupation_wait"] is True and g["occupation_prs"] == [28852, 28861]
+    assert not _events(sched, "occupation-cleared")
+    assert _events(sched, "occupation-holds")[0]["prs"]["#28852"] == "unknown"
+    assert len(spawn.calls) == 1, "no launch: the grain stays parked"
+
+
+def test_a_missing_gh_is_a_failed_read_not_a_crash(monkeypatch):
+    """`gh` absent from PATH raises FileNotFoundError before any timeout: an OSError is
+    read as "GitHub did not answer", never propagated."""
+    def missing(argv, **kw):
+        raise FileNotFoundError(argv[0])
+    monkeypatch.setattr(S.subprocess, "run", missing)
+    assert S.pull_request_state(28861) is None
+
+
+def test_a_park_outliving_max_future_lets_the_batch_drain(tmp_path, monkeypatch):
+    """Review finding 2: each probe pushes the park's `not_before` one interval ahead, so
+    a batch that waits on the scheduler PID would never drain on a PR open for days.
+    The park is bounded like any deferral: past --max-future-s it is finished FOR NOW --
+    the batch drains and names it with its PRs, and the next batch picks it up. The
+    park itself is not ended by a drain, and --watch never drains."""
+    sched, clock, spawn, g = _parked(tmp_path)
+    _pr_states(monkeypatch, {28852: "open", 28861: "open"})
+    assert g["occupation_since"] == 1010.0, "the park keeps its own start"
+    clock["t"] = 1010.0 + 50 * S.IMPLICIT_OCCUPATION_PROBE_S       # ~4 h of probes
+    assert sched.unfinished() is True, "a young park keeps the batch alive"
+    sched.args.watch = False
+    clock["t"] = 1010.0 + sched.args.max_future_s + 1
+    assert sched.unfinished() is False, "a park older than --max-future-s drains the batch"
+    assert sched.run() == 0
+    drained = _events(sched, "drained")
+    assert len(drained) == 1
+    assert drained[0]["parked"] == {"#1:Dir/N1.ipynb": ["#28852", "#28861"]}
+    assert g["occupation_wait"] is True, "a drain does not end the park itself"
+    assert not _events(sched, "occupation-cleared")
+
+
+def test_the_occupation_probe_reads_one_pr_state_per_call(tmp_path, monkeypatch):
+    """The reader asks GitHub for the PR's state only -- never its files, never the
+    issue: the probe decides WHEN to re-offer, the guard decides the claim."""
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append((argv, kw))
+        return SimpleNamespace(returncode=0, stdout="open\n", stderr="")
+    monkeypatch.setattr(S.subprocess, "run", fake_run)
+    assert S.pull_request_state(28852) == "open"
+    assert calls[0][0] == ["gh", "api", "repos/jsboige/CoursIA/pulls/28852", "--jq", ".state"]
+    assert calls[0][1].get("timeout") == S.CLAIM_READ_TIMEOUT_S
+    monkeypatch.setattr(S.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="gh: no"))
+    assert S.pull_request_state(28852) is None
+
+
+def test_implicit_occupation_prs_reads_comma_joined_numbers():
+    """The driver joins the PRs with commas: a split on `:` would read one number out of
+    two, and the park would then wait on the first PR only."""
+    assert S.implicit_occupation_prs(
+        "deferred-by-claim-implicit-occupation:#28852,#28861") == [28852, 28861]
+    assert S.implicit_occupation_prs("deferred-by-claim-implicit-occupation:#27691") == [27691]
+    assert S.implicit_occupation_prs("deferred-by-claim-implicit-occupation:") == []
+    assert S.implicit_occupation_prs("deferred-by-capacity-gate:#12") == []
+    assert S.implicit_occupation_prs("refused-claim-implicit-occupation") == []
 
 
 # ---------------------------------------------------------------- verify-error recovery
