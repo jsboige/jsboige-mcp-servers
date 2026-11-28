@@ -66,6 +66,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 import unicodedata
 from pathlib import Path
 
@@ -102,21 +103,65 @@ GUARD_TIMEOUT_S = 900
 # How long the post-deadline read may wait once the guard tree has been killed.
 GUARD_KILL_GRACE_S = 30
 
+# Characters a guard row keeps of the guard's output (the END of it, see _tail_with_prefix).
+GUARD_TAIL_CAP = 400
 
-def _kill_guard_tree(proc: subprocess.Popen) -> None:
-    """Kill a guard child AND its descendants, so nothing keeps its pipe open."""
+
+def _tail_with_prefix(prefix: str, out: str, cap: int = GUARD_TAIL_CAP) -> str:
+    """``prefix`` followed by the END of ``out``, inside ``cap`` characters.
+
+    The last lines of a guard's output are its verdict, so the prefix must eat the head,
+    never the tail (28/11 review: ``(prefix + tail)[:cap]`` cut the end of the output)."""
+    budget = cap - len(prefix)
+    if budget <= 0:
+        return prefix[:cap]
+    return prefix + (out or "")[-budget:]
+
+
+# How ``_kill_guard_tree`` reports what it managed to kill, and the words the row uses for it.
+KILL_HOW = {"tree": "tree killed", "child": "child killed only", "nothing": "nothing killed"}
+
+
+def _timed_out_note(proc: subprocess.CompletedProcess, timeout: float) -> str:
+    """What the deadline and the post-kill read actually MEASURED, as the row's prefix.
+
+    The post-kill read usually returns in well under a second once the tree is killed;
+    saying "pipe abandoned after 30s" then would claim a hang that did not happen
+    (28/11 review). ``kill_how``, ``pipe_abandoned`` and ``grace_wait_s`` are set by
+    ``run_guard_bounded`` from the kill and the read themselves."""
+    waited = getattr(proc, "grace_wait_s", None)
+    if waited is None:
+        read = "post-kill read unmeasured"
+    elif getattr(proc, "pipe_abandoned", False):
+        read = f"pipe abandoned after {waited}s"
+    else:
+        read = f"pipe closed after {waited}s"
+    killed = KILL_HOW.get(getattr(proc, "kill_how", None), "kill unmeasured")
+    return f"TimeoutExpired after {timeout:g}s ({killed}, {read}): "
+
+
+def _kill_guard_tree(proc: subprocess.Popen) -> str:
+    """Kill a guard child AND its descendants, so nothing keeps its pipe open.
+
+    Returns what it managed to kill -- ``"tree"``, ``"child"`` (the tree kill failed and
+    only the child fell) or ``"nothing"``: a grandchild that survives the tree kill is
+    exactly the case where the pipe outlives the grace, and the row must say so."""
     try:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                           capture_output=True, timeout=GUARD_KILL_GRACE_S,
-                           stdin=subprocess.DEVNULL)
+            done = subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                                  capture_output=True, timeout=GUARD_KILL_GRACE_S,
+                                  stdin=subprocess.DEVNULL)
+            if done.returncode != 0:
+                raise OSError(f"taskkill exit {done.returncode}")
         else:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        return "tree"
     except Exception:
         try:
             proc.kill()
+            return "child"
         except Exception:
-            pass
+            return "nothing"
 
 
 def run_guard_bounded(cmd: list[str], *, cwd, timeout: float = GUARD_TIMEOUT_S,
@@ -151,13 +196,21 @@ def run_guard_bounded(cmd: list[str], *, cwd, timeout: float = GUARD_TIMEOUT_S,
         out, _ = proc.communicate(timeout=timeout)
         return subprocess.CompletedProcess(cmd, proc.returncode, out or "", "")
     except subprocess.TimeoutExpired:
-        _kill_guard_tree(proc)
+        killed = _kill_guard_tree(proc)
+        read_t0 = time.monotonic()
         try:
             out, _ = proc.communicate(timeout=grace)
+            abandoned = False
         except subprocess.TimeoutExpired:
             out = ""      # the pipe outlived the tree: give up, never block
+            abandoned = True
         done = subprocess.CompletedProcess(cmd, None, out or "", "")
         done.timed_out = True
+        # What the kill and the post-kill read MEASURED, so the report can say it instead
+        # of assuming the worst case (28/11 review).
+        done.kill_how = killed
+        done.pipe_abandoned = abandoned
+        done.grace_wait_s = round(time.monotonic() - read_t0, 1)
         return done
 
 
@@ -1044,14 +1097,15 @@ def reseal_pair(worktree: Path, pair_name: str, lane: str) -> dict:
             ["scripts/notebook_tools/check_twin_parity.py",
              *extra, "--pair", pair_name]
             + (["--by", lane] if "--update" in extra else []),
-            cwd=worktree)
+            cwd=worktree, timeout=GUARD_TIMEOUT_S, grace=GUARD_KILL_GRACE_S)
 
     proc = _run("--update")
     if getattr(proc, "timed_out", False):
         # A timed-out seal is not a "no-op that --force might fix": re-running the same
         # 900 s guard twice more would spend 30 min to reach the same wall (27/11).
         return out | {"ok": False, "rc": None, "timed_out": True, "audit_files": [],
-                      "tail": (proc.stdout or "")[-400:]}
+                      "tail": _tail_with_prefix(_timed_out_note(proc, GUARD_TIMEOUT_S),
+                                                proc.stdout or "")}
     audit = _status(worktree, TWIN_PAIRS_DIR.as_posix())
     if proc.returncode == 0 and audit:
         dropped = drop_superseded_attestations(worktree, pair_name, lane, audit)
@@ -2283,17 +2337,18 @@ def replay_guards(worktree: Path, notebook: str | None = None) -> list[dict]:
     out = []
     for name, cmd in guards:
         try:
-            proc = run_guard_bounded(cmd, cwd=worktree)
+            proc = run_guard_bounded(cmd, cwd=worktree, timeout=GUARD_TIMEOUT_S,
+                                     grace=GUARD_KILL_GRACE_S)
         except OSError as e:                      # sys.executable unusable: recorded, not fatal
-            out.append({"guard": name, "cmd": " ".join(["python", *cmd]),
-                        "rc": None, "tail": f"{type(e).__name__}: {e}"[:400]})
+            out.append({"guard": name, "cmd": " ".join(["python", *cmd]), "rc": None,
+                        "tail": f"{type(e).__name__}: {e}"[:GUARD_TAIL_CAP], "timed_out": False})
             continue
-        tail = (proc.stdout or "")[-400:]
-        if getattr(proc, "timed_out", False):
-            tail = (f"TimeoutExpired after {GUARD_TIMEOUT_S}s (tree killed, pipe abandoned "
-                    f"after {GUARD_KILL_GRACE_S}s): {tail}")[:400]
+        tail = (proc.stdout or "")[-GUARD_TAIL_CAP:]
+        timed_out = bool(getattr(proc, "timed_out", False))
+        if timed_out:
+            tail = _tail_with_prefix(_timed_out_note(proc, GUARD_TIMEOUT_S), proc.stdout or "")
         out.append({"guard": name, "cmd": " ".join(["python", *cmd]),
-                    "rc": proc.returncode, "tail": tail})
+                    "rc": proc.returncode, "tail": tail, "timed_out": timed_out})
     return out
 
 

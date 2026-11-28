@@ -20,6 +20,12 @@ inherited the stdout handle keeps the pipe open, so that second read blocks fore
 
 These tests pin the three defences (stdin closed, one pipe instead of two, tree killed
 then a BOUNDED second read) by making a guard that deliberately reproduces the shape.
+
+28/11 (review of jsboige-mcp-servers#1950): a row says what was MEASURED. The first version
+wrote "pipe abandoned after 30s" for every timeout -- also when the post-kill read had
+returned in under a second -- and let its own prefix eat the END of the guard's output, the
+only part that carries the verdict. The tests below pin both: `kill_how`, `pipe_abandoned`
+and `grace_wait_s` are read from the run, and `_tail_with_prefix` keeps the end.
 """
 import importlib.util
 import time
@@ -69,3 +75,75 @@ def test_a_prompting_guard_reads_eof_instead_of_waiting_on_us():
         cwd=Path.cwd(), timeout=10)
     assert proc.returncode == 0
     assert "eof" in proc.stdout
+
+
+# Same shape as GUARD_WITH_GRANDCHILD, short sleeps: used when the kill is DISABLED, so both
+# processes die by themselves once the test is over instead of outliving it.
+GUARD_WITH_GRANDCHILD_SHORT = (
+    "import subprocess, sys, time\n"
+    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(12)'])\n"
+    "print('guard alive', flush=True)\n"
+    "time.sleep(12)\n"
+)
+
+# What a row says about the kill and about the post-kill read -- every word of it measured.
+NOTE_RE = r"TimeoutExpired after {timeout:g}s \((?P<kill>[a-z ]+), pipe (?P<how>closed|abandoned) " \
+          r"after (?P<wait>\d+\.\d)s\): "
+
+
+def test_the_kill_takes_the_whole_tree_so_the_pipe_closes():
+    proc = nbci.run_guard_bounded(["-c", GUARD_WITH_GRANDCHILD], cwd=Path.cwd(),
+                                  timeout=2, grace=10)
+    assert proc.timed_out is True
+    assert proc.kill_how == "tree"
+    # The grandchild inherited the pipe: it is dead too, so the read did NOT wait the grace
+    assert proc.pipe_abandoned is False, "the grandchild outlived the tree kill"
+    assert proc.grace_wait_s < 10, proc.grace_wait_s
+    assert "guard alive" in (proc.stdout or "")         # what was read before the deadline is kept
+
+
+def test_a_pipe_that_outlives_the_grace_is_reported_as_abandoned(monkeypatch):
+    # Only the child falls (the tree kill is faked as failed): the grandchild keeps the pipe
+    # open past the grace -- the ONE shape where "abandoned" is true.
+    import re
+    monkeypatch.setattr(nbci, "_kill_guard_tree", lambda proc: "child")
+    proc = nbci.run_guard_bounded(["-c", GUARD_WITH_GRANDCHILD_SHORT], cwd=Path.cwd(),
+                                  timeout=1, grace=3)
+    assert proc.timed_out is True and proc.pipe_abandoned is True
+    assert 2.9 <= proc.grace_wait_s < 10, proc.grace_wait_s      # the wait ran the grace out
+    note = nbci._timed_out_note(proc, 1)
+    m = re.fullmatch(NOTE_RE.format(timeout=1), note)
+    assert m and (m["kill"], m["how"]) == ("child killed only", "abandoned"), note
+
+
+def test_a_closed_pipe_is_reported_as_closed_with_its_measured_wait(monkeypatch, tmp_path):
+    import re
+    monkeypatch.setattr(nbci, "GUARDS", (("wedge", ["-c", GUARD_WITH_GRANDCHILD]),))
+    monkeypatch.setattr(nbci, "GUARD_TIMEOUT_S", 2)
+    monkeypatch.setattr(nbci, "GUARD_KILL_GRACE_S", 20)
+    row = nbci.replay_guards(tmp_path)[0]
+    assert row["rc"] is None and row["timed_out"] is True
+    m = re.fullmatch(NOTE_RE.format(timeout=2) + r"guard alive\n", row["tail"])
+    assert m, row["tail"]
+    assert (m["kill"], m["how"]) == ("tree killed", "closed")
+    assert float(m["wait"]) < 20, "the wait reported is the grace, not what was measured"
+    assert row["tail"].endswith("guard alive\n")        # the END of the output survives the prefix
+
+
+def test_a_guard_that_finishes_carries_no_timeout(monkeypatch, tmp_path):
+    monkeypatch.setattr(nbci, "GUARDS", (("fast", ["-c", "print('all good')"]),))
+    row = nbci.replay_guards(tmp_path)[0]
+    assert (row["rc"], row["timed_out"], row["tail"]) == (0, False, "all good\n")
+
+
+def test_a_prefix_eats_the_head_of_the_output_never_its_verdict():
+    out = "".join(f"line {i:03d}\n" for i in range(60))            # 540 chars
+    prefix = "TimeoutExpired after 900s (tree killed, pipe closed after 0.1s): "
+    tail = nbci._tail_with_prefix(prefix, out)
+    assert len(prefix) + len(out) > nbci.GUARD_TAIL_CAP == 400
+    assert len(tail) == 400 and tail.startswith(prefix)
+    assert tail.endswith("line 059\n")            # the last line -- the guard's verdict
+    assert "line 000" not in tail                 # the head is what the prefix eats
+    assert nbci._tail_with_prefix("", "abc") == "abc"
+    assert nbci._tail_with_prefix(prefix, "") == prefix
+    assert len(nbci._tail_with_prefix("x" * 500, out)) == 400      # never raises, never overflows
