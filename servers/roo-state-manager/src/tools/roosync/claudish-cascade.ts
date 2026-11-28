@@ -35,13 +35,16 @@ import {
     assessCascadePayload,
     assessCascadeSource,
     compareCascadeEnv,
+    findUnrepresentableNotes,
     parseCascadeEnv,
     planCascadeApply,
     CascadeBackupStore,
     DEFAULT_CASCADE_MAX_AGE_MS,
     type CascadeComparison,
     type CascadeSourceSnapshot,
+    type CascadeUnrepresentableNote,
 } from '../../services/cascade-sync.js';
+import type { CascadePayload } from '../../services/cascade-payload.js';
 import {
     cascadeStoreRoot,
     listCascadeVersions,
@@ -141,6 +144,33 @@ function assessPublishedCanon(sharedStatePath: string, maxAgeMs: number, now: st
         now,
         text: latest.text,
     });
+}
+
+/**
+ * Rapporte les notes du canon qu'AUCUNE variable d'environnement ne fait lire
+ * comme le canon le dit.
+ *
+ * ADDITIF et value-neutral : le champ est ABSENT quand il n'y a rien à dire
+ * (un résultat sans note écartée reste exactement celui qu'il était), le
+ * verdict n'est jamais déplacé, et ni le canon publié ni le `.env` écrit ne
+ * changent — seule la note silencieusement perdue devient visible.
+ *
+ * La phrase explicative est TOUJOURS ajoutée : sur un résultat qui porte déjà
+ * sa propre `note` (le dry_run d'`apply`), elle y est AJOUTÉE au lieu d'être
+ * perdue — une clé déjà présente ne doit pas éteindre le diagnostic.
+ */
+function withUnrepresentableNotes<T extends Record<string, unknown>>(
+    result: T,
+    notes: CascadeUnrepresentableNote[],
+): T & { unrepresentable_notes?: CascadeUnrepresentableNote[] } {
+    if (notes.length === 0) return result;
+    const explanation = `${notes.length} note(s) du canon ne sont pas lues comme écrites — voir unrepresentable_notes`;
+    const existing = typeof result.note === 'string' && result.note !== '' ? `${result.note} — ` : '';
+    return {
+        ...result,
+        unrepresentable_notes: notes,
+        note: `${existing}${explanation}`,
+    };
 }
 
 /**
@@ -307,7 +337,12 @@ export async function roosyncClaudishCascade(rawArgs: unknown): Promise<Record<s
             return { action: 'publish', seat, published: false, reason: 'payload requis pour publish' };
         }
         const outcome = publishCascadeCanon({ sharedStatePath, payload: args.payload, version: args.version, now });
-        return { action: 'publish', seat, ...outcome };
+        return withUnrepresentableNotes(
+            { action: 'publish', seat, ...outcome },
+            // Un payload REFUSÉ n'a pas de notes à rapporter : le rapport ne
+            // commente que ce qui est réellement publié (ou déjà le même).
+            outcome.published ? findUnrepresentableNotes(args.payload as CascadePayload) : [],
+        );
     }
 
     if (args.action === 'collect') {
@@ -338,13 +373,14 @@ export async function roosyncClaudishCascade(rawArgs: unknown): Promise<Record<s
 
     // compare / status / apply / confirm partagent l'évaluation du canon.
     const canon = assessPublishedCanon(sharedStatePath, maxAgeMs, now);
+    const canonNotes = canon.unrepresentableNotes ?? [];
 
     if (args.action === 'compare' || args.action === 'status') {
         const seatEnv = readSeatEnv(args.env_path);
         const written = summariseWritten(canon, seatEnv);
         const reading = args.container ? readCascadeContainer({ container: args.container }) : null;
         const running = summariseRunning(canon, reading);
-        return {
+        return withUnrepresentableNotes({
             action: args.action,
             seat,
             verdict: decideVerdict(canon, written, running),
@@ -358,17 +394,20 @@ export async function roosyncClaudishCascade(rawArgs: unknown): Promise<Record<s
             },
             written: { ...written, path: seatEnv.path },
             running,
-        };
+        }, canonNotes);
     }
 
     if (args.action === 'apply') {
         const seatEnv = readSeatEnv(args.env_path);
         if (seatEnv.coverage !== 'ok') {
-            return { action: 'apply', seat, applied: false, reason: seatEnv.detail, written: { coverage: seatEnv.coverage } };
+            return withUnrepresentableNotes(
+                { action: 'apply', seat, applied: false, reason: seatEnv.detail, written: { coverage: seatEnv.coverage } },
+                canonNotes,
+            );
         }
         const plan = planCascadeApply(canon, seatEnv.env);
         if (!plan.applicable) {
-            return {
+            return withUnrepresentableNotes({
                 action: 'apply',
                 seat,
                 applied: false,
@@ -378,14 +417,14 @@ export async function roosyncClaudishCascade(rawArgs: unknown): Promise<Record<s
                 preserved: plan.preserved,
                 unchanged: plan.unchanged,
                 source_hash: plan.sourceHash,
-            };
+            }, canonNotes);
         }
         const outcome = applyCascadeWrites(seatEnv.text, plan.writes);
         // dry_run par DÉFAUT : écrire le .env engage un déploiement.
         const dryRun = args.dry_run !== false;
         const wantsBackup = args.backup !== false;
         if (dryRun) {
-            return {
+            return withUnrepresentableNotes({
                 action: 'apply',
                 seat,
                 applied: false,
@@ -399,7 +438,7 @@ export async function roosyncClaudishCascade(rawArgs: unknown): Promise<Record<s
                 source_hash: plan.sourceHash,
                 deployment: 'aucun — dry_run ; le recreate du conteneur appartient au propriétaire du siège',
                 note: 'écrire exige dry_run:false explicitement',
-            };
+            }, canonNotes);
         }
         let backupId: string | null = null;
         if (wantsBackup) {
@@ -414,7 +453,7 @@ export async function roosyncClaudishCascade(rawArgs: unknown): Promise<Record<s
         // relit au prochain recreate.
         const fileWrite = writeSeatEnvAtomically(seatEnv.path as string, outcome.text);
         if (!fileWrite.applied) {
-            return {
+            return withUnrepresentableNotes({
                 action: 'apply',
                 seat,
                 applied: false,
@@ -440,9 +479,9 @@ export async function roosyncClaudishCascade(rawArgs: unknown): Promise<Record<s
                         ? 'INDÉTERMINÉ — échec de RELECTURE APRÈS le remplacement : le nouveau texte est probablement sur disque, RELIRE avant tout recreate'
                         : 'aucun — échec AVANT le remplacement, le .env d’origine est intact'
                     : 'INDÉTERMINÉ — le fichier ne relit pas le texte attendu : RELIRE avant tout recreate',
-            };
+            }, canonNotes);
         }
-        return {
+        return withUnrepresentableNotes({
             action: 'apply',
             seat,
             applied: true,
@@ -457,7 +496,7 @@ export async function roosyncClaudishCascade(rawArgs: unknown): Promise<Record<s
             backup_id: backupId,
             source_hash: plan.sourceHash,
             deployment: 'recreate requis pour que l’env entre dans le conteneur — geste du propriétaire du siège, jamais automatique ici',
-        };
+        }, canonNotes);
     }
 
     // confirm — relecture LIVE. Un hash revendiqué ne compte jamais.
@@ -465,7 +504,7 @@ export async function roosyncClaudishCascade(rawArgs: unknown): Promise<Record<s
     const running = summariseRunning(canon, reading);
     const claimedIgnored = args.claimed_hash !== undefined;
     const verdict = decideConfirmVerdict(running);
-    return {
+    return withUnrepresentableNotes({
         action: 'confirm',
         seat,
         verdict,
@@ -475,5 +514,5 @@ export async function roosyncClaudishCascade(rawArgs: unknown): Promise<Record<s
             ? 'un hash revendiqué ne confirme jamais rien — seul le relecture live compte'
             : undefined,
         running,
-    };
+    }, canonNotes);
 }
