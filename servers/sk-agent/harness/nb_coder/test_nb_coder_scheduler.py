@@ -792,6 +792,27 @@ def test_a_parked_grain_never_exhausts_its_launches(tmp_path):
     assert not _events(sched, "attempts-exhausted")
 
 
+def test_a_retry_on_a_parked_grain_is_absorbed_and_keeps_the_park(tmp_path):
+    """Measured 28/11 on CoursIA#27133 (MGS-24): two raised retry generations, two
+    `retry-ignored`, park intact -- while the code comment claimed the operator's retry
+    clears the wait on another lane's PR. A parked grain is `deferred`, never `failed`, so
+    it returns before the pops; the park ends when the other lane's PRs close. The event
+    now names the park (#1987)."""
+    sched, clock, spawn, g = _parked(tmp_path)
+    _requeue(sched, tmp_path, item(1) | {"retry": 1})
+    g = sched.state["grains"]["#1:Dir/N1.ipynb"]
+    assert g["status"] == "deferred", "the park is not released by a retry"
+    assert g["retry"] == 1, "the generation is recorded even when it is absorbed"
+    assert g["occupation_wait"] is True
+    assert g["occupation_prs"] == [28852, 28861]
+    assert g.get("occupation_since") is not None
+    ev = _events(sched, "retry-ignored")[-1]
+    assert ev["status"] == "deferred" and ev["retry"] == 1
+    assert ev["occupation_wait"] is True
+    assert ev["occupation_prs"] == ["#28852", "#28861"]
+    assert len(spawn.calls) == 1, "an absorbed retry never launches the driver"
+
+
 def test_an_occupation_that_names_no_pr_keeps_the_ordinary_backoff(tmp_path):
     """Nothing can be waited on when the verdict names no PR: the deferral stays the
     ordinary one (deferred, launched again after backoff), never a park without a key."""

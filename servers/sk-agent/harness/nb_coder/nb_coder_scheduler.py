@@ -957,11 +957,18 @@ class Scheduler:
         reconciliation gesture. A generation raised on any other status is absorbed, so it
         can never fire later on a failure it was not written for. Attempts restart at 0
         because they count deferrals of one try, and the previous count is kept in the event.
+
+        A PARKED grain (deferred, another lane's PRs hold the issue) is absorbed as well, and
+        the park survives: it ends when those PRs close, not when a retry is raised.
         """
         status = g.get("status")
         g["retry"] = retry
         if status != "failed":
-            self._event("retry-ignored", key=key, retry=retry, status=status)
+            # Say what was absorbed and what holds the grain, so the operator does not read
+            # a silent event as "the park was released" (#1987).
+            self._event("retry-ignored", key=key, retry=retry, status=status,
+                        occupation_wait=bool(g.get("occupation_wait")),
+                        occupation_prs=[f"#{n}" for n in g.get("occupation_prs") or []])
             return
         self._event("requeued", key=key, retry=retry, previous_attempts=g.get("attempts", 0),
                     previous_verdict=g.get("last_verdict"))
@@ -971,7 +978,11 @@ class Scheduler:
         # changed: it builds afresh, never from the trace of the run it replaces.
         g.pop("resume_from", None)
         g.pop("verify_recoveries", None)
-        # nor from a park: the operator's retry clears the wait on another lane's PR.
+        # nor from a park: a parked grain is `deferred`, never `failed`, so it returned above
+        # and the park is untouched -- what ends a park is the other lane's PR closing, seen
+        # by _occupation_probe. These pops only clear a park left on a grain that failed by
+        # another path (measured 28/11 on CoursIA#27133: two raised generations absorbed,
+        # park intact -- #1987).
         g.pop("occupation_wait", None)
         g.pop("occupation_prs", None)
         g.pop("occupation_since", None)
