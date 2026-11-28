@@ -8560,6 +8560,13 @@ export interface DashboardResult {
    * `'time'` = the 1 500 ms clock, `null` = neither ran out.
    */
   identityBudgetStop?: 'comparisons' | 'time' | null;
+  /**
+   * #4981 — a `read_archive` that found no content, when this seat DOES list
+   * the file: `stat` sees it, the read returns ENOENT (DriveFS serving the name
+   * without its payload — ai-01 28/11, 1 215 archives). Absent when the file
+   * is not there at all, so « introuvable » alone keeps meaning absent.
+   */
+  localFile?: 'unreadable';
   overview?: Record<string, {
     key: string;
     status: string;
@@ -12467,6 +12474,14 @@ function archiveGapNote(gap: ArchivePgGap): string {
   }
 }
 
+/**
+ * #4981 — says the file IS on this seat but its content was not served (stat
+ * passes, the read returns ENOENT). The organ keys its « illisible » diagnosis
+ * on the phrase « illisible sur ce siège » — change both together.
+ */
+export const ARCHIVE_UNREADABLE_NOTE =
+  ' [fichier listé mais illisible sur ce siège : stat ok, lecture ENOENT — contenu non servi par le client de synchronisation, pas une absence]';
+
 /** Says out loud that the name's stamp lands on several batches — no identity to pick by. */
 function archiveAmbiguousNote(ambiguous: number): string {
   return ambiguous > 0
@@ -12892,6 +12907,14 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
       }
     }
     if (enoent) {
+      // #4981 : ENOENT ne dit pas lequel des deux gestes a échoué. Sur G:
+      // (DriveFS), un nom listé peut passer `stat` et l'ouverture puis rendre
+      // ENOENT à la LECTURE — contenu non servi, pas fichier absent (ai-01
+      // 28/11 : 1 215 archives, mêmes comptes 12:29Z et 12:56Z). La réponse le
+      // dit : sinon l'organe d'escalade conclut « absente du miroir » et envoie
+      // chercher une archive qui est là. « introuvable » reste en tête pour les
+      // consommateurs qui ne connaissent que cette signature.
+      const unreadable = await fs.stat(archivePath).then(st => st.isFile(), () => false);
       return {
         success: false,
         action: 'read_archive',
@@ -12901,7 +12924,8 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
         // Absent de la poche PG : le motif de fenêtre partielle dit que
         // « introuvable » vaut pour ce que PG a pu montrer, pas pour la flotte.
         ...(gap !== null ? { pgArchiveWindow: gap } : {}),
-        message: `Archive '${args.archiveFile}' introuvable${archiveAmbiguousNote(ambiguous)}${archiveGapNote(gap)}`
+        ...(unreadable ? { localFile: 'unreadable' as const } : {}),
+        message: `Archive '${args.archiveFile}' introuvable${unreadable ? ARCHIVE_UNREADABLE_NOTE : ''}${archiveAmbiguousNote(ambiguous)}${archiveGapNote(gap)}`
       };
     }
     if (error instanceof ArchiveHuskError && (gap !== null || ambiguous > 0)) {
