@@ -1660,6 +1660,101 @@ export async function writeArchiveAtomically(
   }
 }
 
+/** #4982 — the G: archive file of a condensation pass could not be written. */
+export interface ArchiveFileFailure {
+  /** Truncated write error (e.g. `ENOENT … .md.tmp`). */
+  error: string;
+  /** Messages of the pass re-read from the PG journal before the trim. */
+  pgProvenMessages: number;
+}
+
+/**
+ * #4982 — proof that every message of a condensation pass has its row in the
+ * PG journal of `key`, re-read NOW: active (same id) or already archived. Rows
+ * are never deleted (`archived_at` stamp) and every dashboard write upserts
+ * the content of each message carrying an id, so a row found here is a copy
+ * of the message. A message without an id has no row by construction.
+ */
+async function proveMessagesInPgJournal(
+  key: string,
+  messages: IntercomMessage[]
+): Promise<{ proven: true } | { proven: false; reason: string }> {
+  const ids = messages.map((m) => m.id);
+  if (ids.some((id) => typeof id !== 'string' || id.length === 0)) {
+    return { proven: false, reason: 'message sans id, absent du journal PG par construction' };
+  }
+  const live = await readDashboardFromPgUngated(key);
+  if (!live) return { proven: false, reason: 'lecture PG impossible ou clé absente' };
+  const active = new Set(live.intercom.messages.map((m) => m.id));
+  const notActive = ids.filter((id) => !active.has(id));
+  if (notActive.length === 0) return { proven: true };
+  const archived = await fetchArchivedDashboardMessageIds(key);
+  if (!archived) {
+    return { proven: false, reason: `${notActive.length} id(s) hors des lignes actives, ids archivés illisibles` };
+  }
+  const missing = notActive.filter((id) => !archived.has(id));
+  if (missing.length > 0) {
+    return { proven: false, reason: `${missing.length}/${ids.length} id(s) absents du journal PG (ex. ${missing[0]})` };
+  }
+  return { proven: true };
+}
+
+/**
+ * #4982 — the archive write of a condensation pass, with its PG-primary
+ * fallback. Measured on ai-01 (28/11): DriveFS refused the `.md.tmp` with
+ * ENOENT and the whole pass aborted, so the dashboard kept growing to its cap.
+ *
+ * Under PG-primary the archive record is the PG journal: the condensed write
+ * that follows stamps `archived_at` on the removed rows in the SAME transaction
+ * as the trim (PgUnifiedStoreWriter), and read_archive serves that batch under
+ * the planned file name. So a failed file write no longer aborts the pass —
+ * once every message is proven in the journal BEFORE the live is trimmed.
+ * Anything short of that keeps the abort, and says why: not PG-primary
+ * (original error rethrown, as before), PG unreadable, one id missing.
+ *
+ * Returns null when the file was written, the failure when PG holds the batch.
+ */
+export async function writeArchiveOrProveInPg(
+  key: string,
+  archivePath: string,
+  content: string,
+  toArchive: IntercomMessage[]
+): Promise<ArchiveFileFailure | null> {
+  try {
+    await writeArchiveAtomically(archivePath, content);
+    return null;
+  } catch (error) {
+    if (!isDashboardPgPrimary()) throw error;
+    const writeError = truncateError(safeErrorString(error));
+    const proof = await proveMessagesInPgJournal(key, toArchive);
+    if (!proof.proven) {
+      logger.error('Archive file write failed and the PG journal does not prove the batch — condensation aborted, no message removed (#4982)', {
+        key,
+        archivePath,
+        writeError,
+        reason: proof.reason,
+      });
+      throw new Error(
+        `Condensation abandonnée (#4982) : archive non écrite (${writeError}) et journal PG non prouvé`
+        + ` (${proof.reason}). Aucun message retiré du vivant.`
+      );
+    }
+    logger.warn('Archive file write failed — batch proven in the PG journal, condensation proceeds (#4982)', {
+      key,
+      archivePath,
+      writeError,
+      pgProvenMessages: toArchive.length,
+    });
+    return { error: writeError, pgProvenMessages: toArchive.length };
+  }
+}
+
+/** #4982 — line the condensation notice carries when the archive file failed. */
+function archiveFileFailedClause(failure: ArchiveFileFailure): string {
+  return `\n[WARN] Fichier d'archive non écrit (${failure.error}) : le lot vit dans le journal PG`
+    + ` (${failure.pgProvenMessages} messages relus avant retrait), servi par read_archive.`;
+}
+
 /**
  * Blocs markdown d'une archive de condensation — extrait pour être testable.
  *
@@ -4731,6 +4826,8 @@ export interface CondenseAttemptInfo {
   archivedMessageCount: number;
   /** #4434: the status leg died, the previous status was kept and the summary used. */
   statusKept?: true;
+  /** #4982: the archive FILE was not written; the PG journal holds the batch. */
+  archiveFileFailed?: ArchiveFileFailure;
   /** #4434 (critère refs/Ko) : densité d'ancres du statut condensé FINAL —
    * refs par Kio (`#NN` / taille UTF-8). Présent seulement sur les passes qui
    * régénèrent le statut ; `belowFloor: true` = prose-drift (WARN-only,
@@ -7340,8 +7437,11 @@ ${archiveMessages}
 `;
 
   // #4643 : atomique (temp+rename) — jamais de coque de 0 octet.
-  await writeArchiveAtomically(archivePath, archiveContent);
-  logger.info('Fallback truncation archive written', { key, count: toArchive.length, archivePath });
+  // #4982 : fichier refusé en PG-primaire → lot prouvé dans le journal PG.
+  const archiveFileFailed = await writeArchiveOrProveInPg(key, archivePath, archiveContent, toArchive);
+  if (!archiveFileFailed) {
+    logger.info('Fallback truncation archive written', { key, count: toArchive.length, archivePath });
+  }
 
   // #2825 (volet A / G5+G6): write a synthetic "task" mirroring the archive content
   // into the first detected Roo storage location, so the existing background indexer
@@ -7459,12 +7559,14 @@ ${archiveMessages}
       + (condenseCB.isOpen ? ' (OPEN)' : '') + '.\n'
       + `Duration: ${Math.round(totalElapsed / 1000)}s\n`
       + `Archive: \`archive/${path.basename(archivePath)}\``
+      + (archiveFileFailed ? archiveFileFailedClause(archiveFileFailed) : '')
   };
 
   if (diagnostic) {
     diagnostic.outcome = 'fallback-truncated';
     diagnostic.elapsedMs = totalElapsed;
     diagnostic.archivedMessageCount = toArchive.length;
+    if (archiveFileFailed) diagnostic.archiveFileFailed = archiveFileFailed;
     // #2998: Surface LLM stats (including fallbackAttempted/fallbackError) in the
     // truncation diagnostic so operators can distinguish "fallback unconfigured"
     // from "fallback attempted but rejected" — not just "LLM failed → truncated".
@@ -8252,8 +8354,11 @@ ${archiveMessages}
 `;
 
   // #4643 : atomique (temp+rename) — jamais de coque de 0 octet.
-  await writeArchiveAtomically(archivePath, archiveContent);
-  logger.info('Messages archivés', { key, count: toArchive.length, archivePath });
+  // #4982 : fichier refusé en PG-primaire → lot prouvé dans le journal PG.
+  const archiveFileFailed = await writeArchiveOrProveInPg(key, archivePath, archiveContent, toArchive);
+  if (!archiveFileFailed) {
+    logger.info('Messages archivés', { key, count: toArchive.length, archivePath });
+  }
 
   // Créer les messages système de condensation
   const now = new Date().toISOString();
@@ -8332,6 +8437,7 @@ ${archiveMessages}
       workspace: 'system'
     },
     content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\n${statusClause}, ${summaryClause}\nDurée: ${Math.round(totalElapsed / 1000)}s (status + summary parallèle: ${Math.round(tParallelElapsed / 1000)}s)`
+      + (archiveFileFailed ? archiveFileFailedClause(archiveFileFailed) : '')
   };
   systemMessages.push(condenseNotice);
 
@@ -8348,6 +8454,7 @@ ${archiveMessages}
       || (summaryCall.stats.fallbackUsed === true && summaryCall.stats.cloudFirst !== true);
     diagnostic.outcome = usedFallback ? 'fallback-cloud' : 'condensed';
     if (statusKeptOnLegFailure) diagnostic.statusKept = true;
+    if (archiveFileFailed) diagnostic.archiveFileFailed = archiveFileFailed;
     diagnostic.elapsedMs = totalElapsed;
     diagnostic.archivedMessageCount = toArchive.length;
   }
