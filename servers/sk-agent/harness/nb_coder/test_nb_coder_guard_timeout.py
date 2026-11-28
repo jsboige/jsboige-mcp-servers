@@ -26,6 +26,16 @@ wrote "pipe abandoned after 30s" for every timeout -- also when the post-kill re
 returned in under a second -- and let its own prefix eat the END of the guard's output, the
 only part that carries the verdict. The tests below pin both: `kill_how`, `pipe_abandoned`
 and `grace_wait_s` are read from the run, and `_tail_with_prefix` keeps the end.
+
+28/11, later the same day: the ORACLE was over-trusted. `taskkill`'s exit code says what a
+tree walk did on THIS machine, not whether the pipe's holder is dead: the exact CI selection
+reported `kill_how == "child"` once (08:01Z) and green on the same selection re-run (08:15Z),
+while 30 trials under 10 busy children never did. The contract pinned here is therefore the
+holder being dead (pipe closed inside the grace), and every fallback must carry the kill
+command's own words (`kill_detail`), so a recurrence explains itself. Measured separately,
+10 of 10 trials: a guard that EXITS after spawning its grandchild leaves `taskkill` nothing to
+walk -- "not found" (128) -- so the row says "child already exited", never a kill that did not
+happen.
 """
 import importlib.util
 import time
@@ -87,26 +97,102 @@ GUARD_WITH_GRANDCHILD_SHORT = (
 )
 
 # What a row says about the kill and about the post-kill read -- every word of it measured.
-NOTE_RE = r"TimeoutExpired after {timeout:g}s \((?P<kill>[a-z ]+), pipe (?P<how>closed|abandoned) " \
-          r"after (?P<wait>\d+\.\d)s\): "
+# The optional `[...]` is `kill_detail`: what the kill command said when the tree kill fell back.
+NOTE_RE = r"TimeoutExpired after {timeout:g}s \((?P<kill>[a-z ]+)(?P<detail> \[[^\]]*\])?, " \
+          r"pipe (?P<how>closed|abandoned) after (?P<wait>\d+\.\d)s\): "
 
 
 def test_the_kill_takes_the_whole_tree_so_the_pipe_closes():
     proc = nbci.run_guard_bounded(["-c", GUARD_WITH_GRANDCHILD], cwd=Path.cwd(),
                                   timeout=2, grace=10)
     assert proc.timed_out is True
-    assert proc.kill_how == "tree"
-    # The grandchild inherited the pipe: it is dead too, so the read did NOT wait the grace
-    assert proc.pipe_abandoned is False, "the grandchild outlived the tree kill"
-    assert proc.grace_wait_s < 10, proc.grace_wait_s
+    note = nbci._timed_out_note(proc, 2)
+    # The CONTRACT is the pipe's holder being dead, not `taskkill`'s exit code: a surviving
+    # grandchild keeps the pipe, so the read would run the grace out and be abandoned.
+    assert proc.pipe_abandoned is False, note
+    assert proc.grace_wait_s < 10, note
     assert "guard alive" in (proc.stdout or "")         # what was read before the deadline is kept
+    # taskkill's verdict on a tree walk is an instrument: when it falls back, the row says why.
+    assert proc.kill_how == "tree" or (proc.kill_how == "child" and proc.kill_detail), \
+        f"a fallback must say why: {note}"
+
+
+# A guard that spawns a grandchild and RETURNS: at the deadline the guard is already gone and the
+# orphan keeps the inherited pipe. Short sleep, so it dies by itself once the test is over.
+GUARD_THAT_EXITS_AND_LEAVES_A_CHILD = (
+    "import subprocess, sys\n"
+    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(9)'])\n"
+    "print('guard alive', flush=True)\n"
+)
+
+
+def test_a_guard_that_already_exited_is_not_reported_as_killed():
+    # Measured 28/11, 10 of 10 trials: `taskkill /T` answers 128 "not found" for a pid that is
+    # gone -- it walks the tree from a LIVE parent. The first version turned that into
+    # "child killed only": a kill that never happened, and an orphan nobody was told about.
+    proc = nbci.run_guard_bounded(["-c", GUARD_THAT_EXITS_AND_LEAVES_A_CHILD], cwd=Path.cwd(),
+                                  timeout=2, grace=2)
+    assert proc.timed_out is True
+    assert proc.kill_how == "exited", (proc.kill_how, proc.kill_detail)
+    assert proc.kill_detail is None                     # nothing was attempted: nothing to explain
+    assert proc.pipe_abandoned is True                  # the orphan holds the pipe: said, not hidden
+    assert 1.9 <= proc.grace_wait_s < 10, proc.grace_wait_s
+    assert nbci._timed_out_note(proc, 2) == \
+        "TimeoutExpired after 2s (child already exited, pipe abandoned after 2.0s): "
+
+
+def test_a_live_child_whose_tree_kill_failed_falls_alone_and_says_what_the_kill_command_did(
+        monkeypatch):
+    # The fallback path itself, forced on a LIVE child (the real one needs taskkill to fail,
+    # which happened once in a CI selection and never under load): only the child falls, the
+    # grandchild keeps the pipe, and the record carries the kill command's own words.
+    asked = []
+
+    def _failed_tree_kill(pid):
+        asked.append(pid)
+        return 1, f"taskkill exit 1: pid {pid} refusé"
+
+    monkeypatch.setattr(nbci, "_taskkill_tree", _failed_tree_kill)
+    proc = nbci.run_guard_bounded(["-c", GUARD_WITH_GRANDCHILD_SHORT], cwd=Path.cwd(),
+                                  timeout=1, grace=2)
+    assert proc.timed_out is True
+    assert len(asked) == 1, "the tree kill is asked once, for the guard's own pid"
+    assert proc.kill_how == "child"
+    assert proc.kill_detail == f"taskkill exit 1: pid {asked[0]} refusé"
+    assert proc.pipe_abandoned is True and 1.9 <= proc.grace_wait_s < 10
+    assert nbci._timed_out_note(proc, 1) == \
+        f"TimeoutExpired after 1s (child killed only [taskkill exit 1: pid {asked[0]} refusé], " \
+        "pipe abandoned after 2.0s): "
+
+
+def test_a_fallback_that_said_something_lands_in_the_row_prefix():
+    # The unexplained `child` of 28/11: the next one must arrive with the kill command's words.
+    import re
+
+    class _Run:                        # what run_guard_bounded hands back, attribute for attribute
+        pass
+
+    proc = _Run()
+    proc.timed_out, proc.kill_how, proc.kill_detail = True, "child", "taskkill exit 1: Accès refusé."
+    proc.pipe_abandoned, proc.grace_wait_s = True, 30.0
+    note = nbci._timed_out_note(proc, 900)
+    m = re.fullmatch(NOTE_RE.format(timeout=900) + r"verdict\n", note + "verdict\n")
+    assert m, note
+    assert (m["kill"], m["detail"], m["how"]) == (
+        "child killed only", " [taskkill exit 1: Accès refusé.]", "abandoned")
+    proc.kill_how, proc.kill_detail = "tree", None
+    assert nbci._timed_out_note(proc, 900) == \
+        "TimeoutExpired after 900s (tree killed, pipe abandoned after 30.0s): "
+    assert nbci._kill_detail("a  b\n\nc\t d") == "a b c d"
+    assert len(nbci._kill_detail("x" * 500)) == nbci.KILL_DETAIL_CAP == 120
+    assert nbci._kill_detail(None) == ""
 
 
 def test_a_pipe_that_outlives_the_grace_is_reported_as_abandoned(monkeypatch):
     # Only the child falls (the tree kill is faked as failed): the grandchild keeps the pipe
     # open past the grace -- the ONE shape where "abandoned" is true.
     import re
-    monkeypatch.setattr(nbci, "_kill_guard_tree", lambda proc: "child")
+    monkeypatch.setattr(nbci, "_kill_guard_tree", lambda proc: ("child", None))
     proc = nbci.run_guard_bounded(["-c", GUARD_WITH_GRANDCHILD_SHORT], cwd=Path.cwd(),
                                   timeout=1, grace=3)
     assert proc.timed_out is True and proc.pipe_abandoned is True

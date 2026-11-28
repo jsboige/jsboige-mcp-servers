@@ -119,7 +119,22 @@ def _tail_with_prefix(prefix: str, out: str, cap: int = GUARD_TAIL_CAP) -> str:
 
 
 # How ``_kill_guard_tree`` reports what it managed to kill, and the words the row uses for it.
-KILL_HOW = {"tree": "tree killed", "child": "child killed only", "nothing": "nothing killed"}
+# "exited" is the shape measured on 28/11 (10 of 10 trials): the guard child has ALREADY fallen
+# when the deadline fires and a grandchild keeps the inherited pipe -- `taskkill /T` then answers
+# 128 "not found", because it walks the tree from a LIVE parent. Nothing is killed, and the row
+# must not say otherwise.
+KILL_HOW = {"tree": "tree killed", "child": "child killed only",
+            "exited": "child already exited", "nothing": "nothing killed"}
+
+# Characters a failed kill command's own message keeps in a row. taskkill speaks the locale's
+# console code page: decoded as "oem", flattened onto one line.
+KILL_DETAIL_CAP = 120
+
+
+def _kill_detail(text: str) -> str:
+    """One capped line: what a failed kill command SAID, fit for a row prefix."""
+    flat = " ".join((text or "").split())
+    return flat if len(flat) <= KILL_DETAIL_CAP else flat[:KILL_DETAIL_CAP - 1] + "…"
 
 
 def _timed_out_note(proc: subprocess.CompletedProcess, timeout: float) -> str:
@@ -127,8 +142,11 @@ def _timed_out_note(proc: subprocess.CompletedProcess, timeout: float) -> str:
 
     The post-kill read usually returns in well under a second once the tree is killed;
     saying "pipe abandoned after 30s" then would claim a hang that did not happen
-    (28/11 review). ``kill_how``, ``pipe_abandoned`` and ``grace_wait_s`` are set by
-    ``run_guard_bounded`` from the kill and the read themselves."""
+    (28/11 review). ``kill_how``, ``kill_detail``, ``pipe_abandoned`` and ``grace_wait_s``
+    are set by ``run_guard_bounded`` from the kill and the read themselves. A tree kill that
+    fell back carries the kill command's own words: an unexplained ``child`` was measured
+    once in a busy CI selection (28/11) and never under load (30 of 30 trials), so the next
+    occurrence must explain itself instead of being re-investigated."""
     waited = getattr(proc, "grace_wait_s", None)
     if waited is None:
         read = "post-kill read unmeasured"
@@ -137,31 +155,54 @@ def _timed_out_note(proc: subprocess.CompletedProcess, timeout: float) -> str:
     else:
         read = f"pipe closed after {waited}s"
     killed = KILL_HOW.get(getattr(proc, "kill_how", None), "kill unmeasured")
+    why = getattr(proc, "kill_detail", None)
+    if why:
+        killed = f"{killed} [{why}]"
     return f"TimeoutExpired after {timeout:g}s ({killed}, {read}): "
 
 
-def _kill_guard_tree(proc: subprocess.Popen) -> str:
+def _taskkill_tree(pid: int) -> tuple[int | None, str]:
+    """``taskkill /F /T`` on one pid, as ``(exit code, what it said)``. Never raises."""
+    try:
+        done = subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                              capture_output=True, timeout=GUARD_KILL_GRACE_S,
+                              stdin=subprocess.DEVNULL)
+        said = done.stderr or done.stdout or b""
+        return done.returncode, _kill_detail(
+            f"taskkill exit {done.returncode}: " + said.decode("oem", "replace"))
+    except Exception as e:
+        return None, _kill_detail(f"{type(e).__name__}: {e}")
+
+
+def _kill_guard_tree(proc: subprocess.Popen) -> tuple[str, str | None]:
     """Kill a guard child AND its descendants, so nothing keeps its pipe open.
 
-    Returns what it managed to kill -- ``"tree"``, ``"child"`` (the tree kill failed and
-    only the child fell) or ``"nothing"``: a grandchild that survives the tree kill is
-    exactly the case where the pipe outlives the grace, and the row must say so."""
-    try:
-        if os.name == "nt":
-            done = subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                                  capture_output=True, timeout=GUARD_KILL_GRACE_S,
-                                  stdin=subprocess.DEVNULL)
-            if done.returncode != 0:
-                raise OSError(f"taskkill exit {done.returncode}")
-        else:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        return "tree"
-    except Exception:
+    Returns what it managed to kill and, when the tree kill fell back, what the kill command
+    said about it:
+      * ``"tree"``    -- the tree kill succeeded;
+      * ``"child"``   -- the tree kill failed and only the child fell: a grandchild that
+                         survives is exactly the case where the pipe outlives the grace;
+      * ``"exited"``  -- the child was ALREADY gone, so nothing was killed and an orphan
+                         holds the pipe (Windows, measured 10 of 10 trials on 28/11: a guard
+                         that spawns a grandchild and returns before the deadline);
+      * ``"nothing"`` -- even the child did not fall."""
+    if os.name == "nt":
+        if proc.poll() is not None:
+            return "exited", None
+        rc, said = _taskkill_tree(proc.pid)
+        if rc == 0:
+            return "tree", None
+    else:
         try:
-            proc.kill()
-            return "child"
-        except Exception:
-            return "nothing"
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return "tree", None
+        except Exception as e:
+            said = _kill_detail(f"killpg {type(e).__name__}: {e}")
+    try:
+        proc.kill()
+        return "child", said
+    except Exception as e:
+        return "nothing", _kill_detail(f"{said}; kill {type(e).__name__}: {e}")
 
 
 def run_guard_bounded(cmd: list[str], *, cwd, timeout: float = GUARD_TIMEOUT_S,
@@ -196,7 +237,7 @@ def run_guard_bounded(cmd: list[str], *, cwd, timeout: float = GUARD_TIMEOUT_S,
         out, _ = proc.communicate(timeout=timeout)
         return subprocess.CompletedProcess(cmd, proc.returncode, out or "", "")
     except subprocess.TimeoutExpired:
-        killed = _kill_guard_tree(proc)
+        killed, why = _kill_guard_tree(proc)
         read_t0 = time.monotonic()
         try:
             out, _ = proc.communicate(timeout=grace)
@@ -207,8 +248,10 @@ def run_guard_bounded(cmd: list[str], *, cwd, timeout: float = GUARD_TIMEOUT_S,
         done = subprocess.CompletedProcess(cmd, None, out or "", "")
         done.timed_out = True
         # What the kill and the post-kill read MEASURED, so the report can say it instead
-        # of assuming the worst case (28/11 review).
+        # of assuming the worst case (28/11 review). ``kill_detail`` is None unless the tree
+        # kill fell back.
         done.kill_how = killed
+        done.kill_detail = why
         done.pipe_abandoned = abandoned
         done.grace_wait_s = round(time.monotonic() - read_t0, 1)
         return done
