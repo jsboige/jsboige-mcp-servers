@@ -566,3 +566,101 @@ async def test_post_turn_merge_preserves_mid_turn_metrics():
     assert out["condensation"]["mid_turn"] is mid_entries  # survived the merge
     assert out["condensation"]["triggered"] is True  # post-turn merged in
     assert out["condensation"]["total_tokens_out"] == 4_000
+
+
+# ---------------------------------------------------------------------------
+# The thread a condensed turn leaves behind (o66b, CoursIA#28976, 28/11)
+# ---------------------------------------------------------------------------
+
+
+def _thread_messages(manager, conv_id: str) -> list:
+    return list(manager._threads[conv_id]._chat_history.messages)
+
+
+# Both shapes the threshold pass meets: big results (pass 2 reduces them,
+# the count holds) and the nb_coder shape — big calls, one-line results —
+# where only whole pairs DROPPED bring the request under budget, so the
+# list the drain indexes into gets shorter.
+_SHAPES = {
+    "big-results": {},
+    "big-calls": {
+        "args_chars": ARGS_CHARS,
+        "small_results": True,
+        "condensation": {
+            "enabled": True,
+            "trigger_fraction": TRIGGER_FRACTION,
+            "tool_result_window": TOOL_RESULT_WINDOW,
+            "max_tool_chars": ARGS_CHARS + 1_000,
+        },
+    },
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", sorted(_SHAPES))
+async def test_condensed_turn_leaves_a_thread_whose_tool_messages_pair(tmp_path, shape):
+    """SK drains a turn into its thread BY INDEX, from the length the request
+    history had before the model was called (``_drain_mutated_messages(history,
+    start_idx, thread)``). The live condenser shortens that same list in place,
+    so on a conversation that already holds a turn the drained slice starts
+    INSIDE the new turn: its first messages never reach the thread, and a tool
+    result can land there without the call it answers.
+
+    Measured 28/11 on o66b (CoursIA#28976): the next call of the conversation
+    sent that orphan and MiniMax refused it, HTTP 400 "tool result's tool
+    id(call_…) not found (2013)" — the grain was then released as a CONTENT
+    failure. Two turns on one conversation, each condensed mid-turn: after
+    each, the thread pairs every tool message with its call, holds no request
+    instructions, ends on the turn's answer, and the next turn's requests are
+    built well formed from it.
+    """
+    manager, service, counter, agent = _overflow_manager(tmp_path, **_SHAPES[shape])
+
+    first = await manager._handle_text("a-x", agent, PROMPT, None, False)
+    assert first["status"] == STATUS_COMPLETED
+    conv = first["conversation_id"]
+    assert (first.get("condensation") or {}).get("mid_turn"), "turn 1 never condensed"
+
+    for turn_no in (2, 3):
+        service.final_after = turn_no * ROUNDS
+        sent_before = len(service.request_wire_issues)
+        result = await manager._handle_text("a-x", agent, PROMPT, conv, False)
+        assert result["status"] == STATUS_COMPLETED
+        assert (result.get("condensation") or {}).get("mid_turn"), (
+            f"turn {turn_no} never condensed — the witness would prove nothing"
+        )
+
+        # Every request of this turn was built well formed — the first one
+        # straight from the thread the previous turn left.
+        malformed = [
+            issue for issue in service.request_wire_issues[sent_before:]
+            if issue != (0, 0, 0)
+        ]
+        assert not malformed, (
+            f"turn {turn_no}: malformed tool messages on {len(malformed)} "
+            f"request(s): {malformed[:5]}"
+        )
+
+        thread = _thread_messages(manager, conv)
+        assert _wire_issues(thread) == (0, 0, 0), (
+            f"turn {turn_no}: the thread carries unpaired tool messages "
+            f"{_wire_issues(thread)} (unmatched, blank, unanswered)"
+        )
+        assert not any(m.role == AuthorRole.SYSTEM for m in thread), (
+            "the request instructions leaked into the thread"
+        )
+        assert str(thread[-1]) == "final-answer"
+        # Paired is not enough: on HEAD the drain of turn 2 started past the
+        # shortened list and the thread kept the prompt and the answer ALONE —
+        # 30 tool rounds gone, a clean wire. The turn's last round is in the
+        # hot window, so the thread must still carry its result.
+        last = turn_no * ROUNDS
+        results = [
+            str(item.result or "")
+            for m in thread
+            for item in m.items
+            if isinstance(item, FunctionResultContent)
+        ]
+        assert any(
+            r == f"round-{last}" or r.startswith(f"round-{last}-") for r in results
+        ), f"turn {turn_no}: the thread lost the turn's tool rounds"

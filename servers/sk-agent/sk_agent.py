@@ -2280,6 +2280,13 @@ class SKAgentManager:
                     )
                     return metrics.to_dict() if metrics.triggered else None
 
+        def thread_messages():
+            # Read lazily, at the first live rewrite: the thread the turn
+            # drains into, or None when there is none to read.
+            live_thread = self._threads.get(conv_id)
+            live = getattr(live_thread, "_chat_history", None) if live_thread else None
+            return list(live.messages) if live is not None else None
+
         return TurnController(
             conversation_id=conv_id,
             agent_id=agent_id,
@@ -2290,6 +2297,7 @@ class SKAgentManager:
             journal_log=log,
             replay_enabled=replay,
             mid_turn_condense=mid_turn_condense,
+            thread_messages=thread_messages,
         )
 
     def _load_journal_epoch(self, conv_id: str) -> EpochState | None:
@@ -2323,6 +2331,22 @@ class SKAgentManager:
         """
         # The turn reached its normal end: nothing left to roll back.
         self._turn_marks.pop(conv_id, None)
+        # A turn the live condenser rewrote was drained into the thread at
+        # shifted indices — rebuild it from the condensed request history
+        # before it is persisted or condensed (TurnController.reconciled_thread).
+        history = getattr(thread, "_chat_history", None)
+        if history is not None:
+            rebuilt = controller.reconciled_thread(list(history.messages))
+            if rebuilt is not None:
+                drained = len(history.messages)
+                history.messages[:] = rebuilt
+                log.info(
+                    "Thread of '%s' rebuilt from the condensed turn history "
+                    "(%d -> %d messages)",
+                    conv_id,
+                    drained,
+                    len(rebuilt),
+                )
         self._threads[conv_id] = thread
         await self._persist_conversation(conv_id, thread)
         result["conversation_id"] = conv_id
