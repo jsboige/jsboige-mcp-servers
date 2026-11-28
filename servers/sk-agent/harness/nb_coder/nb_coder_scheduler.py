@@ -282,13 +282,15 @@ CONTENT_FAILURE_PREFIXES = (
 # check-not-scoped, Sudoku-05 held by po-2024). Sudoku-05 would block for as long as
 # po-2024 holds it.
 #
-# 28/11: the driver's SEAT refusals join them -- a wired path, a model credential or a
-# launch target that does not resolve here (`_preflight`). Refused before any worktree and
-# any model call, they judge nothing about the grain either, so they also keep the claim
-# (`_release_claim`): the remedy is the operator's launch, never the issue. Measured on
-# CoursIA#29058: a queue item without source_nb, calls 0, auto-[RELEASED], path frozen 3 days.
+# 28/11: the driver's SEAT refusals join them -- a wired path, a server that is not the
+# driver's own tree, a model credential or a launch target that does not resolve here
+# (`_preflight`). Refused before any worktree and any model call, they judge nothing about
+# the grain either, so they also keep the claim (`_release_claim`): the remedy is the
+# operator's launch, never the issue. Measured on CoursIA#29058: a queue item without
+# source_nb, calls 0, auto-[RELEASED], path frozen 3 days.
 SEAT_REFUSAL_VERDICTS = (
     "refused-wiring-unresolved",
+    "refused-server-drift",
     "refused-credential-unresolved",
     "refused-target-unresolved",
 )

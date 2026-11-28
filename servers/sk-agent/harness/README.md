@@ -71,11 +71,12 @@ own `-Repo` parameter — launcher configuration, not harness configuration.
 
 `nb_coder_driver.py` refuses at launch, writes a trace + ledger line, and exits 2 with the
 remedy on stderr (a scheduled loop reads the refusal back instead of mistaking it for a
-quiet run). Three families, each with its own verdict, asked in this order:
+quiet run). Four families, each with its own verdict, asked in this order:
 
 | verdict | what it means | the remedy it names |
 |---|---|---|
 | `refused-wiring-unresolved` | one of the five wired paths above does not exist here | point the env var at a real path |
+| `refused-server-drift` | `NBCODER_SK_DIR` points the sk-agent **server** at another checkout than the tree this driver runs from, and a module that server loads differs (line endings ignored) — a fix merged into the driver's tree would not reach it | point `NBCODER_SK_DIR` at the driver's own sk-agent root (`NBCODER_SK_PY` / `NBCODER_SK_CONFIG` keep the seat's venv and config) |
 | `refused-credential-unresolved` | a model this launch calls reads its key through `api_key_env`, and that variable is empty here (sk-agent would send `no-key` and the first call would answer `401 invalid proxy authentication`) | export the named variable in the launching shell |
 | `refused-target-unresolved` | the launch's own target cannot be reached from a freshly fetched `origin/main` — absent with no twin, a named twin absent, a creation flag on an existing target, a `--meta-from` absent | fix the queue line (`--source-nb`, `--from-spec`, or the path) |
 
@@ -84,7 +85,13 @@ check fails OPEN on what it cannot read (unreadable config, unknown preset, lite
 git ref it cannot resolve, a path git reports as `exists on disk` with another spelling),
 and it never speaks for a resume (`--revise-from` / `--verify-from` read their creation
 mode from the trace). `NBCODER_PREFLIGHT_CREDENTIALS=0` disables the credential check
-alone, for a seat whose endpoint deliberately serves without a key.
+alone, for a seat whose endpoint deliberately serves without a key;
+`NBCODER_PREFLIGHT_SERVER_DRIFT=0` disables the server check alone, for a seat that runs
+an older server on purpose. The server check compares only the modules `sk_agent.py`
+loads (the closure of its local imports, read with `ast`), and only when the override is
+set and the driver has a sibling server to compare with (28/11: two grains died on a
+MiniMax `400 … (2013)` that the merged #1978 prevents, because their server came from a
+checkout without it).
 
 ## Resuming a run
 

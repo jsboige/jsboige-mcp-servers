@@ -21,6 +21,13 @@ fail-open cases it must leave alone (unreadable config, unknown preset, literal 
 resume, --from-spec, a git tree it cannot read, a path spelled with another case), the
 shared trace/ledger contract (24/11, o33: a refusal never destroys the record it resumes),
 and the kill switch. Only a local bare repo is contacted; no engine, no MCP session.
+
+28/11 adds a third refusal, `refused-server-drift`: the launches of o66b (CoursIA#28976)
+and o69c (CoursIA#29058) took the driver from an origin/main worktree but the sk-agent
+SERVER from a seat checkout without #1978, and both died on the MiniMax 400 (2013) that
+fix prevents. Pinned: what is compared (the modules the server loads, line endings
+ignored), when it is asked (the override is set, a sibling server exists, the two differ),
+its place in the order (after the wiring, before the credential) and its kill switch.
 """
 import json
 import subprocess
@@ -38,6 +45,7 @@ import nb_coder_driver as D  # noqa: E402
 def _seat(monkeypatch, tmp_path, agents=(), models=()):
     """A seat whose five wired paths resolve, and whose config carries the given entries."""
     seat = tmp_path / "seat"
+    monkeypatch.delenv("NBCODER_SK_DIR", raising=False)   # the server-drift check reads it
     (seat / "venv/Scripts").mkdir(parents=True)
     (seat / "sk_agent.py").write_text("# stub\n", encoding="utf-8")
     (seat / "venv/Scripts/python.exe").write_text("", encoding="utf-8")
@@ -291,3 +299,122 @@ def test_a_path_git_says_exists_on_disk_is_never_an_absence(monkeypatch, tmp_pat
     (repo / "S/N.ipynb").write_text("{}\n", encoding="utf-8")
     _seat(monkeypatch, tmp_path)
     assert D._launch_target_gap(_args(tmp_path)) is None
+
+
+# ---------------------------------------------------------------- server (28/11)
+def _driver_tree(monkeypatch, tmp_path, files):
+    """A sk-agent root holding `files`, with the driver placed at its harness/nb_coder/."""
+    tree = tmp_path / "tree"
+    (tree / "harness/nb_coder").mkdir(parents=True)
+    for rel, text in files.items():
+        (tree / rel).write_bytes(text.encode("utf-8"))
+    monkeypatch.setattr(D, "HERE", tree / "harness/nb_coder")
+    return tree
+
+
+_SERVER = {"sk_agent.py": "import os\nimport sk_agent_turns\nfrom sk_conv import Runner\n",
+           "sk_agent_turns.py": "def repair():\n    return 1978\n",
+           "sk_conv.py": "def Runner():\n    import sk_lazy\n",
+           "sk_lazy.py": "LAZY = 1\n",
+           "bench.py": "import sk_agent\n"}
+
+
+def _server_seat(monkeypatch, tmp_path, files):
+    seat = _seat(monkeypatch, tmp_path)
+    for rel, text in files.items():
+        (seat / rel).write_bytes(text.encode("utf-8"))
+    monkeypatch.setenv("NBCODER_SK_DIR", str(seat))
+    return seat
+
+
+def test_a_server_from_another_checkout_is_refused_before_any_worktree(monkeypatch, tmp_path,
+                                                                      capsys):
+    """Measured o66b/o69c: driver on origin/main, server on a checkout without #1978."""
+    _driver_tree(monkeypatch, tmp_path, _SERVER)
+    stale = dict(_SERVER, **{"sk_agent_turns.py": "def repair():\n    return 0\n"})
+    stale.pop("sk_lazy.py")
+    _server_seat(monkeypatch, tmp_path, stale)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path))
+    with pytest.raises(SystemExit) as e:
+        D.main()
+    assert e.value.code == 2
+    rec = json.loads((tmp_path / "out" / "issue-28079.json").read_text(encoding="utf-8"))
+    assert rec["verdict"] == "refused-server-drift"
+    assert rec["server_drift"]["drifted"] == ["sk_agent_turns.py", "sk_lazy.py (absent)"]
+    assert rec["server_drift"]["driver_tree"] == str((tmp_path / "tree").resolve())
+    assert "NBCODER_SK_DIR" in rec["refusal"]
+    assert "NBCODER_PREFLIGHT_SERVER_DRIFT=0" in rec["refusal"]
+    assert not (tmp_path / "wt").exists(), "no worktree may be built before this refusal"
+    led = json.loads((tmp_path / "out" / "ledger.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert led["verdict"] == "refused-server-drift" and "sk_agent_turns.py" in led["refusal"]
+    out = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
+    assert json.loads(out[-1]) == {"issue": 28079, "verdict": "refused-server-drift", "calls": 0}
+
+
+def test_the_same_server_with_other_line_endings_refuses_nothing(monkeypatch, tmp_path):
+    """A CRLF checkout of the same commit is the same server."""
+    _driver_tree(monkeypatch, tmp_path, _SERVER)
+    _server_seat(monkeypatch, tmp_path,
+                 {k: v.replace("\n", "\r\n") for k, v in _SERVER.items()})
+    assert D._server_drift() is None
+
+
+def test_only_what_the_server_loads_is_compared(monkeypatch, tmp_path):
+    """A script beside the server that it never imports is not the server; a module it
+    imports inside a function is."""
+    tree = _driver_tree(monkeypatch, tmp_path, _SERVER)
+    assert D._server_modules(tree) == ["sk_agent.py", "sk_agent_turns.py", "sk_conv.py",
+                                       "sk_lazy.py"]
+    _server_seat(monkeypatch, tmp_path, dict(_SERVER, **{"bench.py": "# another bench\n",
+                                                          "local_extra.py": "X = 1\n"}))
+    assert D._server_drift() is None
+    (tmp_path / "seat" / "sk_lazy.py").write_text("LAZY = 2\n", encoding="utf-8")
+    assert D._server_drift()["drifted"] == ["sk_lazy.py"]
+
+
+def test_the_real_tree_compares_the_modules_of_the_founding_incident():
+    """#1978 changed sk_agent.py and sk_agent_turns.py: both must be in the compared set."""
+    root = (Path(D.__file__).resolve().parent / "../..").resolve()
+    mods = D._server_modules(root)
+    assert {"sk_agent.py", "sk_agent_turns.py", "sk_context_condensation.py"} <= set(mods)
+    assert not any(m.startswith("test_") for m in mods)
+
+
+def test_what_the_check_cannot_be_sure_of_refuses_nothing(monkeypatch, tmp_path):
+    tree = _driver_tree(monkeypatch, tmp_path, _SERVER)
+    seat = _server_seat(monkeypatch, tmp_path, {"sk_agent.py": "# stale\n"})
+    monkeypatch.delenv("NBCODER_SK_DIR")
+    assert D._server_drift() is None, "without the override, SK_DIR is the sibling or legacy"
+    monkeypatch.setenv("NBCODER_SK_DIR", str(tree))
+    monkeypatch.setattr(D, "SK_DIR", tree)
+    assert D._server_drift() is None, "the override names the driver's own tree"
+    monkeypatch.setenv("NBCODER_SK_DIR", str(seat))
+    monkeypatch.setattr(D, "SK_DIR", seat)
+    monkeypatch.setattr(D, "HERE", tmp_path / "lone/harness/nb_coder")
+    assert D._server_drift() is None, "a driver with no sibling server has nothing to compare"
+
+
+def test_the_kill_switch_disables_the_server_check(monkeypatch, tmp_path):
+    _driver_tree(monkeypatch, tmp_path, _SERVER)
+    _server_seat(monkeypatch, tmp_path, {"sk_agent.py": "# stale\n"})
+    assert D._server_drift() is not None
+    monkeypatch.setenv("NBCODER_PREFLIGHT_SERVER_DRIFT", "0")
+    assert D._server_drift() is None
+
+
+def test_the_server_is_asked_after_the_wiring_and_before_the_credential(monkeypatch, tmp_path):
+    _driver_tree(monkeypatch, tmp_path, _SERVER)
+    seat = _server_seat(monkeypatch, tmp_path, {"sk_agent.py": "# stale\n"})
+    (seat / "sk_agent_config.json").write_text(
+        json.dumps({"agents": _GAPPED_AGENTS, "models": _GAPPED_MODELS}), encoding="utf-8")
+    monkeypatch.delenv("NBC_PF_CODER_KEY", raising=False)
+    monkeypatch.setattr(sys, "argv", _argv(tmp_path))
+    with pytest.raises(SystemExit):
+        D.main()
+    rec = json.loads((tmp_path / "out" / "issue-28079.json").read_text(encoding="utf-8"))
+    assert rec["verdict"] == "refused-server-drift" and "credential_missing" not in rec
+    monkeypatch.setattr(D, "PM_CWD", tmp_path / "no-such-dir")
+    with pytest.raises(SystemExit):
+        D.main()
+    rec = json.loads((tmp_path / "out" / "issue-28079.json").read_text(encoding="utf-8"))
+    assert rec["verdict"] == "refused-wiring-unresolved" and "server_drift" not in rec
