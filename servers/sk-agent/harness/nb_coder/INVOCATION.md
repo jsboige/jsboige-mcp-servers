@@ -172,8 +172,10 @@ Variables de wiring (`NBCODER_SK_DIR/SK_PY/SK_CONFIG`, `NBCODER_GATE`,
 `NBCODER_KERNEL_START_ATTEMPTS` — tentatives de démarrage de noyau, défaut 3) :
 résolution sibling par défaut, surchargeables — détail dans `harness/README.md`.
 
-**Prévol (24/11)** : avant toute dépense, le pilote refuse trois familles de défaut —
-chemin câblé absent (`refused-wiring-unresolved`), variable de clé vide nommée par
+**Prévol (24/11, 28/11)** : avant toute dépense, le pilote refuse quatre familles de défaut —
+chemin câblé absent (`refused-wiring-unresolved`), serveur sk-agent pris dans un autre
+arbre que le pilote et différent de lui (`refused-server-drift`, désarmé par
+`NBCODER_PREFLIGHT_SERVER_DRIFT=0`), variable de clé vide nommée par
 `api_key_env` (`refused-credential-unresolved`), cible/tumeur/métadonnée injoignable sur
 un `origin/main` fraîchement récupéré (`refused-target-unresolved`). Trace + ligne de
 journal, sortie 2, remède sur stderr ; `NBCODER_PREFLIGHT_CREDENTIALS=0` désarme le seul

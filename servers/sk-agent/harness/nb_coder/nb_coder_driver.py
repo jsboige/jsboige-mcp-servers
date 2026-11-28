@@ -9358,6 +9358,82 @@ def _keep_prior_trace(out: Path, prefix: str) -> str:
     raise OSError(f"no free snapshot name beside {out}")   # never fall back to overwriting
 
 
+def _server_modules(root: Path) -> list[str]:
+    """The modules of `root` that its `sk_agent.py` loads: the closure of its local imports.
+
+    Read with `ast`, so an import inside a function (a plugin loaded on demand) counts; a
+    name counts only when `root/<name>.py` exists, so the third-party and stdlib imports
+    fall away. Scripts that sit beside the server and are never imported (benchmarks,
+    inventory generators, tests) are not part of what the server runs.
+    """
+    import ast
+
+    seen: set[str] = set()
+    todo = ["sk_agent"]
+    while todo:
+        name = todo.pop()
+        if name in seen or not (root / f"{name}.py").is_file():
+            continue
+        seen.add(name)
+        try:
+            tree = ast.parse((root / f"{name}.py").read_bytes())
+        except (OSError, SyntaxError, ValueError):
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                todo.extend(a.name.split(".")[0] for a in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                todo.append(node.module.split(".")[0])
+    return sorted(f"{n}.py" for n in seen)
+
+
+def _server_drift() -> dict | None:
+    """The sk-agent SERVER this launch would spawn is not the tree this driver runs from.
+
+    Measured 28/11 (po-2028:claudish): the launch recipes took the driver from an
+    `origin/main` worktree, but pointed `NBCODER_SK_DIR` at the seat's roo-extensions
+    checkout (`c13208128`), which did not carry #1978 -- the fix for the `tool_result`
+    orphan left by context condensation. Two grains died on a MiniMax
+    `400 tool result's tool id(...) not found (2013)` that the merged fix prevents:
+    CoursIA#28976 (o66b) and CoursIA#29058 (o69c, 283 s, after three condensations). The
+    "harness is origin/main" check covered the driver only; nothing compared the server.
+
+    Asked only where the answer is certain: `NBCODER_SK_DIR` overrides the server path, the
+    driver has a sibling sk-agent root (`../..` holding `sk_agent.py`), and the two resolve
+    to different directories. The comparison covers the modules the sibling's server loads
+    (`_server_modules`), line endings normalised (a CRLF checkout of the same commit is the
+    same server). Anything it cannot read is left alone. Only paths and file names are
+    reported. `NBCODER_PREFLIGHT_SERVER_DRIFT=0` disables the check, for a seat that runs an
+    older server on purpose.
+    """
+    if os.environ.get("NBCODER_PREFLIGHT_SERVER_DRIFT", "").strip() == "0":
+        return None
+    if not os.environ.get("NBCODER_SK_DIR"):
+        return None                   # without the override SK_DIR IS the sibling (or legacy)
+    sibling = (HERE / "../..").resolve()
+    if not (sibling / "sk_agent.py").is_file():
+        return None
+    try:
+        server = Path(SK_DIR).resolve()
+        if server == sibling:
+            return None
+
+        def body(p: Path) -> bytes:
+            return p.read_bytes().replace(b"\r\n", b"\n")
+        drifted: list[str] = []
+        for rel in _server_modules(sibling):
+            theirs = server / rel
+            if not theirs.is_file():
+                drifted.append(f"{rel} (absent)")
+            elif body(theirs) != body(sibling / rel):
+                drifted.append(rel)
+    except OSError:
+        return None
+    if not drifted:
+        return None
+    return {"server": str(server), "driver_tree": str(sibling), "drifted": drifted}
+
+
 def _seat_credential_gaps(args) -> list[str]:
     """Model entries whose key cannot resolve in THIS environment (24/11, o34b).
 
@@ -9503,10 +9579,11 @@ def _preflight(ap, args) -> None:
     where two refusals land in the same second: the second copy would silently replace the
     first. `_keep_prior_trace` never replaces an existing copy, it adds a suffix instead.
 
-    Three refusals, one per thing a seat gets wrong (24/11): a wired PATH that does not
-    resolve here, a model CREDENTIAL that does not resolve here (`_seat_credential_gaps`), a
-    TARGET the launch cannot reach (`_launch_target_gap`). Each is asked only once the
-    previous one is clean, and each names its own remedy in its own verdict.
+    Four refusals, one per thing a seat gets wrong: a wired PATH that does not resolve here,
+    a SERVER that is not the tree this driver runs from (`_server_drift`, 28/11), a model
+    CREDENTIAL that does not resolve here (`_seat_credential_gaps`, 24/11), a TARGET the
+    launch cannot reach (`_launch_target_gap`, 24/11). Each is asked only once the previous
+    one is clean, and each names its own remedy in its own verdict.
     """
     missing = [f"{name}={path}" for name, path, ok in (
         ("sk_agent.py (NBCODER_SK_DIR)", SK_DIR / "sk_agent.py", (SK_DIR / "sk_agent.py").is_file()),
@@ -9515,14 +9592,23 @@ def _preflight(ap, args) -> None:
         ("NBCODER_PM_PY", PM_PY, PM_PY.is_file()),
         ("NBCODER_PM_CWD", PM_CWD, PM_CWD.is_dir()),
     ) if not ok]
-    credential = [] if missing else _seat_credential_gaps(args)
-    target_gap = None if (missing or credential) else _launch_target_gap(args)
-    if not missing and not credential and not target_gap:
+    drift = None if missing else _server_drift()
+    credential = [] if (missing or drift) else _seat_credential_gaps(args)
+    target_gap = None if (missing or drift or credential) else _launch_target_gap(args)
+    if not missing and not drift and not credential and not target_gap:
         return
     if missing:
         verdict = "refused-wiring-unresolved"
         detail = ("seat wiring does not resolve here — point the env var at a real path: "
                   + " | ".join(missing))
+    elif drift:
+        verdict = "refused-server-drift"
+        detail = (f"the sk-agent server this launch would spawn (NBCODER_SK_DIR={drift['server']}) "
+                  f"is not the tree this driver runs from ({drift['driver_tree']}) — it differs "
+                  "in " + ", ".join(drift["drifted"]) + "; a fix merged into the driver's tree "
+                  "never reaches a server started from another checkout. Point NBCODER_SK_DIR at "
+                  f"{drift['driver_tree']} (NBCODER_SK_PY and NBCODER_SK_CONFIG keep the seat's "
+                  "venv and config) | NBCODER_PREFLIGHT_SERVER_DRIFT=0 disables this check")
     elif credential:
         verdict = "refused-credential-unresolved"
         detail = ("a model this launch calls cannot authenticate here — export the named "
@@ -9565,6 +9651,8 @@ def _preflight(ap, args) -> None:
                "verdict": verdict, "refusal": detail}
         if missing:
             rec["wiring_missing"] = missing
+        if drift:
+            rec["server_drift"] = drift
         if credential:
             rec["credential_missing"] = credential
         if target_gap:
