@@ -23,6 +23,7 @@ import {
     CASCADE_PAYLOAD_SCHEMA_VERSION,
     type CascadePayload,
 } from '../cascade-payload.js';
+import { redactSecrets } from '@vibesync/core/utils/secret-redaction';
 
 /** Canon live verbatim (po-2025, 29/10 ~19:3xZ) — fixture dorée non-secrète. */
 const CANON = [
@@ -497,5 +498,72 @@ describe('cascade payload #4427 — validateCascadePayload', () => {
         const q = goldenPayload();
         q.exceptions = [{ machine: '   ', reason: 'x' }];
         expect(validateCascadePayload(q).errors.some(e => e.includes('sans machine'))).toBe(true);
+    });
+});
+
+/**
+ * #1957 point 2 — parité entre les deux couches qui reconnaissent un jeton `sk-`.
+ *
+ * La couche de PUBLICATION (`@vibesync/core/utils/secret-redaction`) fait autorité
+ * sur la FORME du jeton (ms#1619 : le préfixe n'est pas précédé d'une LETTRE).
+ * Le rejet d'écriture n'en diffère que par un seuil VOULU, plus bas. Ce qui est
+ * pinné : tout ce que le masqueur masque est refusé ici — une correction de
+ * borne qui n'atterrirait que d'un côté fait échouer cette suite.
+ */
+describe('cascade payload #1957 — parité masquage / rejet du jeton sk-', () => {
+    const masked = (text: string): boolean => redactSecrets(text) !== text;
+    const rejected = (text: string): boolean => {
+        const p = goldenPayload();
+        p.roles.SONNET.steps[0].note = text;
+        return validateCascadePayload(p).errors.some(e => e.includes('clé API sk-'));
+    };
+    /** Un corps de `n` caractères pris dans TOUTE la classe du motif (lettres, chiffres, `-`, `_`). */
+    const skToken = (n: number): string => 'sk-' + 'aZ0-_b9C'.repeat(6).slice(0, n);
+    /** Ce qui précède le préfixe : début de chaîne, séparateur, chiffre, `_`, lettre. */
+    const LEFT_CONTEXTS: Array<[string, string]> = [
+        ['', 'début'], [' ', 'espace'], ['=', 'égal'], ['-', 'tiret'], ['/', 'barre'],
+        ['9', 'chiffre'], ['_', 'underscore'], ['x', 'lettre'],
+    ];
+
+    test('tout jeton sk- que le masqueur masque est refusé à l\'écriture', () => {
+        const holes: string[] = [];
+        for (const [prefix, label] of LEFT_CONTEXTS) {
+            for (let n = 1; n <= 48; n++) {
+                const text = prefix + skToken(n);
+                if (masked(text) && !rejected(text)) holes.push(`« ${label} » + ${n} car.`);
+            }
+        }
+        expect(holes).toEqual([]);
+    });
+
+    test('la borne gauche est la MÊME dans les deux couches', () => {
+        // ms#1619 : `task-`, `disk-`, `risk-`, `desk-` ne sont pas des clés — ni masqués, ni refusés.
+        for (const word of ['task-', 'disk-', 'risk-', 'desk-']) {
+            expect(masked(word + 'a'.repeat(24))).toBe(false);
+            expect(rejected(word + 'a'.repeat(24))).toBe(false);
+        }
+        // Collé après un chiffre ou un `_` : la couche partagée le masque, donc l'écriture le refuse.
+        for (const prefix of ['9', '_']) {
+            expect(masked(prefix + skToken(24))).toBe(true);
+            expect(rejected(prefix + skToken(24))).toBe(true);
+        }
+    });
+
+    test('seul écart, VOULU : le seuil du rejet (16) est plus bas que celui du masquage (20)', () => {
+        // 16 à 19 caractères : refusé à l'écriture, laissé tel quel par le masqueur.
+        for (let n = 16; n <= 19; n++) {
+            expect(rejected(skToken(n))).toBe(true);
+            expect(masked(skToken(n))).toBe(false);
+        }
+        // 20 et plus : les deux couches.
+        for (let n = 20; n <= 40; n++) {
+            expect(rejected(skToken(n))).toBe(true);
+            expect(masked(skToken(n))).toBe(true);
+        }
+        // Sous 16 : aucune couche n'y voit une clé.
+        for (let n = 1; n <= 15; n++) {
+            expect(rejected(skToken(n))).toBe(false);
+            expect(masked(skToken(n))).toBe(false);
+        }
     });
 });
