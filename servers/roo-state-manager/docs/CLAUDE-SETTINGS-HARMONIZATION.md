@@ -294,7 +294,7 @@ externe, jamais d'un publish.
 
 ## Tests
 
-- `src/services/__tests__/ClaudeSettingsService.test.ts` (57 tests) — états,
+- `src/services/__tests__/ClaudeSettingsService.test.ts` (89 tests) — états,
   projections, `projectSettingsSafe`/`redactValue` (redaction URL + idempotence,
   défaut #1), **discrimination non réversible** (userinfo/query différents =>
   marqueurs différents, revue passe 2), **fail-closed des query auth/sig/
@@ -305,7 +305,7 @@ externe, jamais d'un publish.
   des secrets à la sérialisation, validation canon (positif + rejets, modelMap
   défaut #6), apply (préservation/dry-run/idempotence/fail-closed/concurrent/
   backup), localisateur de snapshot.
-- `src/services/__tests__/HarmonizationCampaignService.test.ts` (32 tests) —
+- `src/services/__tests__/HarmonizationCampaignService.test.ts` (45 tests) —
   cycle de vie, immuabilité, claimed-hash jamais compté, relances idempotentes,
   **concurrence** (événements immuables disjoints, verrou + ownership, défaut
   #2), **verrou récupérable** (frais refusé / périmé récupéré / l'ancien
@@ -318,13 +318,13 @@ externe, jamais d'un publish.
   passe 2), **états disjoints** (confirm-then-drift/missing/unreadable,
   défaut #3), **exemptions avec provenance + conflits** (défaut #5), close
   gating, fail closed.
-- `src/tools/roosync/__tests__/compare-claude-settings.test.ts` (20 tests) —
+- `src/tools/roosync/__tests__/compare-claude-settings.test.ts` (22 tests) —
   garde de couverture (plus de fantômes), staleness soft/dur, diffs véridiques,
   exemptions + conflits (défaut #5), non-divulgation des credentials de
   BASE_URL (défaut #1), **deux userinfo différents sur le même host/path =>
   un diff produit** (revue passe 2, exigence explicite de la revue), modelMap
   par tier (défaut #6), detail=paths.
-- `src/tools/roosync/__tests__/compare-config.test.ts` (63 tests) — + fallback
+- `src/tools/roosync/__tests__/compare-config.test.ts` (77 tests) — + fallback
   Roo settings : standalone corrompu → paquet versionné ; tous candidats
   corrompus → read-error, jamais absence (défaut #4).
 - `src/tools/roosync/__tests__/harmonization-tool.test.ts` — chemin public
