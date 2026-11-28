@@ -297,6 +297,10 @@ describe('GDrive borné, PG inconditionnel (#4131 G-B lot 1)', () => {
     // (ai-01 c.6728973761 : sous PG-primaire, la moitié fichier est un export).
     // Il ne décide PAS d'une écriture, il décide de la présence du marqueur
     // dans le frontmatter — mais il lit la même porte, donc il se compte ici.
-    expect(src.match(/isDashboardPgPrimary\(\)/g)?.length).toBe(6);
+    // #4982 — le 7e site est le repli d'archive de condensation
+    // (`writeArchiveOrProveInPg`) : hors PG-primaire, un fichier d'archive non
+    // écrit reste un abandon ; sous PG-primaire, le journal PG doit prouver le
+    // lot avant tout retrait du vivant.
+    expect(src.match(/isDashboardPgPrimary\(\)/g)?.length).toBe(7);
   });
 });
