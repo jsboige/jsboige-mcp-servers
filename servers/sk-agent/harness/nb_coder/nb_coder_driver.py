@@ -6650,6 +6650,9 @@ def integration_pr_lines(integ: dict | None) -> str:
                      f"{conf.get('three_sided', 0)} à trois côtés{cs}.")
         for d in (conf.get("spec_absent") or [])[:8]:
             lines.append(f"  - Côté Rust déclaré absent {d.get('id')} : {d.get('reason')}.")
+        for d in (conf.get("spec_masked") or [])[:8]:
+            lines.append(f"  - Valeur non comparée {d.get('id')} : {d.get('reason')} "
+                         f"(mesure écrite morceau par morceau, tout le reste comparé).")
         for d in (conf.get("divergences") or [])[:5]:
             lines.append(f"  - Divergence mesurée {d.get('id')} : {d.get('text')}.")
     elif conf.get("file") and conf.get("why"):
