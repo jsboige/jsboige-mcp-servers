@@ -362,3 +362,195 @@ def test_the_old_behavior_is_one_flag_away(tmp_path):
     sched.run()
     assert len(sched.claims.releases) == 1
     assert "resumable_trace" not in sched.state["grains"]["#27133:Dir/Search-11-Rust.ipynb"]
+
+
+# --- 28/11: the [RELEASED] note cites the cause read from the run's own record ------------
+# CoursIA#28944: the second verify-reject of a resumed Rust port posted `[RELEASED] … (nb_coder:
+# grain ended without a PR (verify-reject))` — no cell, no reason. The coordinator requires a
+# release without a PR to cite the verifier's rejecting line (c0177); it was posted by hand
+# (comment 7238434630). Shapes below are the record's real ones (o67b trace of #28944).
+
+SUDOKU = {"issue": 28944, "notebook": "MyIA.AI.Notebooks/Sudoku/Sudoku-06-AIMA-CSP-Rust.ipynb"}
+BASE = "nb_coder: grain ended without a PR (verify-reject); motif: verify-reject"
+REJECTED = {
+    "verdict": "verify-reject", "built_notebook": "nb_28944_built.ipynb",
+    "verify": {"agent": "critic-terra", "served_model": "gpt-6.1-terra", "verdict": "reject",
+               "findings": [
+                   {"cell": 12, "severity": "minor", "detail": "Libellé de section à reprendre."},
+                   {"cell": 33, "severity": "major",
+                    "detail": "Preuve forte — la cellule 33 affiche uniquement les durées Rust ;\n"
+                              "les sorties commitées donnent 9 672 ms en Python."},
+               ]},
+}
+
+
+def _resumed(tmp_path, rec, verdict):
+    """A revise_from launch on a COPY of the first round's trace (the salvage recipe): the
+    driver writes its record next to that copy, which is where the release must read it."""
+    copy = tmp_path / "o68" / "copy" / "issue-28944.json"
+    copy.parent.mkdir(parents=True)
+    copy.write_text(json.dumps(REJECTED), encoding="utf-8")
+    item = dict(SUDOKU, revise_from=str(copy))
+    claims = FakeClaims()
+    sched = _sched(tmp_path, [item], _leaving(rec, verdict, 1), claims)
+    sched.run()
+    (_, _, _, note), = claims.releases
+    return sched, note
+
+
+def test_a_second_verify_reject_cites_the_verifier_line(tmp_path):
+    sched, note = _resumed(tmp_path, REJECTED, "verify-reject")
+    assert note.startswith(BASE)                          # the prefix readers already match
+    assert ("verifier critic-terra (served gpt-6.1-terra): cell 33, major: "
+            "\u00abPreuve forte") in note                  # the MOST severe, not the first
+    assert note.endswith("(+1 other finding)")
+    released, = _events(sched, "claim-released")
+    assert released["cause"] and released["cause"] in note
+
+
+def test_the_cause_stays_on_the_marker_head_line(tmp_path):
+    """The guard writes `[RELEASED] lane L -- <note> -- paths: <nb>` and reads the clause on
+    that line only: a newline in the note would make the release issue-wide."""
+    long = dict(REJECTED, verify=dict(REJECTED["verify"], findings=[
+        {"cell": 4, "severity": "major", "detail": "ligne\n" * 400}]))
+    _, note = _resumed(tmp_path, long, "verify-reject")
+    assert "\n" not in note and "\r" not in note
+    assert len(note) <= len(BASE) + 2 + S.RELEASE_CAUSE_MAX
+
+
+def test_a_record_left_by_another_round_is_never_cited(tmp_path):
+    """A resumed driver that dies before writing leaves the previous record in place: its
+    verdict is not the one reaped, so nothing from it reaches the note."""
+    stale = dict(REJECTED, verdict="gates-failed:prose-counts")
+    _, note = _resumed(tmp_path, stale, "verify-reject")
+    assert note == BASE
+
+
+def test_a_plain_launch_reads_its_own_run_dir(tmp_path):
+    """No built notebook behind the failure: released at once, cause from the grain's run dir."""
+    rec = {"verdict": "gates-failed:prose-counts", "gates": [
+        {"gate": "secrets", "ok": True, "detail": {"cells": []}},
+        {"gate": "prose-counts", "ok": False, "detail": {"cells": [7], "claims": ["11 cellules"]}},
+    ]}
+    claims = FakeClaims()
+    sched = _sched(tmp_path, [SUDOKU], _leaving(rec, "gates-failed:prose-counts", 1), claims)
+    sched.run()
+    (_, _, _, note), = claims.releases
+    assert note == ('nb_coder: grain ended without a PR (gates-failed:prose-counts); motif: '
+                    'gates-failed; gate prose-counts: {"cells": [7], "claims": ["11 cellules"]}')
+
+
+def test_a_non_content_failure_carries_no_cause(tmp_path):
+    rec = dict(REJECTED, verdict="call-failed: timeout")
+    claims = FakeClaims()
+    sched = _sched(tmp_path, [SUDOKU], _leaving(rec, "call-failed: timeout", 1), claims)
+    sched.run()
+    (_, _, _, note), = claims.releases
+    assert note == "nb_coder: grain ended without a PR (call-failed: timeout); motif: call-failed"
+
+
+def test_release_cause_reads_an_execution_failure():
+    """Shape of o39b's Search-11 record: the error output is a repr'd list in outputs_tail."""
+    rec = {"verdict": "built-execution-failed", "execution": [
+        {"cell": 0, "ok": True},
+        {"cell": 1, "ok": False, "outputs_tail": "[{'output_type': 'error', 'ename': 'Error', "
+         "'evalue': 'expected one of `!`, `.`, `::`, `;`, found `System`', 'traceback': []}]"}]}
+    assert S.release_cause(rec, "built-execution-failed") == (
+        "cell 1 failed: expected one of `!`, `.`, `::`, `;`, found `System`")
+
+
+@pytest.mark.parametrize("rec,verdict", [
+    (None, "verify-reject"),
+    ("not a dict", "verify-reject"),
+    ({"verdict": "verify-reject", "verify": "garbled"}, "verify-reject"),
+    ({"verdict": "verify-reject", "verify": {"findings": ["x", 3]}}, "verify-reject"),
+    ({"verdict": "verify-reject", "verify": {"findings": []}}, "verify-reject"),
+    ({"verdict": "gates-failed:x", "gates": [{"gate": "a", "ok": True}]}, "gates-failed:x"),
+    ({"verdict": "built-execution-failed", "execution": "garbled"}, "built-execution-failed"),
+    (REJECTED, ""),
+])
+def test_release_cause_degrades_to_empty(rec, verdict):
+    assert S.release_cause(rec, verdict) == ""
+
+
+# 28/11 — the release declares its motif. CoursIA's RELACHEE organ freezes a fresh [RELEASED]
+# for the WHOLE fleet unless its motif is positively identified (`motif: <code>` in the
+# marker block, code alone in its `;` clause, no historical word beside it); a bare
+# `(verify-reject)` never was, so every automatic release froze every lane for 3 days.
+# Measured against the organ at CoursIA origin/main 330e29d7eb: with the clause, a
+# verify-reject / built-structure-mismatch release freezes only the releasing lane.
+
+@pytest.mark.parametrize("verdict,code", [
+    ("verify-reject", "verify-reject"),
+    ("gates-failed:prose-counts", "gates-failed"),
+    ("built-structure-mismatch: 3 cells", "built-structure-mismatch"),
+    ("refused-claim-not-qualified:RELACHEE", "refused-claim-not-qualified"),
+    ("Stage2-Call-Failed", "stage2-call-failed"),
+])
+def test_the_motif_is_the_verdict_code_alone_in_its_clause(verdict, code):
+    clauses = [c.strip() for c in S.release_note(verdict, "cell 3, major: «x»").split(";")]
+    assert clauses[1] == f"motif: {code}"
+    assert len(clauses) == 3 and "\n" not in S.release_note(verdict, "cell 3, major: «x»")
+
+
+@pytest.mark.parametrize("verdict", ["", "   ", ":x", None])
+def test_no_code_no_motif(verdict):
+    note = S.release_note(verdict)
+    assert "motif" not in note
+    assert note.startswith("nb_coder: grain ended without a PR (")
+
+
+def test_the_motif_clause_precedes_the_cause():
+    """The cause quotes the verifier (free text, may say « dernière cellule ») — it must
+    never share the motif's clause, or the organ reads the code as cited in the past."""
+    note = S.release_note("verify-reject", "cell 33, major: «la dernière cellule»")
+    head, motif, cause = note.split("; ", 2)
+    assert motif == "motif: verify-reject" and "dernière" in cause and "dernière" not in motif
+
+
+# 28/11 — a SEAT refusal keeps the claim. CoursIA#29058: the queue item named no source_nb,
+# the driver refused before any call (refused-target-unresolved, calls 0), the verdict line
+# was missing from stdout, the grain reaped as a run failure and its claim was released —
+# the path frozen 3 days for a launch error. driver.log mixes the verdict line with
+# argparse's usage and error on stderr: the reap must find the line among them.
+
+class _RefusedDriver:
+    """A detached driver's log after `_preflight`: verdict line, then ap.error's stderr."""
+    def __init__(self, verdict):
+        self.verdict = verdict
+
+    def poll(self):
+        return S.ADOPTED_RC
+
+    def communicate(self, timeout=None):
+        return (json.dumps({"issue": 29058, "verdict": self.verdict, "calls": 0}) + "\n"
+                "usage: nb_coder_driver.py [-h] --issue ISSUE --notebook NOTEBOOK\n"
+                "                          [--verify-from VERIFY_FROM]\n"
+                "nb_coder_driver.py: error: X-Rust.ipynb is absent from origin/main\n"), ""
+
+
+@pytest.mark.parametrize("verdict", S.SEAT_REFUSAL_VERDICTS)
+def test_a_seat_refusal_keeps_the_claim(tmp_path, verdict):
+    claims = FakeClaims()
+    item = {"issue": 29058, "notebook": "SocialChoice/ChoixSocial-10-Rust.ipynb"}
+    sched = _sched(tmp_path, [item], lambda cmd: _RefusedDriver(verdict), claims)
+    sched.run()
+    assert claims.releases == [] and claims.reads == []
+    (skip,) = _events(sched, "claim-release-skipped")
+    assert skip["reason"] == "seat-refusal" and skip["verdict"] == verdict
+    (failed,) = _events(sched, "failed")
+    assert failed["verdict"] == verdict and failed["failure_class"] == "admission"
+
+
+def test_a_driver_that_prints_no_verdict_still_releases_as_before(tmp_path):
+    """The kept claim is bound to the refusal's own verdict, never to a missing one."""
+    class _Silent(_RefusedDriver):
+        def communicate(self, timeout=None):
+            return "Traceback (most recent call last):\nRuntimeError: boom\n", ""
+    claims = FakeClaims()
+    sched = _sched(tmp_path, [{"issue": 7, "notebook": "Dir/D.ipynb"}],
+                   lambda cmd: _Silent(""), claims)
+    sched.run()
+    assert len(claims.releases) == 1
+    (failed,) = _events(sched, "failed")
+    assert failed["verdict"] == "" and failed["failure_class"] == "run"

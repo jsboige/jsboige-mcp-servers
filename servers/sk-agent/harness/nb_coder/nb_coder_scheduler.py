@@ -250,9 +250,20 @@ CONTENT_FAILURE_PREFIXES = (
 # and all five were refused-claim-* (MGS-25 not-verified, MGS-28/MGS-29/Search-11
 # check-not-scoped, Sudoku-05 held by po-2024). Sudoku-05 would block for as long as
 # po-2024 holds it.
+#
+# 28/11: the driver's SEAT refusals join them -- a wired path, a model credential or a
+# launch target that does not resolve here (`_preflight`). Refused before any worktree and
+# any model call, they judge nothing about the grain either, so they also keep the claim
+# (`_release_claim`): the remedy is the operator's launch, never the issue. Measured on
+# CoursIA#29058: a queue item without source_nb, calls 0, auto-[RELEASED], path frozen 3 days.
+SEAT_REFUSAL_VERDICTS = (
+    "refused-wiring-unresolved",
+    "refused-credential-unresolved",
+    "refused-target-unresolved",
+)
 ADMISSION_FAILURE_PREFIXES = (
     "refused-claim",
-)
+) + SEAT_REFUSAL_VERDICTS
 
 
 def failure_class(verdict: str | None) -> str:
@@ -275,6 +286,91 @@ FAILURE_COUNTERS = {"content": "content_failed", "admission": "admission_failed"
 # turn; the scheduler now asks for it once, from the grain's own trace.
 VERIFY_RECOVERY_PREFIX = "verify-error"
 
+# The automatic [RELEASED] named the verdict alone (`verify-reject`): why the grain ended
+# without a PR stayed in a run record that no other lane can read. 28/11, CoursIA#28944:
+# the coordinator requires a release without a PR to cite the verifier's rejecting line,
+# and that line had to be posted by hand (comment 7238434630). The note now carries the
+# cause read from the run's own record. The claim guard writes the note on the marker's
+# head line, before its `-- paths:` clause, and reads that clause on the head line only:
+# a newline in the note would turn a path-scoped release into an issue-wide one, so the
+# cause is flattened to a single line and bounded.
+RELEASE_CAUSE_MAX = 240
+_SEVERITY_RANK = {"blocker": 0, "critical": 0, "major": 1, "minor": 2, "nit": 3}
+_EVALUE_RE = re.compile(r"""['"]evalue['"]\s*:\s*(['"])(.*?)(?<!\\)\1""")
+
+
+def _one_line(text, limit: int) -> str:
+    s = " ".join(str(text if text is not None else "").split())
+    return s if len(s) <= limit else s[:max(limit - 1, 0)].rstrip() + "…"
+
+
+def release_cause(rec, verdict: str) -> str:
+    """One line saying why a content failure ended without a PR, read from the run record:
+    the verifier's most severe finding, the first failed gate, or the first failed cell.
+    Empty when the record is not THIS run's (its verdict differs from the reaped one: a
+    resumed driver that died early leaves the previous round's record in place, and a
+    stale line must never be cited) or names no cause. Never raises."""
+    try:
+        if not isinstance(rec, dict) or not verdict or rec.get("verdict") != verdict:
+            return ""
+        v = rec.get("verify")
+        findings = v.get("findings") if isinstance(v, dict) else None
+        if verdict.startswith("verify-reject") and isinstance(findings, list):
+            ranked = [f for f in findings if isinstance(f, dict)]
+            if ranked:
+                top = min(ranked, key=lambda f: _SEVERITY_RANK.get(
+                    str(f.get("severity", "")).lower(), 9))
+                who = str(v.get("agent") or "verifier")
+                served = v.get("served_model") or v.get("model_used")
+                head = (f"verifier {who}" + (f" (served {served})" if served else "")
+                        + f": cell {top.get('cell', '?')}, {top.get('severity', '?')}")
+                more = len(ranked) - 1
+                tail = f" (+{more} other finding{'s' if more > 1 else ''})" if more else ""
+                room = RELEASE_CAUSE_MAX - len(head) - len(tail) - 4
+                return _one_line(f"{head}: «{_one_line(top.get('detail'), room)}»{tail}",
+                                 RELEASE_CAUSE_MAX)
+        gates = rec.get("gates")
+        if verdict.startswith("gates-failed") and isinstance(gates, list):
+            for g in gates:
+                if isinstance(g, dict) and g.get("ok") is False:
+                    detail = g.get("detail")
+                    if not isinstance(detail, str):
+                        detail = json.dumps(detail, ensure_ascii=False)
+                    return _one_line(f"gate {g.get('gate', '?')}: {detail}", RELEASE_CAUSE_MAX)
+        cells = rec.get("execution")
+        if verdict.startswith("built-execution-failed") and isinstance(cells, list):
+            for c in cells:
+                if isinstance(c, dict) and c.get("ok") is False:
+                    tail = str(c.get("outputs_tail") or "")
+                    m = _EVALUE_RE.search(tail)
+                    return _one_line(f"cell {c.get('cell', '?')} failed: "
+                                     f"{m.group(2) if m else tail}", RELEASE_CAUSE_MAX)
+    except Exception:
+        return ""
+    return ""
+
+
+# The SCOPE of a [RELEASED] is read from its motif by CoursIA's RELACHEE organ
+# (scripts/coordination/tapis_relache*.py, #28440): a tool-failure motif (verify-reject,
+# built-structure-mismatch, stage2-call-failed, ...) freezes the path for the releasing lane
+# only, anything else for the whole fleet for 3 days. The motif counts only in a form the
+# organ identifies positively -- `motif: <code>` in the marker's block -- and the code must
+# not share its clause (`;`-separated) with a past-tense word. The bare `(verify-reject)`
+# the note carried was never identified: every automatic release froze its path for every
+# lane (measured 28/11 on CoursIA#28944 and #29058). The note now declares the verdict's
+# code as its motif, alone in its clause; the organ decides what that code's scope is.
+_MOTIF_CODE_RE = re.compile(r"[a-z0-9][\w-]*", re.IGNORECASE)
+
+
+def release_note(verdict: str, cause: str = "") -> str:
+    """The --release note: the verdict, its code as `motif:`, then the cause, one clause each."""
+    note = f"nb_coder: grain ended without a PR ({(verdict or 'no verdict')[:80]})"
+    m = _MOTIF_CODE_RE.match((verdict or "").strip())
+    if m:
+        note += f"; motif: {m.group(0).lower()}"
+    if cause:
+        note += f"; {cause}"
+    return note
 
 
 class QueueError(ValueError):
@@ -1027,6 +1123,20 @@ class Scheduler:
             return None
         return p if p.is_file() else None
 
+    def launch_record(self, item: dict) -> Path | None:
+        """The verdict record THIS launch's driver wrote. A resumed item writes next to
+        the trace it names (driver_command sets --out-dir to that trace's directory, and
+        the driver renames the old record aside); any other launch writes in the grain's
+        own run dir, where run_trace() reads."""
+        explicit = item.get("revise_from") or item.get("verify_from")
+        if not explicit:
+            return self.run_trace(item)
+        try:
+            p = Path(explicit).parent / f"issue-{item['issue']}.json"
+        except Exception:
+            return None
+        return p if p.is_file() else None
+
     def driver_command(self, item: dict, resume_from: str | None = None) -> list[str]:
         a = self.args
         # A queue item may name the trace to resume itself (22/11 salvage: a content
@@ -1316,7 +1426,8 @@ class Scheduler:
 
         Never released: a foreign holder (late-claim refusals), our own [DELIVERED] or
         [RELEASED], an issue without markers, an issue another active grain of ours still
-        builds (lot issues carry several notebooks), or an unreadable thread.
+        builds (lot issues carry several notebooks), a launch the driver refused before
+        any call (SEAT_REFUSAL_VERDICTS), or an unreadable thread.
 
         Kept on a first content failure that left a resumable trace (26/11): the claim
         guard reads ANY [RELEASED] as a full close of the lane on the whole ISSUE and
@@ -1334,6 +1445,11 @@ class Scheduler:
                for k, e in self.active.items()):
             return self._event("claim-release-skipped", key=key, issue=issue,
                                reason="sibling-grain-active")
+        if (verdict or "").strip().startswith(SEAT_REFUSAL_VERDICTS):
+            # the launch was refused before any call: nothing judged the grain (see
+            # SEAT_REFUSAL_VERDICTS). A kept claim goes stale after the guard's 48 h.
+            return self._event("claim-release-skipped", key=key, issue=issue,
+                               reason="seat-refusal", verdict=verdict)
         trace = self.resumable_trace(key, item, verdict)
         if trace is not None:
             # the callee tolerates a key with no grain record (`.get(key, {})`); this write
@@ -1351,10 +1467,18 @@ class Scheduler:
                                reason="marker-unread", detail=str(exc)[:200])
         if last != ("CLAIMED", a.lane):
             return
-        note = f"nb_coder: grain ended without a PR ({(verdict or 'no verdict')[:80]})"
+        # release_cause() cites only the three content verdicts that name a cause
+        # (verify-reject, gates-failed, built-execution-failed); any other is empty.
+        try:
+            rec_path = self.launch_record(item)
+            cause = (release_cause(json.loads(rec_path.read_text(
+                encoding="utf-8", errors="replace")), verdict) if rec_path else "")
+        except Exception:
+            cause = ""
+        note = release_note(verdict, cause)
         rc, out = self.claims.release(issue, a.lane, item["notebook"], note)
         self._event("claim-released" if rc == 0 else "claim-release-failed", key=key,
-                    issue=issue, rc=rc, detail=(out or "").strip()[-300:])
+                    issue=issue, rc=rc, cause=cause, detail=(out or "").strip()[-300:])
 
     def _release_worktree(self, key: str, item: dict | None) -> None:
         """Remove a terminal grain's worktree once nothing in it is unique.

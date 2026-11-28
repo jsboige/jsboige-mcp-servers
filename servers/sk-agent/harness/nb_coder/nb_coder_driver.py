@@ -9579,6 +9579,12 @@ def _preflight(ap, args) -> None:
                                    "refusal": detail[:600]}, ensure_ascii=False) + "\n")
     except OSError:
         pass          # the refusal must not be masked by a failed trace write
+    # The verdict line on stdout, like main()'s: a detached driver reaps with an unknown
+    # return code, so its scheduler reads the verdict from this line alone. Without it the
+    # refusal read as '' (a run failure) and released the grain's claim -- measured 28/11 on
+    # CoursIA#29058: a queue item without source_nb, zero calls, path frozen 3 days.
+    print(json.dumps({"issue": args.issue, "verdict": verdict, "calls": 0},
+                     ensure_ascii=False), flush=True)
     ap.error(detail)
 
 
